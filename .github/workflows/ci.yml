@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: Apache-2.0
+name: ci
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - run: cargo run --release -- run examples/hello.cig -- ci
+      - run: cargo run --release -- chains examples/tasks.cig
+
+  reuse:
+    name: licence headers (REUSE)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: fsfe/reuse-action@v5
+
+  release:
+    name: release (${{ matrix.target }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, reuse]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  asset: linux-x86_64,   ext: "" }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      asset: macos-aarch64,  ext: "" }
+          - { os: macos-13,       target: x86_64-apple-darwin,       asset: macos-x86_64,   ext: "" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    asset: windows-x86_64, ext: ".exe" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: name and checksum the asset (matches update::asset_name)
+        shell: bash
+        run: |
+          name="cig-${GITHUB_REF_NAME}-${{ matrix.asset }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/cig${{ matrix.ext }}" "$name"
+          if command -v sha256sum >/dev/null; then sha256sum "$name" > "$name.sha256"; else shasum -a 256 "$name" > "$name.sha256"; fi
+          cat "$name.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cig-*-${{ matrix.asset }}${{ matrix.ext }}
+            cig-*-${{ matrix.asset }}${{ matrix.ext }}.sha256
+            LICENSE
+            NOTICE
+            THIRD-PARTY-NOTICES.md
