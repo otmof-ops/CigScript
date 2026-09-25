@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="820" height="360" viewBox="0 0 820 360" role="img" aria-label="The burn model: a script is checked, then run; only code inside a burn block reaches the kernel, which journals before it acts and can roll back.">
+  <title>The burn model</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9ca3af"/>
+    </marker>
+    <marker id="arrow-orange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#f97316"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: none; stroke: #9ca3af; stroke-width: 1.8; }
+    .hot { fill: none; stroke: #f97316; stroke-width: 2.2; }
+    .t { font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif; font-size: 14px; fill: #6b7280; }
+    .m { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; fill: #6b7280; }
+    .h { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 14px; font-weight: 700; fill: #f97316; }
+    .k { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 12px; fill: #9ca3af; }
+    .line { stroke: #9ca3af; stroke-width: 1.8; fill: none; marker-end: url(#arrow); }
+    .hotline { stroke: #f97316; stroke-width: 2.2; fill: none; marker-end: url(#arrow-orange); }
+    .dash { stroke-dasharray: 5 4; }
+  </style>
+
+  <!-- script -->
+  <rect x="24" y="130" width="120" height="60" rx="10" class="box"/>
+  <text x="84" y="156" text-anchor="middle" class="m">tidy.cig</text>
+  <text x="84" y="176" text-anchor="middle" class="k">your script</text>
+
+  <!-- check -->
+  <path d="M 144 160 L 186 160" class="line"/>
+  <rect x="188" y="130" width="120" height="60" rx="10" class="box"/>
+  <text x="248" y="156" text-anchor="middle" class="m">cig check</text>
+  <text x="248" y="176" text-anchor="middle" class="k">typos, sticks, effects</text>
+
+  <!-- run -->
+  <path d="M 308 160 L 350 160" class="line"/>
+  <rect x="352" y="60" width="260" height="200" rx="14" class="box"/>
+  <text x="482" y="86" text-anchor="middle" class="m">cig run</text>
+
+  <!-- pure code -->
+  <rect x="372" y="100" width="220" height="52" rx="8" class="box dash"/>
+  <text x="482" y="122" text-anchor="middle" class="t">pure code: reads, maths, strings</text>
+  <text x="482" y="140" text-anchor="middle" class="k">free; never touches the world</text>
+
+  <!-- burn block -->
+  <rect x="372" y="164" width="220" height="80" rx="8" class="hot"/>
+  <text x="392" y="188" class="h">burn {</text>
+  <text x="412" y="208" class="m">fs.mv(file, target)</text>
+  <text x="412" y="226" class="m">proc.run("git", ["gc"])</text>
+  <text x="392" y="240" class="h">}</text>
+
+  <!-- kernel -->
+  <path d="M 592 204 L 646 204" class="hotline"/>
+  <rect x="648" y="150" width="150" height="110" rx="10" class="hot"/>
+  <text x="723" y="176" text-anchor="middle" class="h">kernel</text>
+  <text x="723" y="198" text-anchor="middle" class="t">1. snapshot before</text>
+  <text x="723" y="216" text-anchor="middle" class="t">2. journal the op</text>
+  <text x="723" y="234" text-anchor="middle" class="t">3. only then, act</text>
+  <text x="723" y="252" text-anchor="middle" class="k">procs marked irreversible</text>
+
+  <!-- rollback -->
+  <path d="M 723 260 L 723 300" class="hotline"/>
+  <rect x="628" y="302" width="190" height="44" rx="10" class="box"/>
+  <text x="723" y="322" text-anchor="middle" class="t">failure, or later: cig unburn</text>
+  <text x="723" y="338" text-anchor="middle" class="k">journal replayed newest first</text>
+
+  <!-- dry run -->
+  <path d="M 482 260 L 482 300" class="line dash"/>
+  <rect x="372" y="302" width="220" height="44" rx="10" class="box dash"/>
+  <text x="482" y="322" text-anchor="middle" class="m">--dry-run</text>
+  <text x="482" y="338" text-anchor="middle" class="k">same run, burns recorded, nothing changed</text>
+
+  <!-- refused -->
+  <path d="M 248 190 L 248 230" class="line dash"/>
+  <rect x="168" y="232" width="160" height="44" rx="10" class="box dash"/>
+  <text x="248" y="252" text-anchor="middle" class="t">effect outside a burn</text>
+  <text x="248" y="268" text-anchor="middle" class="k">refused before anything runs</text>
+</svg>

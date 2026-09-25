@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: Apache-2.0
+# literals, arithmetic, strings, collections
+exhale 1 + 2 * 3, 7 / 2, 8 / 2, 7 % 3, -5, 2.5 * 2, 1_000 + 1
+exhale "a" + "b", "ab" * 3, "n=${1 + 1}", 'raw ${x}\n', "tab\there"
+exhale [1, 2] + [3], [1, 2, 3][-1], "hello"[1], 0..4
+exhale {a: 1, "b c": [true, null], [1 + 1]: 2.0}
+exhale 1 == 1.0, "a" < "b", null ?? "d", 0 ?? 1, not 0, true and 5, false or "x"
+exhale type_of(1), type_of(1.5), type_of("s"), type_of([]), type_of({}), type_of(null), type_of(exhale_it)
+pull exhale_it() { }
+exhale str(3.0), int("42"), int(3.9), float("2"), bool([]), bool("x"), repr("q\"q")

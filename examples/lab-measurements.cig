@@ -1,0 +1,63 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# Summary statistics per series from a CSV of readings, with a JSON report
+# that carries the input's hash so the numbers trace back to the bytes.
+#
+#   cig run examples/lab-measurements.cig -- readings.csv report.json
+#
+# readings.csv looks like:
+#   series,value
+#   temperature,21.4
+#   temperature,21.9
+#   pressure,101.2
+
+if args.len() < 2 {
+  cough "usage: lab-measurements.cig -- <readings.csv> <report.json>"
+}
+stick input = args[0]
+stick output = args[1]
+
+stick rows = csv.read(input, {header: true})
+roll series = {}
+for row in rows {
+  stick name = row.series
+  if not series.has(name) {
+    series[name] = []
+  }
+  series[name].push(float(row.value))
+}
+
+# Sample statistics: the variance divides by n - 1, not n.
+pull describe(xs) {
+  stick n = xs.len()
+  if n < 2 {
+    cough {message: "a series needs at least two readings", n: n}
+  }
+  stick mean = xs.sum() / n
+  stick var = xs.map(pack(x) => math.pow(x - mean, 2)).sum() / (n - 1)
+  snuff {
+    n: n,
+    mean: math.round(mean, 4),
+    sd: math.round(math.sqrt(var), 4),
+    min: xs.min(),
+    max: xs.max(),
+  }
+}
+
+roll summary = {}
+for name in series.keys().sort() {
+  summary[name] = describe(series[name])
+  stick s = summary[name]
+  exhale "${name.pad_right(14)} n=${s.n}  mean=${s.mean}  sd=${s.sd}  range=${s.min}..${s.max}"
+}
+
+burn {
+  json.save(output, {
+    input: input,
+    input_sha256: hash.sha256_file(input),
+    generated: time.now_iso(),
+    series: summary,
+  })
+}
+exhale "wrote ${output}"

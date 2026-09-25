@@ -1,0 +1,31 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# Read a CSV of expenses, total it per category, write a JSON report.
+#
+#   cig run examples/report.cig -- expenses.csv report.json
+
+if args.len() < 2 {
+  cough "usage: report.cig -- <expenses.csv> <report.json>"
+}
+stick rows = csv.read(args[0], {header: true})
+roll totals = {}
+for row in rows {
+  stick cat = row.category
+  totals[cat] = totals.get(cat, 0) + float(row.amount)
+}
+
+stick report = {
+  source: args[0],
+  rows: rows.len(),
+  generated: time.now_iso(),
+  totals: totals,
+  grand_total: totals.values().sum(),
+}
+burn {
+  json.save(args[1], report)
+}
+for cat in totals.keys().sort() {
+  exhale "${cat.pad_right(12)} ${math.round(totals[cat], 2)}"
+}
+exhale "wrote ${args[1]}"

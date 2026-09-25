@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: Apache-2.0
+# reads are free; this script never burns
+burn {
+  fs.mkdir("data/sub")
+  fs.write_text("data/a.txt", "alpha\nbeta\n")
+  fs.write_text("data/sub/b.md", "# b")
+  csv.write("data/t.csv", [{n: "x", v: 1}, {n: "y", v: 2}])
+}
+exhale fs.exists("data/a.txt"), fs.is_file("data/a.txt"), fs.is_dir("data/sub"), fs.size("data/a.txt")
+exhale fs.read_text("data/a.txt").lines(), fs.read_lines("data/a.txt")
+exhale fs.list("data"), fs.glob("data/**/*.md"), fs.glob("data/*.txt")
+exhale csv.read("data/t.csv", {header: true})
+try {
+  json.load("data/t.csv")
+} ashtray e {
+  exhale e.message.starts_with("json.load")
+}

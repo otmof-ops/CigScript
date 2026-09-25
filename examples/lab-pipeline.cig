@@ -1,0 +1,105 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# An analysis pipeline as a chain: seed -> ingest -> clean -> analyse -> report.
+# Runs standalone: with no arguments it writes a small synthetic dataset
+# first so there is something to analyse. Data flows between stages in
+# memory; the files under work/ are written for provenance, which is why
+# a dry-run of the whole chain works once the raw file exists.
+#
+#   cig chains examples/lab-pipeline.cig
+#   cig light examples/lab-pipeline.cig analysis [-- raw.csv]
+#   cig light --dry-run examples/lab-pipeline.cig analysis
+
+stick raw = args.get(0, "raw/readings.csv")
+stick work = "work"
+
+# --- stages ------------------------------------------------------------------
+
+stick seed = pack() {
+  if fs.exists(raw) {
+    snuff "using ${raw}"
+  }
+  burn {
+    fs.mkdir(path.dir(raw))
+    csv.write(raw, [
+      {series: "temperature", value: 21.4}, {series: "temperature", value: 21.9},
+      {series: "temperature", value: 22.1}, {series: "temperature", value: 999.0},
+      {series: "pressure", value: 101.2}, {series: "pressure", value: 101.5},
+      {series: "pressure", value: 100.9},
+    ])
+  }
+  snuff "wrote synthetic ${raw}"
+}
+
+# The raw file is only ever read. A copy goes under work/ for the record.
+stick ingest = pack() {
+  stick dest = path.join(work, "readings.csv")
+  burn {
+    fs.mkdir(work)
+    fs.cp(raw, dest)
+  }
+  snuff {
+    file: dest,
+    sha256: hash.sha256_file(raw),
+    rows: csv.read(raw, {header: true}),
+  }
+}
+
+stick clean = pack(ingested) {
+  stick kept = ingested.rows.filter(pack(r) => float(r.value) > -50 and float(r.value) < 500)
+  stick dropped = ingested.rows.len() - kept.len()
+  stick dest = path.join(work, "clean.csv")
+  burn { csv.write(dest, kept) }
+  log.info("clean: kept ${kept.len()}, dropped ${dropped} out-of-range row(s)")
+  snuff {
+    file: dest,
+    rows: kept,
+    dropped: dropped,
+    source: {file: ingested.file, sha256: ingested.sha256},
+  }
+}
+
+stick analyse = pack(cleaned) {
+  roll series = {}
+  for row in cleaned.rows {
+    if not series.has(row.series) {
+      series[row.series] = []
+    }
+    series[row.series].push(float(row.value))
+  }
+  roll stats = {}
+  for name in series.keys().sort() {
+    stick xs = series[name]
+    stick mean = xs.sum() / xs.len()
+    stick var = xs.map(pack(x) => math.pow(x - mean, 2)).sum() / (xs.len() - 1)
+    stats[name] = {n: xs.len(), mean: math.round(mean, 3), sd: math.round(math.sqrt(var), 3)}
+  }
+  snuff {stats: stats, dropped: cleaned.dropped, source: cleaned.source}
+}
+
+stick report = pack(result) {
+  stick json_path = path.join(work, "report.json")
+  stick md_path = path.join(work, "report.md")
+  roll lines = [
+    "# Analysis report", "",
+    "source `${result.source.file}` sha256 `${result.source.sha256}`", "",
+    "| series | n | mean | sd |", "|---|---|---|---|",
+  ]
+  for name in result.stats {
+    stick s = result.stats[name]
+    lines.push("| ${name} | ${s.n} | ${s.mean} | ${s.sd} |")
+  }
+  lines.push("")
+  lines.push("${result.dropped} out-of-range row(s) dropped during cleaning.")
+  burn {
+    json.save(json_path, {generated: time.now_iso(), result: result})
+    fs.write_text(md_path, lines.join("\n") + "\n")
+  }
+  exhale lines.join("\n")
+  snuff json_path
+}
+
+# --- the pipeline -----------------------------------------------------------
+
+chain analysis { seed, ingest, clean, analyse, report }

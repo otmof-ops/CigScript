@@ -1,0 +1,7 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# The smallest CigScript program. Nothing here burns.
+
+stick name = args.get(0, "world")
+exhale "hello, ${name}"

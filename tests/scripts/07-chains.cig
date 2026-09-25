@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: Apache-2.0
+roll attempts = 0
+stick fetch = pack() {
+  snuff "fetched"
+}
+stick build = pack(prev) {
+  snuff prev + " > built"
+}
+pull package(prev) {
+  snuff prev + " > packaged"
+}
+stick flaky = pack() {
+  attempts += 1
+  if attempts < 3 {
+    cough "not yet (attempt ${attempts})"
+  }
+  snuff "flaky ok after ${attempts}"
+}
+chain release {
+  fetch
+  build, package
+  pack(prev) => prev + " > shipped"
+}
+chain inner { flaky }
+chain outer {
+  inner
+  pack() => "outer done"
+}
+exhale release, release.name, release.steps, release.len, type_of(release)
+stick r = light(release, {quiet: true})
+exhale r.ok, r.result, r.steps.len(), r.steps[3].name
+stick r2 = light(outer, {retries: 3, quiet: true})
+exhale r2.ok, r2.steps[0].result.result, attempts
+try {
+  light([fetch, pack() { cough "boom" }, build], {quiet: true})
+} ashtray e {
+  exhale "caught:", e.message
+  exhale e.chain, e.step, e.index, e.cause.message, e.steps.len()
+}
+stick r3 = light([pack() { cough "one" }, pack() => "two"], {continue_on_error: true, quiet: true})
+exhale r3.ok, r3.failed.len(), r3.failed[0].error.message, r3.steps[1].result
+roll m = {chain: 1, if: 2}
+exhale m.chain, m.if, m?.for

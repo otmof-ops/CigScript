@@ -1,0 +1,16 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# Run a command, capture its output, fail loudly if it fails.
+
+burn {
+  stick r = proc.run("git", ["status", "--short"], {timeout_ms: 5000})
+  if r.code != 0 {
+    cough "git failed: ${r.err.trim()}"
+  }
+  stick dirty = r.out.lines().filter(pack(l) => not l.is_empty())
+  exhale "${dirty.len()} changed path(s)"
+  for line in dirty.slice(0, 5) {
+    exhale "  " + line
+  }
+}

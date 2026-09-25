@@ -1,0 +1,23 @@
+# REUSE specification (https://reuse.software). One licence per path.
+version = 1
+SPDX-PackageName = "CigScript"
+SPDX-PackageSupplier = "Jay Taylor"
+SPDX-PackageDownloadLocation = "https://github.com/otmof-ops/CigScript"
+
+[[annotations]]
+path = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "install.sh", "scripts/**", "REUSE.toml", ".gitignore", ".github/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/CigScript)"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = ["docs/**", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "TRADEMARKS.md", "SECURITY.md", "NOTICE", "THIRD-PARTY-NOTICES.md"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/CigScript)"
+SPDX-License-Identifier = "CC-BY-4.0"
+
+[[annotations]]
+path = ["examples/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/CigScript)"
+SPDX-License-Identifier = "CC0-1.0"

@@ -1,0 +1,39 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# A task file: chains are the automation layer. List them with
+# `cig chains examples/tasks.cig`, light one with `cig light examples/tasks.cig check`.
+
+stick fmt = pack() {
+  burn { proc.run("cargo", ["fmt", "--all", "--check"], {check: true}) }
+}
+stick lint = pack() {
+  burn { proc.run("cargo", ["clippy", "--all-targets", "--", "-D", "warnings"], {check: true}) }
+}
+stick test = pack() {
+  burn { proc.run("cargo", ["test"], {check: true, timeout_ms: 600000}) }
+}
+stick build = pack() {
+  burn { proc.run("cargo", ["build", "--release"], {check: true, timeout_ms: 600000}) }
+  snuff "target/release/cig"
+}
+stick stamp = pack(binary) {
+  burn {
+    stick sum = hash.sha256_file(binary)
+    fs.write_text(binary + ".sha256", "${sum}  ${path.base(binary)}\n")
+  }
+  snuff sum_line(binary)
+}
+pull sum_line(binary) {
+  snuff fs.read_text(binary + ".sha256").trim()
+}
+
+chain check { fmt, lint, test }
+chain release {
+  check
+  build
+  stamp
+  pack(line) {
+    exhale "release artifact: ${line}"
+  }
+}

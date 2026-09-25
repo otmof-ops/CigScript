@@ -1,0 +1,134 @@
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-License-Identifier: Apache-2.0
+
+//! JSON in and out.
+
+use super::b;
+use crate::burn::{Decision, Op};
+use crate::diagnostics::{runtime, type_error, Diagnostic};
+use crate::interp::Interp;
+use crate::syntax::span::Span;
+use crate::value::{expect_str, Builtin, Effect, Value};
+use indexmap::IndexMap;
+use std::path::PathBuf;
+
+pub static TABLE: &[Builtin] = &[
+    b("json.parse", Effect::Pure, 1, Some(1), parse),
+    b("json.stringify", Effect::Pure, 1, Some(2), stringify),
+    b("json.load", Effect::Read, 1, Some(1), load),
+    b("json.save", Effect::Write, 2, Some(3), save),
+];
+
+pub fn to_value(j: serde_json::Value) -> Value {
+    match j {
+        serde_json::Value::Null => Value::Null,
+        serde_json::Value::Bool(b) => Value::Bool(b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Value::Int(i)
+            } else {
+                Value::Float(n.as_f64().unwrap_or(f64::NAN))
+            }
+        }
+        serde_json::Value::String(s) => Value::str(s),
+        serde_json::Value::Array(items) => Value::list(items.into_iter().map(to_value).collect()),
+        serde_json::Value::Object(map) => {
+            let mut out = IndexMap::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k, to_value(v));
+            }
+            Value::map(out)
+        }
+    }
+}
+
+pub fn from_value(v: &Value, span: Span) -> Result<serde_json::Value, Diagnostic> {
+    Ok(match v {
+        Value::Null => serde_json::Value::Null,
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(i) => serde_json::Value::from(*i),
+        Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(serde_json::Value::Number)
+            .ok_or_else(|| runtime("json: cannot encode a non-finite float").at(span))?,
+        Value::Str(s) => serde_json::Value::String(s.to_string()),
+        Value::List(l) => {
+            let mut out = Vec::with_capacity(l.borrow().len());
+            for item in l.borrow().iter() {
+                out.push(from_value(item, span)?);
+            }
+            serde_json::Value::Array(out)
+        }
+        Value::Map(m) => {
+            let mut out = serde_json::Map::with_capacity(m.borrow().len());
+            for (k, v) in m.borrow().iter() {
+                out.insert(k.clone(), from_value(v, span)?);
+            }
+            serde_json::Value::Object(out)
+        }
+        other => {
+            return Err(type_error(format!("json: cannot encode a {}", other.type_name())).at(span))
+        }
+    })
+}
+
+fn parse(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let text = expect_str(a, 0, "json.parse", s)?;
+    serde_json::from_str::<serde_json::Value>(text)
+        .map(to_value)
+        .map_err(|e| runtime(format!("json.parse: {e}")).code("E511").at(s))
+}
+
+fn stringify(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let j = from_value(&a[0], s)?;
+    let pretty = a.get(1).is_some_and(|p| p.truthy());
+    let text = if pretty {
+        serde_json::to_string_pretty(&j)
+    } else {
+        serde_json::to_string(&j)
+    }
+    .map_err(|e| runtime(format!("json.stringify: {e}")).at(s))?;
+    Ok(Value::str(text))
+}
+
+fn load(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let p = expect_str(a, 0, "json.load", s)?;
+    let text = std::fs::read_to_string(p)
+        .map_err(|e| runtime(format!("json.load: {p}: {}", super::fs::describe_io(&e))).at(s))?;
+    serde_json::from_str::<serde_json::Value>(&text)
+        .map(to_value)
+        .map_err(|e| runtime(format!("json.load: {p}: {e}")).code("E511").at(s))
+}
+
+fn save(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let p = PathBuf::from(expect_str(a, 0, "json.save", s)?);
+    let j = from_value(&a[1], s)?;
+    let pretty = a.get(2).is_none_or(|p| p.truthy());
+    let mut text = if pretty {
+        serde_json::to_string_pretty(&j)
+    } else {
+        serde_json::to_string(&j)
+    }
+    .map_err(|e| runtime(format!("json.save: {e}")).at(s))?;
+    text.push('\n');
+    if i.effect("json.save", Op::Write { path: p.clone() }, s)? == Decision::Execute {
+        if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                runtime(format!(
+                    "json.save: {}: {}",
+                    parent.display(),
+                    super::fs::describe_io(&e)
+                ))
+                .at(s)
+            })?;
+        }
+        std::fs::write(&p, &text).map_err(|e| {
+            runtime(format!(
+                "json.save: {}: {}",
+                p.display(),
+                super::fs::describe_io(&e)
+            ))
+            .at(s)
+        })?;
+    }
+    Ok(Value::Int(text.len() as i64))
+}

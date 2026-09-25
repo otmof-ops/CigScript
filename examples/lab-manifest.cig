@@ -1,0 +1,58 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# Hash every file in a data directory into MANIFEST.json, or verify an
+# existing manifest against the directory without touching anything.
+#
+#   cig run examples/lab-manifest.cig -- data            # write data/MANIFEST.json
+#   cig run examples/lab-manifest.cig -- data verify     # report drift, change nothing
+
+if args.len() == 0 {
+  cough "usage: lab-manifest.cig -- <dir> [verify]"
+}
+stick root = args[0]
+stick manifest_path = path.join(root, "MANIFEST.json")
+stick verify = args.len() > 1 and args[1] == "verify"
+
+stick everything = fs.glob("${root}/**/*")
+stick files = everything.filter(pack(p) => fs.is_file(p) and path.base(p) != "MANIFEST.json").sort()
+
+roll current = {}
+for f in files {
+  current[f] = {sha256: hash.sha256_file(f), bytes: fs.size(f)}
+}
+
+if verify {
+  stick recorded = json.load(manifest_path).files
+  roll changed = []
+  roll missing = []
+  roll added = []
+  for f in recorded {
+    if not current.has(f) {
+      missing.push(f)
+    } else if current[f].sha256 != recorded[f].sha256 {
+      changed.push(f)
+    }
+  }
+  for f in current {
+    if not recorded.has(f) {
+      added.push(f)
+    }
+  }
+  exhale "checked ${recorded.len()} recorded file(s): ${changed.len()} changed, ${missing.len()} missing, ${added.len()} new"
+  for f in changed { exhale "  changed  ${f}" }
+  for f in missing { exhale "  missing  ${f}" }
+  for f in added { exhale "  new      ${f}" }
+  if changed.len() + missing.len() > 0 {
+    exit(1)
+  }
+} else {
+  burn {
+    json.save(manifest_path, {
+      root: root,
+      generated: time.now_iso(),
+      files: current,
+    })
+  }
+  exhale "recorded ${current.len()} file(s) in ${manifest_path}"
+}

@@ -1,0 +1,56 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# Sort loose files in a folder into sub-folders by extension.
+#
+#   cig run --dry-run examples/tidy-downloads.cig -- ~/Downloads
+#   cig run examples/tidy-downloads.cig -- ~/Downloads
+#
+# Dry-run prints every move it would make. A real run journals each move,
+# and `cig unburn <run-id>` puts everything back.
+
+if args.len() == 0 {
+  cough "usage: tidy-downloads.cig -- <folder>"
+}
+stick root = args[0]
+stick buckets = {
+  image: ["jpg", "jpeg", "png", "gif", "webp"],
+  video: ["mp4", "mkv", "mov"],
+  audio: ["mp3", "flac", "wav"],
+  doc: ["pdf", "docx", "txt", "md"],
+  archive: ["zip", "tar", "gz", "7z"],
+}
+
+pull bucket_for(file) {
+  stick ext = path.ext(file).lower()
+  for name in buckets {
+    if buckets[name].contains(ext) {
+      snuff name
+    }
+  }
+  snuff "other"
+}
+
+roll moved = 0
+roll plan = {}
+for file in fs.list(root) {
+  if fs.is_dir(file) {
+    continue
+  }
+  stick target = path.join(root, bucket_for(file), path.base(file))
+  plan[file] = target
+}
+
+burn {
+  for file in plan {
+    fs.mkdir(path.dir(plan[file]))
+    fs.mv(file, plan[file])
+    moved += 1
+  }
+}
+
+roll plural = "s"
+if moved == 1 {
+  plural = ""
+}
+exhale "moved ${moved} file${plural}"

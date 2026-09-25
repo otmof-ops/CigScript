@@ -1,0 +1,17 @@
+#!/usr/bin/env cig
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: CC0-1.0
+# Declare a dangerous clean-up without ever running it. The intents are
+# written to the run record for review; nothing is touched.
+
+stick stale = fs.glob("build/**/*.tmp")
+exhale "found ${stale.len()} stale file(s)"
+
+burn unlit {
+  for f in stale {
+    fs.rm(f)
+  }
+  proc.run("git", ["gc", "--prune=now"])
+}
+
+exhale "review with: cig runs <this run>  (see intents.jsonl)"

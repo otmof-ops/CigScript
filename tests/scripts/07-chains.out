@@ -1,0 +1,7 @@
+<chain release: fetch > build > package > step 4> release ["fetch", "build", "package", "step 4"] 4 chain
+true fetched > built > packaged > shipped 4 step 4
+true flaky ok after 3 3
+caught: chain `chain` failed at step 2 (step 2): boom
+chain step 2 1 boom 2
+false 1 one two
+1 2 null

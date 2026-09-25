@@ -1,0 +1,270 @@
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-License-Identifier: Apache-2.0
+
+//! The abstract syntax tree.
+
+use super::span::Span;
+use std::rc::Rc;
+
+#[derive(Clone, Debug)]
+pub struct Program {
+    pub body: Vec<Stmt>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub stmts: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BurnClass {
+    /// Executes in `run`, is simulated in `dry-run`.
+    Normal,
+    /// Never executes: effects are recorded as intents only.
+    Unlit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AssignOp {
+    Set,
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+#[derive(Clone, Debug)]
+pub enum AssignTarget {
+    Var(String),
+    Index { object: Expr, index: Expr },
+    Member { object: Expr, name: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct FnDecl {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Rc<Block>,
+    pub span: Span,
+}
+
+/// `chain name { step, step, ... }`: an ordered list of sticks to light.
+#[derive(Clone, Debug)]
+pub struct ChainDecl {
+    pub name: String,
+    pub steps: Vec<Expr>,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum Stmt {
+    /// `roll x = e` (mutable) or `stick x = e` (immutable).
+    Declare {
+        name: String,
+        mutable: bool,
+        value: Expr,
+        span: Span,
+    },
+    Assign {
+        target: AssignTarget,
+        op: AssignOp,
+        value: Expr,
+        span: Span,
+    },
+    Pull(FnDecl),
+    Chain(ChainDecl),
+    Snuff {
+        value: Option<Expr>,
+        span: Span,
+    },
+    Exhale {
+        values: Vec<Expr>,
+        span: Span,
+    },
+    Cough {
+        value: Expr,
+        span: Span,
+    },
+    If {
+        branches: Vec<(Expr, Block)>,
+        otherwise: Option<Block>,
+        span: Span,
+    },
+    While {
+        cond: Expr,
+        body: Block,
+        span: Span,
+    },
+    For {
+        var: String,
+        iter: Expr,
+        body: Block,
+        span: Span,
+    },
+    Break(Span),
+    Continue(Span),
+    Try {
+        body: Block,
+        catch_var: Option<String>,
+        handler: Block,
+        span: Span,
+    },
+    Burn {
+        class: BurnClass,
+        body: Block,
+        span: Span,
+    },
+    Expr(Expr),
+}
+
+impl Stmt {
+    pub fn span(&self) -> Span {
+        match self {
+            Stmt::Declare { span, .. }
+            | Stmt::Assign { span, .. }
+            | Stmt::Snuff { span, .. }
+            | Stmt::Exhale { span, .. }
+            | Stmt::Cough { span, .. }
+            | Stmt::If { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::For { span, .. }
+            | Stmt::Try { span, .. }
+            | Stmt::Burn { span, .. } => *span,
+            Stmt::Pull(f) => f.span,
+            Stmt::Chain(c) => c.span,
+            Stmt::Break(s) | Stmt::Continue(s) => *s,
+            Stmt::Expr(e) => e.span,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Rem,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+    And,
+    Or,
+    Coalesce,
+    Range,
+}
+
+impl BinOp {
+    pub fn symbol(self) -> &'static str {
+        match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Rem => "%",
+            BinOp::Eq => "==",
+            BinOp::Ne => "!=",
+            BinOp::Lt => "<",
+            BinOp::Le => "<=",
+            BinOp::Gt => ">",
+            BinOp::Ge => ">=",
+            BinOp::And => "and",
+            BinOp::Or => "or",
+            BinOp::Coalesce => "??",
+            BinOp::Range => "..",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UnOp {
+    Neg,
+    Not,
+}
+
+/// A piece of an interpolated string.
+#[derive(Clone, Debug)]
+pub enum StrPiece {
+    Lit(String),
+    Expr(Expr),
+}
+
+/// A map literal key: `name: v`, `"text": v` or `[expr]: v`.
+#[derive(Clone, Debug)]
+pub enum MapKey {
+    Static(String),
+    Dynamic(Expr),
+}
+
+#[derive(Clone, Debug)]
+pub enum LambdaBody {
+    Expr(Rc<Expr>),
+    Block(Rc<Block>),
+}
+
+#[derive(Clone, Debug)]
+pub struct Expr {
+    pub kind: ExprKind,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub enum ExprKind {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Float(f64),
+    Str(Vec<StrPiece>),
+    Ident(String),
+    List(Vec<Expr>),
+    Map(Vec<(MapKey, Expr)>),
+    Unary {
+        op: UnOp,
+        expr: Box<Expr>,
+    },
+    Binary {
+        op: BinOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    /// `recv.name(args)` or `recv?.name(args)`.
+    Method {
+        receiver: Box<Expr>,
+        name: String,
+        args: Vec<Expr>,
+        safe: bool,
+    },
+    /// `obj.name` or `obj?.name`.
+    Member {
+        object: Box<Expr>,
+        name: String,
+        safe: bool,
+    },
+    Index {
+        object: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Lambda {
+        params: Vec<String>,
+        body: LambdaBody,
+    },
+    /// `lhs >> rhs`: call `rhs` with `lhs` prepended to its arguments.
+    Pipe {
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+}
+
+impl Expr {
+    pub fn new(kind: ExprKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+}

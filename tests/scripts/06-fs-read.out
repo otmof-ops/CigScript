@@ -1,0 +1,5 @@
+true true true 11
+["alpha", "beta"] ["alpha", "beta"]
+["data/a.txt", "data/sub", "data/t.csv"] ["data/sub/b.md"] ["data/a.txt"]
+[{n: "x", v: "1"}, {n: "y", v: "2"}]
+true
