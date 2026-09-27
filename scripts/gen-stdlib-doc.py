@@ -11,8 +11,20 @@ out = ["# Standard library reference", "",
        "Functions marked **burn** change the world and can only be called inside a `burn { }` block. "
        "`read` functions look at the world without changing it; `pure` functions touch nothing.", "",
        "Methods are called on a value (`\"x\".upper()`, `list.map(f)`, `map.has(\"k\")`); the receiver is not counted in the arity column.", ""]
+INTROS = {
+    "proc": "**Hops.** `proc.run` crosses a process boundary (a *hop*, in the lexicon). The kernel cannot see inside a hop, "
+            "so it is journaled as **irreversible** and the plan says so out loud; never a shell, both streams captured "
+            "without deadlocking, a timeout by default. The exit-code contract (`ok: [0, 1]`) and the four kinds of no "
+            "mapped to exit codes land with hop resilience (`HAMMER.md`, section 4).",
+    "fs": "Reads are free; anything that changes a file is a **burn**, snapshotted before and put back by `cig unburn`. "
+          "Symlinks are seen as links (`fs.exists` is true for a dangling one) and restored as links.",
+    "env": "Reading the environment is free; setting or unsetting it is a burn, journaled as irreversible because the "
+           "kernel cannot restore another process's view of it.",
+}
 for group in data["library"]:
     out.append(f"## {group['group']}"); out.append("")
+    if group["group"] in INTROS:
+        out.append(INTROS[group["group"]]); out.append("")
     out.append("| function | args | effect |"); out.append("|---|---|---|")
     for f in group["functions"]:
         lo, hi = f["min_args"], f["max_args"]

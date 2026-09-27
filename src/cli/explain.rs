@@ -119,12 +119,21 @@ fn page(ctx: &Ctx, e: &Code) {
         );
     }
     outln!();
-    outln!(
-        "  {} {}  {}",
-        ctx.yellow("kind of no:"),
-        no.hear,
-        ctx.dim(&format!("({}; {})", no.whose, no.manual))
-    );
+    if ctx.plain {
+        outln!(
+            "  {} {}  {}",
+            ctx.yellow("kind of no:"),
+            no.manual,
+            ctx.dim(&format!("({})", no.whose))
+        );
+    } else {
+        outln!(
+            "  {} {}  {}",
+            ctx.yellow("kind of no:"),
+            no.hear,
+            ctx.dim(&format!("({}; {})", no.whose, no.manual))
+        );
+    }
     outln!();
     outln!("  {}", e.meaning);
     outln!();
@@ -138,6 +147,12 @@ fn page(ctx: &Ctx, e: &Code) {
         );
         for (i, c) in e.causes.iter().enumerate() {
             match c.no.as_deref().and_then(cigscript::errors::lookup_no) {
+                Some(n) if ctx.plain => outln!(
+                    "  {}. {}  {}",
+                    i + 1,
+                    c.why,
+                    ctx.dim(&format!("({})", n.manual))
+                ),
                 Some(n) => outln!(
                     "  {}. {}  {}",
                     i + 1,

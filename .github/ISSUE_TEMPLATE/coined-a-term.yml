@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: Apache-2.0
+name: Coined a term
+description: A word for one of the lexicon's gaps, or a new one. The manual's name is required; the joke is the mnemonic, the real name is the receipt.
+title: "term: "
+labels: ["coined-a-term"]
+body:
+  - type: input
+    id: word
+    attributes:
+      label: Your word
+      placeholder: the bloke who says "not me, but him over there"
+    validations:
+      required: true
+  - type: textarea
+    id: meaning
+    attributes:
+      label: What it means
+      description: By what it feels like. It has to map to exactly one real mechanism, and it has to work said out loud in a hallway.
+    validations:
+      required: true
+  - type: input
+    id: manual
+    attributes:
+      label: The manual's name
+      description: What a vendor forum or a kernel bug tracker calls it. Required; a term without one is a tweet, not a doc.
+      placeholder: 301/302 redirect; a proxy
+    validations:
+      required: true
+  - type: dropdown
+    id: section
+    attributes:
+      label: Where it goes in docs/LEXICON.md
+      options:
+        - The language
+        - The CLI
+        - The kernel
+        - Composition
+        - Errors and diagnostics
+        - Process words
+        - Hardware and firmware
+        - The OS
+        - Scrounging a ciggy
+        - Fibre
+        - A gap listed at the bottom
+    validations:
+      required: true

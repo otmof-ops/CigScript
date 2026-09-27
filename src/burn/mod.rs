@@ -207,7 +207,7 @@ impl Kernel {
         self.journal.record(self.seq, op).map_err(|e| {
             burn_error(format!("could not journal the burn: {e}"))
                 .code("E702")
-                .with_hint("nothing was changed; the effect is refused when it cannot be journaled")
+                .with_hint("free space or fix permissions under ~/.cigscript (CIGSCRIPT_HOME), then run again; nothing was changed")
         })?;
         Ok(Decision::Execute)
     }

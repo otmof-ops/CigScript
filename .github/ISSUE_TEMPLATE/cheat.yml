@@ -1,0 +1,53 @@
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: Apache-2.0
+name: A cheat that worked
+description: The kernel lied about what it can undo, lost a file, or said "aww yea" when it should have said no.
+title: "cheat: "
+labels: ["cheat"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Nobody's on trial. A good report has four things; the rest is optional.
+        `cig report <run>` bundles most of it, redacted (home paths become `~`,
+        secret-shaped values are removed, file contents are never included).
+        Read the bundle before you attach it.
+  - type: textarea
+    id: script
+    attributes:
+      label: The script
+      description: The smallest script that still does it.
+      render: cig
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: The command you ran
+      placeholder: cig run --dry-run tidy.cig -- ~/Downloads
+    validations:
+      required: true
+  - type: textarea
+    id: plan
+    attributes:
+      label: What the plan (or the run) said
+      description: The dry-run plan, the receipt, the diagnostic, doctor's lines. Paste, don't summarise.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened
+      description: What you expected, what you found, and the run id from `cig runs`. Attach `cig report <run>` if you can.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: cig --version and platform
+      placeholder: cig 1.0.0, Linux x86_64
+  - type: markdown
+    attributes:
+      value: |
+        What you get back: a fix, a regression test named after the cheat, and a row on the wall.

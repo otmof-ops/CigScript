@@ -1,0 +1,7 @@
+error[E303 check]: fs.rm changes the world, so it must be inside a burn block
+  --> e303-outside-burn.cig:2:1
+  |
+2 | fs.rm("x")
+  | ^^^^^^^^^^
+  = hint: wrap it: burn { fs.rm(...) }
+  = explain: cig explain E303

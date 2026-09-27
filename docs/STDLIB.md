@@ -28,6 +28,8 @@ Methods are called on a value (`"x".upper()`, `list.map(f)`, `map.has("k")`); th
 
 ## fs
 
+Reads are free; anything that changes a file is a **burn**, snapshotted before and put back by `cig unburn`. Symlinks are seen as links (`fs.exists` is true for a dangling one) and restored as links.
+
 | function | args | effect |
 |---|---|---|
 | `fs.read_text` | 1 | read |
@@ -86,6 +88,8 @@ Methods are called on a value (`"x".upper()`, `list.map(f)`, `map.has("k")`); th
 
 ## proc
 
+**Hops.** `proc.run` crosses a process boundary (a *hop*, in the lexicon). The kernel cannot see inside a hop, so it is journaled as **irreversible** and the plan says so out loud; never a shell, both streams captured without deadlocking, a timeout by default. The exit-code contract (`ok: [0, 1]`) and the four kinds of no mapped to exit codes land with hop resilience (`HAMMER.md`, section 4).
+
 | function | args | effect |
 |---|---|---|
 | `proc.run` | 1-3 | **burn** |
@@ -124,6 +128,8 @@ Methods are called on a value (`"x".upper()`, `list.map(f)`, `map.has("k")`); th
 | `math.clamp` | 3 | pure |
 
 ## env
+
+Reading the environment is free; setting or unsetting it is a burn, journaled as irreversible because the kernel cannot restore another process's view of it.
 
 | function | args | effect |
 |---|---|---|

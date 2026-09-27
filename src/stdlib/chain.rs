@@ -54,7 +54,7 @@ impl Options {
                         return Err(runtime(format!("light: unknown option `{other}`"))
                             .at(span)
                             .with_hint(
-                                "options are continue_on_error, retries, retry_delay_ms, quiet",
+                                "use one of continue_on_error, retries, retry_delay_ms, quiet",
                             ))
                     }
                 }

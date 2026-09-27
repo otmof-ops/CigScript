@@ -74,6 +74,25 @@ seam; the package's manifest carries the state of each deliverable.
 - Diagnostics carry a `subject` field in `--json`: the path, program or run
   id the message is about.
 - `cig check --deny-warnings` for CI: exit 2 when there are warnings.
+- **The wall, and the invitation to break it.** The README's "Break it"
+  section and the wall: every cheat tried so far, what happened, and the
+  test named after it; `tests/docs.rs` refuses a row whose test does not
+  exist, and `tests/wall.rs` holds the rows nothing else covered.
+- **`cig report <run>`: the bundle you attach.** One redacted JSON file
+  (home paths `~`, secret-shaped values removed, file contents never
+  included) with the run, the journal and its before-states, the intents,
+  the diagnostic, doctor's diagnosis run again, and the install facts. The
+  bug that does not crash is now as easy to send as a panic.
+- Issue templates for a cheat that worked (four fields) and a coined term
+  (the manual's name required), a pull-request template that asks for the
+  test named after the cheat, and the `cheat` and `coined-a-term` labels.
+- **The voice, everywhere.** The branding statement and the four kinds of
+  no on the README, a hallway column in the lexicon table, the tone
+  section in `docs/DESIGN.md`, hallway names with the manual's word attached
+  in `BURN.md`, `LANGUAGE.md`, `CHAINS.md`, `STDLIB.md` (hops) and the CLI
+  `--help` (`unburn: put the world back the way it was, newest op first
+  (rollback)`). Hints reshaped to what to type next where they described
+  the problem instead. `docs/LEXICON.md` is the source of truth.
 - The usage layer carries its codes: `E801` cannot read script, `E802` state
   directory unavailable, `E803` no such run, and `E805` (no `gh` or `curl` at
   all) is told apart from `E806` (the transport failed).

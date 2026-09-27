@@ -1,0 +1,9 @@
+error[E301 check]: unknown name `cuont`
+  --> e301-typo.cig:3:8
+  |
+3 | exhale cuont
+  |        ^^^^^
+  = hint: did you mean `count`?
+  = explain: cig explain E301
+  = doctor: I think a typo in the name, because I checked the names in scope, ranked by edit distance from the one used and found the closest name in scope is `count`.
+  = fix: use the suggested name

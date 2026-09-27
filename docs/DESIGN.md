@@ -121,6 +121,35 @@ dependency preflight, and a licensing set decided from the Codex law store
 rather than from habit. The kernel did not change; every one of those
 features sits beside it.
 
+## The tone
+
+Every other tool's errors put you on trial. The computer that walked over to
+ask for something isn't *bad* about it; it's just very accusatory about why
+it hasn't got what it wanted, and it reports every failure as if you
+personally did it, whoever's fault it actually was. Every stack trace ever.
+And the thing that said no is a smug bastard about it: *"nar mate, nar, I've
+never seen any ciggies over HERE before,"* with total confidence and zero
+help, as if what you asked for had never existed anywhere. Note the HERE: it
+tells you it's the wrong place without telling you the right one. A bare
+`404`. `No such file or directory` and nothing else.
+
+CigScript's diagnostics are built to be the opposite of both, and the
+lexicon (`docs/LEXICON.md`) is where that is written down. *Don't see any
+cigarettes* is the tool admitting its own eyes are covered, not an
+accusation. The hint underneath is someone pointing: what to type next, not
+what went wrong. When it says no it says which of the four kinds of no it
+is (wrong address, never heard of you, these are mine, don't have any), and
+doctor's one permitted sentence, *I think X because I checked Y and found
+Z*, is the un-smug version of no: a guess is labelled a guess, and every
+claim comes with what was checked. Nobody is on trial, and nobody gets to be
+a smug bastard, including the author, which is why the README invites people
+to break it and promises a row on the wall rather than a defence.
+
+`--plain` exists for the classroom, the CI log and the procurement person: a
+subtraction, never a translation. Same codes, same spans, same hints, same
+evidence; the catchphrases removed and the manual's name put where the
+hallway phrase was.
+
 ## Authorship
 
 CigScript was written with AI assistance (Claude, driving the HIVEMIND

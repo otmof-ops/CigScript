@@ -1,0 +1,9 @@
+error[E202 syntax]: this `{` is never closed
+  --> e202-unclosed.cig:2:9
+  |
+2 | if true {
+  |         ^
+  = hint: add a matching `}`
+  = explain: cig explain E202
+  = doctor: I think a block opened and never closed, because I checked the count of { and } per line, to find the block that never closed and found the `{` on line 2 never closes.
+  = fix: add `}` at the end of that block
