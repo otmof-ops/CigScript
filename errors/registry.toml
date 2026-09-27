@@ -1145,7 +1145,7 @@ meaning = "A rollback was refused because a file the run touched has been change
 fix = "look at the file, then pass --force if the old content is what you want"
 no = "these-are-mine"
 arises = ["unburn"]
-tags = ["kernel", "planned"]
+tags = ["kernel"]
 since = "1.1.0"
 related = ["E705", "E703"]
 [[code.cause]]

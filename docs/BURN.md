@@ -164,8 +164,13 @@ rollback report ("cannot undo"). What the label covers:
   performed them itself; it does not confine untrusted code.
 - **No rollback of what processes did.** `proc.run("rm", ...)` is journaled as
   irreversible. Prefer `fs.rm`, which the kernel can undo.
-- **No cross-run consistency.** Rolling back an old run after later runs
-  changed the same files restores the old snapshots over the newer content.
-  `cig unburn --dry-run` shows what would be restored first.
+- **Cross-run consistency is checked, not guaranteed.** When a run finishes,
+  the kernel records what it left behind (`after.json`: the state of every
+  path it touched). `cig unburn` compares that with the disk now and refuses
+  with `E704` when anything changed since, naming the later run that touched
+  the path when there is one, so runs are unburned newest first; `--force`
+  restores over the newer content anyway. `cig unburn --dry-run` prints the
+  plan with a *changed since* column. A run that predates after-state records
+  says "unknown" and is allowed.
 - **Snapshots are plain copies**, unencrypted, under your home directory. Prune
   them with `cig runs --prune` if they hold anything sensitive.

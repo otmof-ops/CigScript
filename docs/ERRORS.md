@@ -922,7 +922,7 @@ the burn kernel and its journal (write-ahead log).
 | [`E701`](#e701-effect-outside-burn) | effect outside burn | these are MY ciggies | wrap the call, or the call to the function that makes it, in burn { } |
 | [`E702`](#e702-journal-failure) | journal failure | one of the four; the message says which | check space and permissions under ~/.cigscript (or CIGSCRIPT_HOME); `cig doctor` reports both |
 | [`E703`](#e703-snapshot-missing) | snapshot missing | don't have any over here | `cig unburn <id> --dry-run` lists each problem; --force restores what can be and lists the rest |
-| [`E704`](#e704-file-changed-since-the-run) | file changed since the run *(planned)* | these are MY ciggies | look at the file, then pass --force if the old content is what you want |
+| [`E704`](#e704-file-changed-since-the-run) | file changed since the run | these are MY ciggies | look at the file, then pass --force if the old content is what you want |
 | [`E705`](#e705-already-rolled-back) | already rolled back | these are MY ciggies | nothing, the world is already back; pass --force only if you mean to restore the old snapshots again |
 | [`E706`](#e706-interrupted-run) | interrupted run | not one of the four | `cig unburn <id>` restores what the run had burned; `cig runs <id>` shows the journal |
 
@@ -998,7 +998,7 @@ Related: `E705`, `E704`.
 
 ### E704 file changed since the run
 
-*burn · since 1.1.0 · arises in unburn · planned*
+*burn · since 1.1.0 · arises in unburn*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 

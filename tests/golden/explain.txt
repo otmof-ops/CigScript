@@ -71,7 +71,7 @@ E700-E749  the burn kernel and its journal (write-ahead log)
   E701  effect outside burn                burn
   E702  journal failure                    burn
   E703  snapshot missing                   burn
-  E704  file changed since the run         burn  (planned)
+  E704  file changed since the run         burn
   E705  already rolled back                burn
   E706  interrupted run                    burn
 
@@ -1024,7 +1024,6 @@ E703 snapshot missing  (burn, kernel family, since 1.1.0)
 
 ======== E704 ========
 E704 file changed since the run  (burn, kernel family, since 1.1.0)
-  planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 

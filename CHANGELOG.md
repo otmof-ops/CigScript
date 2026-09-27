@@ -52,6 +52,12 @@ seam; the package's manifest carries the state of each deliverable.
   `*` on strings, padding, and `fs.read_text`/`fs.read_lines`/`json.load`/
   `csv.read` of an oversized file are refused with `E514` instead of aborting
   the process.
+- **Unburn knows what changed since.** A finished run records the state of
+  every path it touched (`after.json`); `cig unburn` compares it with the
+  disk and refuses with `E704` when a file changed since, naming the later
+  run that touched it when there is one, so runs are put back newest first.
+  `--force` overrides; `--dry-run` shows a *changed since* column beside each
+  entry; a run from before after-state records says "unknown" and is allowed.
 - `cig unburn` checks every snapshot and moved file before touching anything
   (`E703`), refuses a second rollback of the same run (`E705`), and takes
   `--force` for both; `--dry-run` lists the problems it found.

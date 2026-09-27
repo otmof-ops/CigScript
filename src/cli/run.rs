@@ -363,6 +363,14 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             record.diagnostic = Some(v);
         }
         record.finish(status, error);
+        if !record.rolled_back && !interp.kernel.journal().is_empty() {
+            if let Err(e) = interp.kernel.journal().write_after_state() {
+                eprintln!(
+                    "{} could not record the run's after-state: {e}",
+                    ctx.yellow("warning:")
+                );
+            }
+        }
         if let Err(e) = record.save() {
             eprintln!(
                 "{} could not finish the run record: {e}",

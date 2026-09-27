@@ -4,7 +4,7 @@
 //! `cig runs` and `cig unburn`.
 
 use super::{exit, Ctx};
-use cigscript::burn::journal::Journal;
+use cigscript::burn::journal::{Before, Journal};
 use cigscript::burn::runs::{self, RunRecord};
 
 pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>) -> i32 {
@@ -208,6 +208,53 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         );
     }
     let problems = journal.verify();
+    let changed = journal.changed_since();
+    // Who changed it since: a later run that touched the same path, if any.
+    let later_runs: Vec<runs::RunRecord> = runs::list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.id > rec.id && r.id != rec.id)
+        .collect();
+    let by_run = |path: &std::path::Path| -> Option<String> {
+        later_runs.iter().find_map(|r| {
+            Journal::load(&r.dir()).ok().and_then(|j| {
+                j.touched_paths()
+                    .iter()
+                    .any(|(p, _)| p == path)
+                    .then(|| r.id.clone())
+            })
+        })
+    };
+    if changed.known && !changed.changes.is_empty() && !dry_run {
+        if !force {
+            eprintln!(
+                "{} cannot roll back {}: {} path{} changed since the run finished; restoring would overwrite that newer content",
+                ctx.red("error[E704 burn]:"),
+                rec.id,
+                changed.changes.len(),
+                if changed.changes.len() == 1 { "" } else { "s" }
+            );
+            for c in &changed.changes {
+                let who = by_run(&c.path)
+                    .map(|id| format!("; changed by run {id}, unburn that one first"))
+                    .unwrap_or_default();
+                eprintln!(
+                    "  - {}: the run left {}, now {}{who}",
+                    c.path.display(),
+                    c.was.describe(),
+                    c.now.describe()
+                );
+            }
+            eprintln!("  = hint: look at the files, then pass --force if the old content is what you want; cig unburn {} --dry-run shows the changed-since column", rec.id);
+            eprintln!("  = explain: cig explain E704");
+            return exit::SCRIPT_ERROR;
+        }
+        eprintln!(
+            "{} {} path(s) changed since the run; --force given, restoring over them",
+            ctx.yellow("note:"),
+            changed.changes.len()
+        );
+    }
     if !problems.is_empty() && !dry_run {
         if !force {
             eprintln!(
@@ -249,13 +296,55 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
                 rec.id
             ))
         );
+        if !changed.known {
+            outln!(
+                "  {} this run predates after-state records; changed-since is unknown",
+                ctx.dim("note:")
+            );
+        } else if !changed.changes.is_empty() {
+            outln!(
+                "  {} {} path{} changed since the run finished; a real unburn would refuse [E704] unless --force",
+                ctx.yellow("note:"),
+                changed.changes.len(),
+                if changed.changes.len() == 1 { "" } else { "s" }
+            );
+        }
         for e in journal.entries().iter().rev() {
             let tag = if e.reversible {
                 "restore "
             } else {
                 "cannot undo"
             };
-            outln!("  {:>4}  {tag}  {}", e.seq, e.op.describe());
+            let touched: Vec<&std::path::PathBuf> = e
+                .before
+                .iter()
+                .flat_map(|b| {
+                    let mut v = vec![&b.path];
+                    if let Before::Moved { to } = &b.before {
+                        v.push(to);
+                    }
+                    v
+                })
+                .collect();
+            let flagged: Vec<String> = changed
+                .changes
+                .iter()
+                .filter(|c| touched.contains(&&c.path))
+                .map(|c| {
+                    let who = by_run(&c.path)
+                        .map(|id| format!(" by run {id}"))
+                        .unwrap_or_default();
+                    format!("{}{who}", c.path.display())
+                })
+                .collect();
+            let column = if !changed.known {
+                ctx.dim("  changed since: unknown")
+            } else if flagged.is_empty() {
+                ctx.dim("  unchanged since")
+            } else {
+                ctx.yellow(&format!("  changed since: {}", flagged.join(", ")))
+            };
+            outln!("  {:>4}  {tag}  {}{column}", e.seq, e.op.describe());
         }
         return if problems.is_empty() {
             exit::OK
