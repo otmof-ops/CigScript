@@ -329,3 +329,59 @@ fn the_plan_tags_ops_with_the_chain_and_step_that_own_them() {
         "{err}"
     );
 }
+
+#[test]
+fn a_symlink_inside_the_pack_pointing_outside_does_not_let_a_write_escape() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("build")).unwrap();
+    fs::create_dir_all(sb.path().join("elsewhere")).unwrap();
+    symlink(sb.path().join("elsewhere"), sb.path().join("build/link")).unwrap();
+    // A literal path: the checker resolves the link before anything runs.
+    sb.write(
+        "s.cig",
+        "pack { \"./build\" }\nburn {\n  fs.write_text(\"build/link/evil.txt\", \"x\")\n}\n",
+    );
+    let err = sb.stderr(&["run", "s.cig"]);
+    assert!(
+        err.contains("E750") && err.contains("outside the pack"),
+        "{err}"
+    );
+    assert!(!sb.exists("elsewhere/evil.txt"));
+    // A path built at run time: the kernel resolves it and says where it lands.
+    sb.write(
+        "s.cig",
+        "pack { \"./build\" }\nburn {\n  fs.write_text(\"build/\" + \"link/evil.txt\", \"x\")\n}\n",
+    );
+    let err = sb.stderr(&["run", "s.cig"]);
+    assert!(
+        err.contains("outside the pack") && err.contains("resolves to <sb>/elsewhere/evil.txt"),
+        "{err}"
+    );
+    assert!(
+        !sb.exists("elsewhere/evil.txt"),
+        "the write escaped the pack through the link"
+    );
+}
+
+#[test]
+fn a_hop_writing_through_a_link_inside_the_pack_is_watched() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("build")).unwrap();
+    fs::create_dir_all(sb.path().join("elsewhere")).unwrap();
+    symlink(sb.path().join("elsewhere"), sb.path().join("build/link")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./build\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo hop > build/link/hop.txt\"])\n  cough \"x\"\n}\n",
+    );
+    let err = sb.stderr(&["run", "s.cig"]);
+    assert!(
+        err.contains("hop created") || err.contains("build/link/hop.txt"),
+        "{err}"
+    );
+    assert!(
+        !sb.exists("elsewhere/hop.txt"),
+        "the file the hop wrote through the link was not removed on rollback: {err}"
+    );
+}

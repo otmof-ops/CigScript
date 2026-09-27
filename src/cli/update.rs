@@ -75,7 +75,12 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
         return exit::OK;
     }
     if ordering == Ordering::Less && !allow_downgrade {
-        eprintln!("refusing to downgrade; pass --allow-downgrade if you really want {target}");
+        eprintln!(
+            "{} refusing to downgrade from {current} to {target}",
+            ctx.red("error[E806 usage]:")
+        );
+        eprintln!("  = hint: pass --allow-downgrade if you really want {target}");
+        eprintln!("  = explain: cig explain E806");
         return exit::USAGE;
     }
 

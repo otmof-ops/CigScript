@@ -383,6 +383,40 @@ for.
 | a chain that lights itself through another chain | **ran until the step budget**; now `E604` with the loop | fixed 1.1.0 | `fold_checks_refuse_with_codes` |
 | retry a chain step that already pushed | **would have pushed twice**; now not retried unless `retry_irreversible`, and file-only attempts are rolled back before the retry | 1.1.0 | `retries_are_per_hop_and_idempotence_aware` |
 | dry-run reads a file a step just pretended to delete | **a misleading not-found**; now `E520`, naming the op that removed it | fixed 1.1.0 | `dry_run_reports_reads_of_ghost_removed_paths_as_e520_and_missing_sources_as_e508` |
+| your own file, added to a directory the run created, then `unburn` | **removed the directory with your file in it**; now directories are fingerprinted in `after.json` and `E704` refuses | fixed 1.1.1 | `a_file_added_to_a_run_created_directory_is_not_lost_by_unburn` |
+| a symlink inside the pack that points outside | **the write landed outside**; now the pack check resolves links first and the refusal says where it lands | fixed 1.1.1 | `a_symlink_inside_the_pack_pointing_outside_does_not_let_a_write_escape` |
+| a journal whose last line a crash cut short | **unloadable; nothing could be unburned**; now the entries before the cut are restored and the cut is reported | fixed 1.1.1 | `a_journal_cut_short_by_a_crash_still_unburns_what_came_before_it` |
+| 8 MB through `stdin` to a child that echoes it back | **deadlocked**; now stdin is written beside the readers | fixed 1.1.1 | `large_stdin_does_not_deadlock` |
+| Ctrl-C while a hop runs | **the child kept running, orphaned in its own process group**; now SIGINT, SIGTERM and SIGHUP reach every live child group first | fixed 1.1.1 | `a_signal_to_cig_reaches_the_child_process_group` |
+| `yes` into `head -1` through `proc.pipe` | **`E553`, "stage 1 exited -1"**; now a consumer closing early is not the producer's failure, and `.stages` says `closed_early` | fixed 1.1.1 | `an_upstream_stage_closed_early_by_its_consumer_is_not_a_failure` |
+| a `cwd` that does not exist | **`E551`, blaming the command**; now `E550` names the directory | fixed 1.1.1 | `a_missing_cwd_is_e550_naming_the_directory_not_the_command` |
+| 50,000 nested brackets | **stack overflow, abort**; now `E208` at 5,000 levels, and the 100 kB line is windowed around the caret | fixed 1.1.1 | `fifty_thousand_nested_brackets_are_a_diagnostic_not_a_stack_overflow` |
+| a list that contains itself, printed | **stack overflow, abort**; now `…` at depth 512 | fixed 1.1.1 | `a_list_that_contains_itself_prints_without_overflowing` |
+| a UTF-8 byte-order mark at the top of the file | **`E103` unexpected character**; now skipped | fixed 1.1.1 | `a_utf8_byte_order_mark_is_skipped` |
+| `fs.cp("a.txt", "a.txt")` | **truncated the file to 0 bytes and reported success**; now `E508`, nothing changed, same for `fs.mv` and a destination inside the source | fixed 1.1.1 | `a_copy_or_move_onto_itself_or_into_itself_is_refused` |
+| `fs.mv` the OS refused (into its own subdirectory, onto a non-empty directory), then rollback | **"moved back" a file that never left, replacing it**; now the failed move is marked undone and the source is untouched | fixed 1.1.1 | `a_move_the_os_refused_is_marked_undone_and_never_moved_back` |
+| a move across filesystems, then rollback | **the move back failed and the only copy was removed**; now copied back, and the only copy is kept when that fails | fixed 1.1.1 | `a_cross_device_move_rolls_back_by_copying` |
+| write through a file with a second hard link, then rollback | **the other name kept the run's content**; now restored in place so every link sees the old bytes | fixed 1.1.1 | `a_hardlinked_file_is_restored_in_place` |
+| a setuid file and a sticky directory, removed, then rollback | **came back as 0755 and 0775**; now the bits survive the snapshot and the restore | fixed 1.1.1 | `setuid_and_sticky_bits_survive_rollback` |
+| `fs.rm` on a named pipe | **hung forever in the snapshot**; now refused, `E702` | fixed 1.1.1 | `a_named_pipe_is_refused_not_hung` |
+| a rollback that could not restore everything | **status `rolled_back`, the failures nowhere**; now `rollback_incomplete`, listed by `cig runs <id>` | fixed 1.1.1 | `rollback_failures_are_recorded_on_the_run` |
+| `chmod 500` the run directory, then `unburn` twice | **the second unburn restored again**; now refused before touching anything unless forced | fixed 1.1.1 | `a_read_only_run_directory_refuses_unburn_until_forced` |
+| damage `run.json`, or rename the run's directory | **the run vanished; its journal was unreachable**; now listed as `damaged`, found where it is, unburnable | fixed 1.1.1 | `a_damaged_or_renamed_run_record_still_lists_and_unburns` |
+| `burn (s) { proc.run(...); cough } unburn { ... }` | **the hop was labelled `compensated` though no compensation was ever recorded**; now stamped only when the block completes | fixed 1.1.1 | `a_burn_block_that_fails_half_way_leaves_its_hops_honestly_irreversible` |
+| a compensation that reads `args`, run weeks later by `cig unburn` | **unknown name `args`**; now the run's arguments are there | fixed 1.1.1 | `a_compensation_that_reads_args_runs_on_a_deferred_unburn` |
+| a hop writing through a link inside the pack | **invisible to hop watching**; now the link is followed and the write is journaled | fixed 1.1.1 | `a_hop_writing_through_a_link_inside_the_pack_is_watched` |
+| dry-run: write through `link/`, read through `real/` | **not found**; now one ghost entry, and every directory a nested write creates is listed | fixed 1.1.1 | `the_ghost_resolves_symlinked_directories_and_lists_created_ancestors` |
+| `pack { "" }` | **silently meant the whole working directory**; now `E755` | fixed 1.1.1 | `an_empty_pack_root_is_refused` |
+| `-9223372036854775808 / -1` | **crashed (E901)**; now `E503` | fixed 1.1.1 | `i64_min_divided_by_minus_one_is_a_diagnostic` |
+| `json.stringify` of a list that contains itself; `==` on two of them | **stack overflow, abort**; now a diagnostic, and the comparison ends | fixed 1.1.1 | `a_value_that_contains_itself_is_refused_by_json_and_compared_without_looping` |
+| `exhale 1e16`, `int(1e300)` | **printed `10000000000000000` as if an int; saturated to `9223372036854775807`**; now `1e16`, and `E503` | fixed 1.1.1 | `floats_stay_floats_past_sixteen_digits_and_int_refuses_what_does_not_fit` |
+| `roll args = ...`, and a redeclaration under `--no-check` | **passed `cig check`, then `E306 runtime` exit 1**; now shadowable, and a check-family error with exit 2 | fixed 1.1.1 | `a_redeclaration_at_run_time_is_a_check_error_and_args_is_shadowable` |
+| a string whose closing quote sits on the next line | **silently a two-line string**; now `E101` on the line it opened | fixed 1.1.1 | `a_string_that_runs_past_its_line_is_e101` |
+| 300,000 chained `+ 1`; `CIG_MAX_STEPS=abc` | **stack overflow; silently ignored**; now `E208` past 10,000, and `E800` | fixed 1.1.1 | `chained_operators_are_capped_and_a_bad_step_budget_is_a_usage_error` |
+| `{ok: [0], check: false}` versus `{check: false, ok: [0]}` | **the contract depended on key order**; now `ok` wins either way | fixed 1.1.1 | `ok_and_check_resolve_the_same_whatever_their_order` |
+| `proc.run("/tmp")`, `proc.kv` of `export FOO=bar`, `proc.which("bin/ls")` | **"permission denied"; key `export FOO`; null**; now named as a directory, `FOO`, the path | fixed 1.1.1 | `a_directory_as_the_command_export_lines_and_a_path_to_which` |
+| `env.set` in a dry-run plan | **labelled reversible**, against the docs; now irreversible, which is what the kernel can do about it | fixed 1.1.1 | `env_changes_are_labelled_irreversible_in_the_plan` |
+| `cig run /dev/zero`; `cig frobnicate` | **read forever; exit 2 (a script error's code)**; now `E801`, and exit 3 | fixed 1.1.1 | `a_device_as_the_script_is_refused_and_a_bad_invocation_exits_3` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

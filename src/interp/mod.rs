@@ -21,6 +21,8 @@ use std::path::Path;
 pub const MAX_CALL_DEPTH: usize = 4000;
 
 pub struct Interp {
+    /// Builtins and `args`: what a top-level `roll` may shadow.
+    prelude: Env,
     pub globals: Env,
     pub kernel: Kernel,
     pub out: Box<dyn Write>,
@@ -61,6 +63,7 @@ impl Interp {
         }
         let globals = Scope::child(&prelude);
         Self {
+            prelude,
             globals,
             kernel,
             out: Box::new(std::io::stdout()),
@@ -138,7 +141,9 @@ impl Interp {
     /// Expose the script's own arguments as `args`.
     pub fn set_args(&mut self, args: &[String]) {
         let list = Value::list(args.iter().map(Value::str).collect());
-        self.globals.force_declare("args", list, false);
+        // In the prelude, beside the builtins: a script may shadow it with
+        // its own `args`, as the checker allows.
+        self.prelude.force_declare("args", list, false);
     }
 
     pub fn in_burn(&self) -> bool {

@@ -109,9 +109,12 @@ impl Interp {
                 }));
                 if !env.declare(&decl.name, func, false) {
                     return Err(Signal::Error(
-                        runtime(format!("`{}` is already declared in this scope", decl.name))
-                            .code("E306")
-                            .at(decl.span),
+                        crate::diagnostics::check(format!(
+                            "`{}` is already declared in this scope",
+                            decl.name
+                        ))
+                        .code("E306")
+                        .at(decl.span),
                     ));
                 }
             }
@@ -135,15 +138,15 @@ impl Interp {
             } => {
                 let v = self.eval(value, env)?;
                 if !env.declare(name, v, *mutable) {
-                    return Err(
-                        runtime(format!("`{name}` is already declared in this scope"))
-                            .code("E306")
-                            .at(*span)
-                            .with_hint(format!(
-                                "assign to it with `{name} = ...`, or pick another name"
-                            ))
-                            .into(),
-                    );
+                    return Err(crate::diagnostics::check(format!(
+                        "`{name}` is already declared in this scope"
+                    ))
+                    .code("E306")
+                    .at(*span)
+                    .with_hint(format!(
+                        "assign to it with `{name} = ...`, or pick another name"
+                    ))
+                    .into());
                 }
                 Ok(())
             }
@@ -190,7 +193,7 @@ impl Interp {
                     steps,
                 }));
                 if !env.declare(&decl.name, chain, false) {
-                    return Err(runtime(format!(
+                    return Err(crate::diagnostics::check(format!(
                         "`{}` is already declared in this scope",
                         decl.name
                     ))
@@ -324,6 +327,13 @@ impl Interp {
                         .at(r.span)
                         .into());
                     };
+                    if text.trim().is_empty() {
+                        return Err(crate::diagnostics::burn("a pack root is empty")
+                            .code("E755")
+                            .at(r.span)
+                            .with_hint("name the directory the script may write in, pack { \"./build\" }; an empty root would mean the whole working directory")
+                            .into());
+                    }
                     roots.push(crate::burn::normalize_root(text));
                 }
                 self.kernel.set_pack(roots);
@@ -352,9 +362,11 @@ impl Interp {
                     self.kernel.enter_compensating();
                 }
                 let result = self.exec_block_in(&body.stmts, &scope);
-                if compensating {
-                    self.kernel.leave_compensating();
-                }
+                let mark = if compensating {
+                    self.kernel.leave_compensating()
+                } else {
+                    0
+                };
                 self.burn_depth -= 1;
                 if *class == BurnClass::Unlit {
                     self.unlit_depth -= 1;
@@ -366,12 +378,15 @@ impl Interp {
                         None => serde_json::Value::Null,
                     };
                     self.kernel
-                        .record_compensation(crate::burn::journal::Compensation {
-                            source: unburn_src.clone().unwrap_or_default(),
-                            state_name: state.clone(),
-                            state: state_json,
-                            line: unburn.as_ref().map(|b| b.span.line).unwrap_or(span.line),
-                        })
+                        .record_compensation(
+                            crate::burn::journal::Compensation {
+                                source: unburn_src.clone().unwrap_or_default(),
+                                state_name: state.clone(),
+                                state: state_json,
+                                line: unburn.as_ref().map(|b| b.span.line).unwrap_or(span.line),
+                            },
+                            mark,
+                        )
                         .map_err(|d| d.or_at(*span))?;
                 }
                 Ok(())
@@ -746,6 +761,11 @@ impl Interp {
             },
             BinOp::Div => match (&l, &r) {
                 (Int(_), Int(0)) => Err(runtime("division by zero").code("E502").at(span)),
+                // The one quotient that does not fit: `%` would overflow
+                // before `checked_div` got to say so.
+                (Int(i64::MIN), Int(-1)) => {
+                    Err(runtime("integer overflow in `/`").code("E503").at(span))
+                }
                 (Int(a), Int(b)) if a % b == 0 => a
                     .checked_div(*b)
                     .map(Int)

@@ -94,7 +94,7 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
     outln!(
         "  script    {}  (sha256 {})",
         rec.script,
-        &rec.script_sha256[..12]
+        &rec.script_sha256[..rec.script_sha256.len().min(12)]
     );
     if !rec.args.is_empty() {
         outln!("  args      {}", rec.args.join(" "));
@@ -112,6 +112,20 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
         rec.burns,
         rec.irreversible
     );
+    if !rec.rollback_failed.is_empty() {
+        outln!(
+            "  rollback  {} restore{} failed:",
+            rec.rollback_failed.len(),
+            if rec.rollback_failed.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+        for f in &rec.rollback_failed {
+            outln!("    {} {f}", ctx.red("failed"));
+        }
+    }
     outln!("  dir       {}", rec.dir().display());
     if let Some(j) = journal {
         outln!(
@@ -189,12 +203,25 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         Err(e) => {
             eprintln!(
                 "{} cannot load the journal for {}: {e}",
-                ctx.red("error:"),
+                ctx.red("error[E703 burn]:"),
                 rec.id
             );
-            return exit::USAGE;
+            eprintln!(
+                "  = hint: a line before the last is damaged; cig report {} bundles the journal for a bug report",
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E703");
+            return exit::SCRIPT_ERROR;
         }
     };
+    if journal.truncated() {
+        eprintln!(
+            "{} the journal's last line was cut short (a crash while appending); the {} entr{} before it loaded and can be restored",
+            ctx.yellow("note:"),
+            journal.len(),
+            if journal.len() == 1 { "y" } else { "ies" }
+        );
+    }
     if journal.is_empty() {
         eprintln!("{} burned nothing; there is nothing to unburn", rec.id);
         return exit::OK;
@@ -206,7 +233,18 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
                 ctx.red("error[E705 burn]:"),
                 rec.id
             );
-            eprintln!("  = hint: pass --force only if you mean to restore the old snapshots again");
+            if rec.rollback_failed.is_empty() {
+                eprintln!(
+                    "  = hint: pass --force only if you mean to restore the old snapshots again"
+                );
+            } else {
+                eprintln!(
+                    "  = hint: {} restore{} failed the first time (cig runs {} lists them); --force tries them again",
+                    rec.rollback_failed.len(),
+                    if rec.rollback_failed.len() == 1 { "" } else { "s" },
+                    rec.id
+                );
+            }
             eprintln!("  = explain: cig explain E705");
             return exit::SCRIPT_ERROR;
         }
@@ -215,6 +253,27 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             ctx.yellow("note:"),
             rec.id
         );
+    }
+    if !dry_run {
+        // The record must be writable before anything is restored: without
+        // it a second unburn could not be refused.
+        if let Err(e) = rec.save() {
+            if !force {
+                eprintln!(
+                    "{} cannot record the rollback in {}: {e}",
+                    ctx.red("error[E802 usage]:"),
+                    rec.dir().display()
+                );
+                eprintln!("  = hint: fix the permissions on that directory first, or pass --force to restore without a record; nothing was restored");
+                eprintln!("  = explain: cig explain E802");
+                return exit::USAGE;
+            }
+            eprintln!(
+                "{} cannot record the rollback in {}: {e}; --force given",
+                ctx.yellow("note:"),
+                rec.dir().display()
+            );
+        }
     }
     let problems = journal.verify();
     let changed = journal.changed_since();
@@ -369,8 +428,15 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     // journaled: they are the undo. They run from the run's directory.
     let kernel = cigscript::burn::Kernel::ephemeral(cigscript::burn::Mode::Run);
     let mut interp = cigscript::interp::Interp::new(kernel);
+    // The compensation sees the run's own arguments, as it did in the run.
+    interp.set_args(&rec.args);
     let mut entered = true;
-    if let Ok(dir) = std::env::current_dir() {
+    if rec.cwd.is_empty() {
+        eprintln!(
+            "{} the run's working directory is not recorded; relative paths are taken from here",
+            ctx.yellow("note:")
+        );
+    } else if let Ok(dir) = std::env::current_dir() {
         if rec.cwd != dir.to_string_lossy() && std::env::set_current_dir(&rec.cwd).is_err() {
             entered = false;
         }
@@ -397,7 +463,13 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     } else {
         "unburn_failed".to_string()
     };
-    let _ = rec.save();
+    if let Err(e) = rec.save() {
+        eprintln!(
+            "{} could not record the rollback in {}: {e}",
+            ctx.yellow("warning:"),
+            rec.dir().display()
+        );
+    }
     if report.clean() {
         exit::OK
     } else {
@@ -409,7 +481,7 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
 pub fn paint_action(ctx: &Ctx, label: &str) -> String {
     match label {
         "restored" | "compensated" => ctx.green(label),
-        "cannot undo" => ctx.yellow(label),
+        "cannot undo" | "kept" => ctx.yellow(label),
         "failed" => ctx.red(label),
         other => other.to_string(),
     }

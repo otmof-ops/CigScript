@@ -432,3 +432,144 @@ fn retries_are_per_hop_and_idempotence_aware() {
         "2 after the hop"
     );
 }
+
+#[test]
+fn large_stdin_does_not_deadlock() {
+    let sb = Sandbox::new();
+    // 8 MB in through stdin while the child echoes it straight back: writing
+    // all of stdin before reading stdout is the classic hang.
+    let (code, out, err) = sb.run(&burn(
+        "  stick big = \"x\".repeat(8000000)\n  stick r = proc.text(\"cat\", [], {stdin: big, timeout_ms: 60000})\n  exhale r.len()",
+    ));
+    assert_eq!((code, out.trim()), (0, "8000000"), "{err}");
+}
+
+#[test]
+fn a_missing_cwd_is_e550_naming_the_directory_not_the_command() {
+    let sb = Sandbox::new();
+    let (code, _, err) = sb.run(&burn("  proc.run(\"true\", [], {cwd: \"nope/here\"})"));
+    assert_eq!(code, 1);
+    assert!(
+        err.contains(
+            "error[E550 runtime]: proc.run: the working directory `nope/here` does not exist"
+        ),
+        "{err}"
+    );
+    assert!(!err.contains("E551"), "blamed the command: {err}");
+    sb.write("flat", "");
+    let (code, _, err) = sb.run(&burn("  proc.text(\"true\", [], {cwd: \"flat\"})"));
+    assert_eq!(code, 1);
+    assert!(err.contains("`flat` is not a directory"), "{err}");
+}
+
+#[test]
+fn an_upstream_stage_closed_early_by_its_consumer_is_not_a_failure() {
+    let sb = Sandbox::new();
+    // `yes | head -1`: yes dies of SIGPIPE because head stopped reading.
+    let (code, out, err) = sb.run(&burn(
+        "  stick r = proc.pipe([[\"yes\"], [\"head\", \"-1\"]], {timeout_ms: 60000})\n  exhale r.out.trim(), r.stages[0].closed_early, r.stages[0].signal, r.code",
+    ));
+    assert_eq!((code, out.trim()), (0, "y true 13 0"), "{err}");
+    // The consumer's own failure is still the failure, named at its stage.
+    let (code, _, err) = sb.run(&burn(
+        "  proc.pipe([[\"yes\"], [\"sh\", \"-c\", \"head -1 >/dev/null; exit 3\"]])",
+    ));
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("error[E553 runtime]: proc.pipe: stage 2") && err.contains("exited 3"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_signal_to_cig_reaches_the_child_process_group() {
+    let sb = Sandbox::new();
+    // The child sits in its own process group, where a terminal's Ctrl-C
+    // would never reach it.
+    let marker = format!("sleep 32.{}", std::process::id());
+    sb.write(
+        "s.cig",
+        &burn(&format!("  proc.run(\"sh\", [\"-c\", \"{marker}\"])")),
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args(["run", "s.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.path().join("home"))
+        .env("NO_COLOR", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn cig");
+    let mut running = false;
+    for _ in 0..100 {
+        if ps_has(&marker) {
+            running = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(running, "the child never started");
+    let pid = child.id().to_string();
+    assert!(Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .expect("kill")
+        .success());
+    let status = child.wait().expect("wait");
+    assert!(!status.success(), "cig should have died of the signal");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(
+        !ps_has(&marker),
+        "the child outlived cig's SIGINT: `{marker}` is still running"
+    );
+}
+
+#[test]
+fn ok_and_check_resolve_the_same_whatever_their_order() {
+    let sb = Sandbox::new();
+    for opts in [
+        "{ok: [0], check: false}",
+        "{check: false, ok: [0]}",
+        "{ok: [0], check: true}",
+        "{check: true, ok: [0]}",
+    ] {
+        let (code, _, err) = sb.run(&burn(&format!(
+            "  proc.run(\"sh\", [\"-c\", \"exit 5\"], {opts})"
+        )));
+        assert_eq!(code, 1, "{opts}: {err}");
+        assert!(err.contains("exited 5 (contract: 0)"), "{opts}: {err}");
+    }
+    for opts in ["{check: true, ok: [1]}", "{ok: [1], check: true}"] {
+        let (code, out, err) = sb.run(&burn(&format!(
+            "  exhale proc.run(\"sh\", [\"-c\", \"exit 1\"], {opts}).code"
+        )));
+        assert_eq!((code, out.trim()), (0, "1"), "{opts}: {err}");
+    }
+    let (code, _, err) = sb.run(&burn("  proc.run(\"true\", [], {ok: []})"));
+    assert_eq!(code, 1);
+    assert!(err.contains("the `ok` contract is empty"), "{err}");
+    let (code, _, err) = sb.run(&burn(
+        "  proc.csv(\"printf\", [\"a,b\\\\n1,2\\\\n\"], {sep: \"\"})",
+    ));
+    assert_eq!(code, 1);
+    assert!(err.contains("`sep` must be one character"), "{err}");
+}
+
+#[test]
+fn a_directory_as_the_command_export_lines_and_a_path_to_which() {
+    let sb = Sandbox::new();
+    fs::create_dir(sb.path().join("adir")).unwrap();
+    let (code, _, err) = sb.run(&burn("  proc.run(\"./adir\", [])"));
+    assert_eq!(code, 1);
+    assert!(
+        err.contains("error[E552 runtime]: proc.run: could not start `./adir`: it is a directory, not a program"),
+        "{err}"
+    );
+    let bin = sb.write("bin/ls", "#!/bin/sh\necho local\n");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let (code, out, err) = sb.run(&burn(
+        "  stick m = proc.kv(\"printf\", [\"export FOO=bar\\\\nBAZ=1\\\\n\"])\n  exhale m.has(\"FOO\"), m.FOO, m.BAZ, proc.which(\"bin/ls\"), proc.which(\"nope/x\")",
+    ));
+    assert_eq!((code, out.trim()), (0, "true bar 1 bin/ls null"), "{err}");
+}

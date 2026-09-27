@@ -40,7 +40,21 @@ pub struct Parser {
     pos: usize,
     /// The source, for slicing a compensation's text into the AST.
     src: Option<std::rc::Rc<str>>,
+    /// Current nesting of brackets, parentheses and blocks, held under
+    /// [`MAX_NESTING`]: past it the parser answers with a diagnostic instead
+    /// of running out of stack.
+    depth: usize,
 }
+
+/// Deeper than this and the parser refuses (E208). Real scripts nest tens of
+/// levels; this is a ceiling, not a target.
+pub const MAX_NESTING: usize = 5_000;
+
+/// Operators chained in one expression (`a + b + c + ...`) build a tree as
+/// deep as the chain is long; past this the parser refuses (E208) instead
+/// of the checker or the evaluator running out of stack (a debug build
+/// holds 12,000; a release build far more).
+pub const MAX_CHAIN: usize = 10_000;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
@@ -48,6 +62,7 @@ impl Parser {
             tokens,
             pos: 0,
             src: None,
+            depth: 0,
         }
     }
 
@@ -56,6 +71,7 @@ impl Parser {
             tokens,
             pos: 0,
             src: Some(std::rc::Rc::from(src)),
+            depth: 0,
         }
     }
 
@@ -207,7 +223,27 @@ impl Parser {
         Ok(Program { body })
     }
 
+    fn enter(&mut self) -> Result<(), Diagnostic> {
+        if self.depth >= MAX_NESTING {
+            return Err(syntax(
+                format!("nesting deeper than {MAX_NESTING} levels"),
+                self.span(),
+            )
+            .code("E208")
+            .with_hint("flatten it; a value this deep is better built in a loop"));
+        }
+        self.depth += 1;
+        Ok(())
+    }
+
     fn block(&mut self) -> Result<Block, Diagnostic> {
+        self.enter()?;
+        let r = self.block_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn block_inner(&mut self) -> Result<Block, Diagnostic> {
         let open = self.expect(TokenKind::LBrace, "`{`")?;
         let mut stmts = Vec::new();
         self.skip_newlines();
@@ -676,9 +712,19 @@ impl Parser {
         F: Fn(&mut Self) -> Result<Expr, Diagnostic>,
     {
         let mut lhs = next(self)?;
+        let mut chained = 0usize;
         'outer: loop {
             for (tok, op) in ops {
                 if self.at(tok) {
+                    chained += 1;
+                    if chained > MAX_CHAIN {
+                        return Err(syntax(
+                            format!("more than {MAX_CHAIN} operators chained in one expression"),
+                            self.span(),
+                        )
+                        .code("E208")
+                        .with_hint("split it across statements, or build the value in a loop"));
+                    }
                     self.advance();
                     self.skip_newlines();
                     let rhs = next(self)?;
@@ -917,6 +963,13 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
+        self.enter()?;
+        let r = self.primary_inner();
+        self.depth -= 1;
+        r
+    }
+
+    fn primary_inner(&mut self) -> Result<Expr, Diagnostic> {
         let tok = self.advance();
         let span = tok.span;
         let kind = match tok.kind {

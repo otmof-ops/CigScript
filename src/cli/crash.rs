@@ -130,7 +130,18 @@ fn list(ctx: &Ctx) -> i32 {
 }
 
 fn send(ctx: &Ctx, r: &mut CrashReport) -> i32 {
-    let repo = Config::load().get("issues_repo");
+    let cfg = Config::load();
+    if cfg.get("crash_reports") == "never" {
+        eprintln!(
+            "{} crash_reports is \"never\", so nothing leaves this machine; the report stays at {}",
+            ctx.red("error[E800 usage]:"),
+            crash::path_of(r).display()
+        );
+        eprintln!("  = hint: cig config crash_reports ask, then send it again");
+        eprintln!("  = explain: cig explain E800");
+        return exit::USAGE;
+    }
+    let repo = cfg.get("issues_repo");
     match crash::send(r, &repo) {
         Ok(SendOutcome::Filed(url)) => {
             eprintln!("{} filed at {url}", ctx.green("sent:"));
@@ -144,8 +155,14 @@ fn send(ctx: &Ctx, r: &mut CrashReport) -> i32 {
             exit::OK
         }
         Ok(SendOutcome::Manual(url)) => {
+            let token = std::env::var("CIG_GITHUB_TOKEN").is_ok_and(|t| !t.is_empty());
+            let why = if token {
+                "no `gh`, and CIG_GITHUB_TOKEN is set but `curl` is not on PATH"
+            } else {
+                "no `gh` and no CIG_GITHUB_TOKEN"
+            };
             eprintln!(
-                "{} no `gh` and no CIG_GITHUB_TOKEN, so nothing was sent automatically.",
+                "{} {why}, so nothing was sent automatically.",
                 ctx.yellow("note:")
             );
             eprintln!("open this link to file it yourself (the report is prefilled):");

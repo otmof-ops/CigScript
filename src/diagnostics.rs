@@ -155,6 +155,7 @@ impl Diagnostic {
             if let Some(line_text) = src.lines().nth(span.line.saturating_sub(1) as usize) {
                 let width = span.line.to_string().len();
                 let col0 = (span.col as usize).saturating_sub(1);
+                let (line_text, col0) = window(line_text, col0);
                 let room = line_text.chars().count().saturating_sub(col0).max(1);
                 let underline_len = span.end.saturating_sub(span.start).clamp(1, room);
                 out.push_str(&format!("{:width$} |\n", "", width = width));
@@ -184,6 +185,31 @@ impl Diagnostic {
     }
 }
 
+/// A source line longer than this is shown as a window around the caret,
+/// with `…` where it was cut: a generated one-liner runs to hundreds of
+/// kilobytes and the whole line says nothing the window does not.
+const SNIPPET_WIDTH: usize = 120;
+
+fn window(line: &str, col0: usize) -> (String, usize) {
+    let chars: Vec<char> = line.chars().collect();
+    if chars.len() <= SNIPPET_WIDTH {
+        return (line.to_string(), col0);
+    }
+    let start = col0
+        .saturating_sub(SNIPPET_WIDTH / 3)
+        .min(chars.len() - SNIPPET_WIDTH);
+    let end = (start + SNIPPET_WIDTH).min(chars.len());
+    let mut shown = String::new();
+    if start > 0 {
+        shown.push('…');
+    }
+    shown.extend(&chars[start..end]);
+    if end < chars.len() {
+        shown.push('…');
+    }
+    (shown, col0 - start + usize::from(start > 0))
+}
+
 impl fmt::Display for Diagnostic {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.message)
@@ -199,6 +225,12 @@ pub fn syntax(message: impl Into<String>, span: Span) -> Diagnostic {
 
 pub fn lex(message: impl Into<String>, span: Span) -> Diagnostic {
     Diagnostic::new(Kind::Lex, message).at(span)
+}
+
+/// A check-family diagnostic raised at run time (`--no-check`, or a name
+/// the checker could not see).
+pub fn check(message: impl Into<String>) -> Diagnostic {
+    Diagnostic::new(Kind::Check, message)
 }
 
 pub fn runtime(message: impl Into<String>) -> Diagnostic {

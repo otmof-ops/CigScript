@@ -200,11 +200,7 @@ impl Checker {
             let Some(text) = args.get(pos).and_then(literal_text) else {
                 continue;
             };
-            let abs = crate::burn::normalize_root(&text);
-            let inside = self
-                .pack_roots
-                .iter()
-                .any(|r| abs == *r || abs.starts_with(r));
+            let inside = crate::burn::inside_roots(std::path::Path::new(&text), &self.pack_roots);
             if !inside {
                 let roots = self
                     .pack_roots
@@ -504,6 +500,11 @@ impl Checker {
                 self.pack_seen = true;
                 for r in &p.roots {
                     match literal_text(r) {
+                        Some(text) if text.trim().is_empty() => {
+                            self.error_code("E755", "a pack root is empty", r.span).hint = Some(
+                                "name the directory the script may write in, pack { \"./build\" }; an empty root would mean the whole working directory".to_string(),
+                            );
+                        }
                         Some(text) => self.pack_roots.push(crate::burn::normalize_root(&text)),
                         None => self.expr(r),
                     }

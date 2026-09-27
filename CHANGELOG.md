@@ -5,6 +5,80 @@ project follows semantic versioning.
 
 ## Unreleased
 
+The hardening round: 1.1.0 attacked from every side, the failures that
+reproduced fixed, each with a row on the wall and a test named after it.
+
+- Kernel: `after.json` fingerprints directories (names, kinds, sizes,
+  mtimes), so a file added to a directory the run created is a change and
+  `unburn` refuses with `E704` instead of removing the directory with the
+  file in it. The pack check resolves symlinks before judging a path; a link
+  inside the pack that points outside is outside, and the refusal says where
+  the write would have landed. A journal whose last line a crash cut short
+  loads up to the cut; `unburn` says so and restores what came before.
+- Hops: stdin is written from its own thread beside the two readers (a child
+  echoing 8 MB back deadlocked). SIGINT, SIGTERM and SIGHUP are forwarded
+  to every live child process group before cig ends (a Ctrl-C left the child
+  running, orphaned in its own group). `proc.pipe` no longer fails a
+  pipeline because an upstream stage died of SIGPIPE when its consumer closed
+  early (`yes | head -1`); the stage reports `closed_early` and `signal`. A
+  missing or non-directory `cwd` is `E550`, naming the directory, not `E551`
+  blaming the command.
+- Language: brackets, parentheses and blocks nested deeper than 5,000 levels
+  are `E208`, a diagnostic, instead of a stack overflow; a value that
+  contains itself prints `…` at depth 512 instead of overflowing; a UTF-8
+  byte-order mark at the top of a file is skipped instead of `E103`.
+- Diagnostics: a source line longer than 120 characters is shown as a window
+  around the caret with `…` at the cuts.
+- Kernel, second round: `fs.cp` and `fs.mv` refuse a destination that is the
+  source itself (the copy truncated the file to nothing and reported success)
+  or lies inside it. A move the operating system refused (into its own
+  subdirectory, onto a non-empty directory, a trailing slash) is marked
+  undone in the journal instead of being "moved back" by rollback over the
+  untouched source. A cross-device move is rolled back by copying, and the
+  only copy is kept when a move back fails. A file with other hard links is
+  restored in place, so the other names see the old bytes too. Setuid,
+  setgid and sticky bits survive the snapshot and the restore, and a restored
+  directory tree keeps the mode of its root. A named pipe, socket or device
+  is refused (`E702`) instead of hanging the snapshot. What the automatic
+  rollback could not restore is recorded on the run (`rollback_incomplete`,
+  listed by `cig runs <id>`), and `cig unburn` checks it can record itself
+  before restoring anything. A damaged or renamed run record no longer
+  hides the run: it is listed as `damaged`, its journal is found where it
+  is, and it can be unburned. A dead run's pid reused by another program no
+  longer reads as `running`.
+- Compensations: the `compensated` stamp goes on a block's ops only when
+  the block completes and its compensation is recorded; a block that fails
+  half-way, or a process that dies inside one, leaves them honestly
+  irreversible. A deferred `cig unburn` gives the compensation the run's
+  `args`.
+- Pack and ghost: a link inside the pack is followed when a hop's writes
+  are watched; the dry run resolves a symlinked directory to the same ghost
+  entry as its target; every directory a nested write creates is listed;
+  an empty pack root is refused (`E755`) instead of silently meaning the
+  whole working directory.
+- Language: `-9223372036854775808 / -1` is `E503`, not a crash; `int()`
+  refuses a float or numeric string that does not fit instead of
+  saturating; floats past sixteen digits print in exponent form so they
+  still read as floats; a value that contains itself is refused by
+  `json.stringify` and compared without recursing forever; a redeclaration
+  reached at run time is a check-family error with the checker's exit code,
+  and `args` is a prelude name a script may shadow; a string that runs past
+  the end of its line is `E101`; more than 10,000 chained operators are
+  `E208`; an invalid `CIG_MAX_STEPS` is `E800`.
+- Hops: `ok` and `check` resolve the same whatever their order (the
+  contract could vanish depending on key order); an empty `ok` list and an
+  empty `sep` are refused; a directory given as the command is named as
+  one; `proc.kv` reads `export KEY=value`; `proc.which` resolves a name
+  with a slash the way `proc.run` does.
+- Plan: `env.set` and `env.unset` are labelled irreversible, as `BURN.md` and
+  `STDLIB.md` have always said; 1.1.0 labelled them reversible although the
+  kernel restores nothing for them.
+- CLI: a malformed invocation exits 3 like every other usage problem; a
+  script larger than 64 MiB, or a device like `/dev/zero`, is refused
+  (`E801`) instead of read forever, and `E801` now carries the path for
+  doctor; `cig crash send` honours `crash_reports = never`; the update
+  downgrade refusal is a coded `E806`.
+
 - Docs: the narrative pages (`DESIGN.md`, `SMOKE.md`, `LANGUAGE.md`,
   `CHAINS.md`, `BURN.md`, `DOCTOR.md`, `SCIENCE.md`, the README's burn-model
   table and the `cig language` legend) say what 1.1.0 does; the last claims
