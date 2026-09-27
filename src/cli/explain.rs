@@ -1,72 +1,35 @@
 // SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
 // SPDX-License-Identifier: Apache-2.0
 
-//! `cig explain <code>`: what an error code means and how to fix it.
+//! `cig explain [code]`: the registry, rendered.
+//!
+//! No argument lists every code by range. A code prints its page: which
+//! kind of no it is (the hallway phrase first, the manual's name in
+//! brackets), what it means, what to type next, the ranked causes with the
+//! probe doctor would use and the remedy for each, and the related codes.
+//! `--schema` prints the JSON Schema for a diagnostic; `--json` prints the
+//! registry nodes themselves.
 
 use super::{exit, Ctx};
-use cigscript::errors::{lookup, CATALOGUE};
+use cigscript::errors::{all, diagnostic_schema, lookup, lookup_probe, registry, Code};
 
-pub fn explain(ctx: &Ctx, code: Option<String>) -> i32 {
+pub fn explain(ctx: &Ctx, code: Option<String>, schema: bool) -> i32 {
+    if schema {
+        outln!(
+            "{}",
+            serde_json::to_string_pretty(&diagnostic_schema()).unwrap_or_default()
+        );
+        return exit::OK;
+    }
     match code {
-        None => {
-            if ctx.json {
-                let all: Vec<serde_json::Value> = CATALOGUE
-                    .iter()
-                    .map(|e| {
-                        serde_json::json!({
-                            "code": e.code, "kind": e.kind.as_str(), "title": e.title,
-                            "meaning": e.meaning, "fix": e.fix,
-                        })
-                    })
-                    .collect();
-                outln!("{}", serde_json::to_string_pretty(&all).unwrap_or_default());
-                return exit::OK;
-            }
-            outln!("{}", ctx.bold("CigScript error codes"));
-            outln!("{}", ctx.dim("E1xx lex, E2xx syntax, E3xx check, E4xx types, E5xx runtime, E6xx raised by the script, E7xx kernel, E8xx usage, E9xx internal"));
-            let mut last = ' ';
-            for e in CATALOGUE {
-                let group = e.code.chars().nth(1).unwrap_or(' ');
-                if group != last {
-                    outln!();
-                    last = group;
-                }
-                outln!(
-                    "  {}  {:<32} {}",
-                    ctx.bold(e.code),
-                    e.title,
-                    ctx.dim(e.kind.as_str())
-                );
-            }
-            outln!();
-            outln!(
-                "{}",
-                ctx.dim("cig explain <code> for the meaning and the fix")
-            );
-            exit::OK
-        }
+        None => list(ctx),
         Some(code) => match lookup(&code) {
-            Some(e) => {
+            Some(entry) => {
                 if ctx.json {
-                    outln!(
-                        "{}",
-                        serde_json::json!({
-                            "code": e.code, "kind": e.kind.as_str(), "title": e.title,
-                            "meaning": e.meaning, "fix": e.fix,
-                        })
-                    );
-                    return exit::OK;
+                    outln!("{}", entry.to_json());
+                } else {
+                    page(ctx, entry);
                 }
-                outln!(
-                    "{} {}  {}",
-                    ctx.bold(e.code),
-                    ctx.bold(e.title),
-                    ctx.dim(&format!("({})", e.kind.as_str()))
-                );
-                outln!();
-                outln!("  {}", e.meaning);
-                outln!();
-                outln!("  {} {}", ctx.green("fix:"), e.fix);
                 exit::OK
             }
             None => {
@@ -77,5 +40,160 @@ pub fn explain(ctx: &Ctx, code: Option<String>) -> i32 {
                 exit::USAGE
             }
         },
+    }
+}
+
+fn list(ctx: &Ctx) -> i32 {
+    if ctx.json {
+        let nodes: Vec<serde_json::Value> = all().iter().map(Code::to_json).collect();
+        outln!(
+            "{}",
+            serde_json::to_string_pretty(&nodes).unwrap_or_default()
+        );
+        return exit::OK;
+    }
+    outln!("{}", ctx.bold("CigScript error codes"));
+    outln!(
+        "{}",
+        ctx.dim("a code never changes meaning; a retired code is never reused")
+    );
+    for range in &registry().ranges {
+        let codes: Vec<&Code> = all()
+            .iter()
+            .filter(|c| range.from <= c.code && c.code <= range.to)
+            .collect();
+        outln!();
+        outln!(
+            "{}  {}",
+            ctx.bold(&format!("{}-{}", range.from, range.to)),
+            range.meaning
+        );
+        if codes.is_empty() {
+            outln!("  {}", ctx.dim("reserved; nothing emitted yet"));
+        }
+        for c in codes {
+            let mark = if c.has_tag("planned") {
+                ctx.dim("  (planned)")
+            } else {
+                String::new()
+            };
+            outln!(
+                "  {}  {:<34} {}{mark}",
+                ctx.bold(&c.code),
+                c.title,
+                ctx.dim(c.kind().as_str())
+            );
+        }
+    }
+    outln!();
+    outln!(
+        "{}",
+        ctx.dim("cig explain <code> for the page; cig explain --schema for the JSON schema")
+    );
+    exit::OK
+}
+
+fn page(ctx: &Ctx, e: &Code) {
+    let no = e.no_entry();
+    outln!(
+        "{} {}  {}",
+        ctx.bold(&e.code),
+        ctx.bold(&e.title),
+        ctx.dim(&format!(
+            "({}, {} family, since {})",
+            e.kind().as_str(),
+            e.family(),
+            e.since
+        ))
+    );
+    if e.retired {
+        outln!(
+            "  {}",
+            ctx.yellow("retired: kept so old run records still decode; never emitted again")
+        );
+    }
+    if e.has_tag("planned") {
+        outln!(
+            "  {}",
+            ctx.dim("planned: reserved for a feature that has not shipped yet")
+        );
+    }
+    outln!();
+    outln!(
+        "  {} {}  {}",
+        ctx.yellow("kind of no:"),
+        no.hear,
+        ctx.dim(&format!("({}; {})", no.whose, no.manual))
+    );
+    outln!();
+    outln!("  {}", e.meaning);
+    outln!();
+    outln!("  {} {}", ctx.green("what to type next:"), e.fix);
+    if !e.causes.is_empty() {
+        outln!();
+        outln!(
+            "  {} {}",
+            ctx.bold("known causes,"),
+            ctx.dim("ranked; doctor checks them in this order")
+        );
+        for (i, c) in e.causes.iter().enumerate() {
+            outln!("  {}. {}", i + 1, c.why);
+            let probe = lookup_probe(&c.probe);
+            match probe {
+                Some(p) if p.name != "none" => {
+                    outln!(
+                        "     {} {} {}",
+                        ctx.dim("probe:"),
+                        p.name,
+                        ctx.dim(&format!("({})", p.reads))
+                    )
+                }
+                _ => outln!(
+                    "     {} {}",
+                    ctx.dim("probe:"),
+                    ctx.dim("none; a suggestion, not a finding")
+                ),
+            }
+            let mut flags = Vec::new();
+            if c.fixable {
+                flags.push("doctor can apply it with a y");
+            }
+            if c.needs_burn {
+                flags.push("needs a burn");
+            }
+            if !c.reversible {
+                flags.push("not reversible");
+            }
+            if flags.is_empty() {
+                outln!("     {} {}", ctx.green("remedy:"), c.remedy);
+            } else {
+                outln!(
+                    "     {} {}  {}",
+                    ctx.green("remedy:"),
+                    c.remedy,
+                    ctx.dim(&format!("[{}]", flags.join("; ")))
+                );
+            }
+        }
+    }
+    let mut footer = Vec::new();
+    if !e.arises.is_empty() {
+        footer.push(format!("arises in: {}", e.arises.join(", ")));
+    }
+    if !e.related.is_empty() {
+        footer.push(format!("related: {}", e.related.join(", ")));
+    }
+    let tags: Vec<&str> = e
+        .tags
+        .iter()
+        .map(String::as_str)
+        .filter(|t| *t != "planned")
+        .collect();
+    if !tags.is_empty() {
+        footer.push(format!("tags: {}", tags.join(", ")));
+    }
+    if !footer.is_empty() {
+        outln!();
+        outln!("  {}", ctx.dim(&footer.join("  ·  ")));
     }
 }

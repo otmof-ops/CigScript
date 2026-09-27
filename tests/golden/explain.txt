@@ -1,0 +1,1229 @@
+CigScript error codes
+a code never changes meaning; a retired code is never reused
+
+E100-E199  lexing: the source cannot be turned into tokens
+  E100  lexing error                       lex
+  E101  unterminated string                lex
+  E102  unknown escape                     lex
+  E103  unexpected character               lex
+  E104  malformed number                   lex
+
+E200-E299  parsing: the tokens do not follow the grammar
+  E200  syntax error                       syntax
+  E201  expected an expression             syntax
+  E202  unclosed block                     syntax
+  E203  expected end of statement          syntax
+  E204  not a statement                    syntax
+  E205  invalid assignment target          syntax
+  E206  chained comparison                 syntax
+  E207  empty chain                        syntax
+
+E300-E399  static check (`cig check`): a mistake found before anything runs
+  E300  check error                        check
+  E301  unknown name                       check
+  E302  stick reassigned                   check
+  E303  effect outside burn                check
+  E304  snuff outside a function           check
+  E305  break outside a loop               check
+  E306  already declared                   check
+  E307  unknown module member              check
+
+E400-E499  types and arity: a value of the wrong shape reached an operation
+  E400  type error                         type
+  E401  wrong number of arguments          type
+  E402  wrong argument type                type
+  E403  operator not applicable            type
+  E404  not callable                       type
+  E405  not indexable or iterable          type
+
+E500-E519  runtime: a failure while the script was running, including the resource ceilings
+  E500  runtime error                      runtime
+  E501  unknown name at run time           runtime
+  E502  division by zero                   runtime
+  E503  integer overflow                   runtime
+  E504  index out of range                 runtime
+  E505  missing key                        runtime
+  E506  call depth exceeded                runtime
+  E507  stick reassigned at run time       runtime
+  E508  file system failure                runtime
+  E509  process failure                    runtime
+  E510  invalid regular expression         runtime
+  E511  parse failure                      runtime
+  E512  range too large                    runtime
+  E513  output closed                      runtime
+  E514  allocation ceiling                 runtime
+  E515  step budget exceeded               runtime  (planned)
+
+E520-E529  the ghost filesystem: dry-run reads of paths that simulated ops changed
+  E520  read of a ghost-deleted path       runtime  (planned)
+
+E550-E569  hops (process boundaries): child processes and foreign scripts
+  reserved; nothing emitted yet
+
+E600-E699  raised by the script: cough, assert, chains, process checks
+  E600  raised by the script               cough
+  E601  assertion failed                   cough
+  E602  chain failed                       cough
+  E603  process check failed               cough
+
+E700-E749  the burn kernel and its journal (write-ahead log)
+  E700  burn refused                       burn
+  E701  effect outside burn                burn
+  E702  journal failure                    burn
+  E703  snapshot missing                   burn
+  E704  file changed since the run         burn  (planned)
+  E705  already rolled back                burn
+  E706  interrupted run                    burn
+
+E750-E769  folds and packs: refusals when automation is composed
+  reserved; nothing emitted yet
+
+E800-E849  the command line and the environment
+  E800  usage error                        usage
+  E801  cannot read script                 usage
+  E802  state directory unavailable        usage
+  E803  no such run                        usage
+  E804  no such chain                      usage
+  E805  network tool missing               usage
+  E806  update failed                      usage
+
+E850-E869  the updater and doctor
+  reserved; nothing emitted yet
+
+E900-E999  internal: a bug in CigScript itself
+  E900  internal error                     internal
+  E901  crash                              internal
+
+cig explain <code> for the page; cig explain --schema for the JSON schema
+
+======== E100 ========
+E100 lexing error  (lex, lex family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The source contains something the lexer cannot turn into tokens.
+
+  what to type next: fix the character or literal the message names; `cig language` shows the forms
+
+  known causes, ranked; doctor checks them in this order
+  1. a character or literal the lexer does not know; the message names it
+     probe: source-line (the source line under the caret)
+     remedy: fix it at the caret
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E101 ========
+E101 unterminated string  (lex, lex family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A string literal has no closing quote on its line.
+
+  what to type next: close the string on the same line, or write \n for a newline inside it
+
+  known causes, ranked; doctor checks them in this order
+  1. the closing quote is missing, or sits on the next line
+     probe: string-literal-scan (the line the string opened on, looking for where the quote should close)
+     remedy: close the string on the line it opened; use \n for a line break inside it
+  2. an escaped quote \" swallowed the closing quote
+     probe: source-line (the source line under the caret)
+     remedy: count the backslashes before the last quote; a raw 'single-quoted' string has no escapes
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E102 ========
+E102 unknown escape  (lex, lex family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A backslash sequence in a double-quoted string is not one CigScript knows.
+
+  what to type next: use \n \t \r \0 \\ \" \$ \u{hex}; for a regex or a Windows path use a raw 'single-quoted' string
+
+  known causes, ranked; doctor checks them in this order
+  1. a Windows path or a regex inside a double-quoted string
+     probe: source-line (the source line under the caret)
+     remedy: write it as a raw 'single-quoted' string, which has no escapes at all
+  2. a typo in an escape
+     probe: none; a suggestion, not a finding
+     remedy: the escapes are \n \t \r \0 \\ \" \$ and \u{hex}
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E103 ========
+E103 unexpected character  (lex, lex family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A character cannot start any token, often a C-style operator.
+
+  what to type next: spell logic as `and`, `or`, `not`; comparisons are == != < <= > >=
+
+  known causes, ranked; doctor checks them in this order
+  1. a C-style operator: && || !
+     probe: source-line (the source line under the caret)
+     remedy: spell them `and`, `or`, `not`
+  2. a smart quote or a non-breaking space pasted from a document; the message shows the character
+     probe: source-line (the source line under the caret)
+     remedy: retype the character with a plain quote or space
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E104 ========
+E104 malformed number  (lex, lex family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A numeric literal does not fit in 64 bits or is not well formed.
+
+  what to type next: use a float (add .0) for magnitudes beyond 9223372036854775807; -9223372036854775808 is valid with the minus directly in front
+
+  known causes, ranked; doctor checks them in this order
+  1. the literal is larger than 9223372036854775807
+     probe: int-magnitude (the literal's magnitude against the 64-bit range)
+     remedy: add .0 to make it a float, or check whether the number is right
+  2. a stray character inside the number
+     probe: source-line (the source line under the caret)
+     remedy: digits and single underscores only: 1_000_000
+
+  arises in: parse  ·  related: E503
+
+======== E200 ========
+E200 syntax error  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The source does not follow the grammar.
+
+  what to type next: look at the caret; the message says what was expected; `cig language` shows the forms
+
+  known causes, ranked; doctor checks them in this order
+  1. the caret marks where parsing stopped; the message names what was expected there
+     probe: source-line (the source line under the caret)
+     remedy: supply what was expected, or remove what was not
+
+  arises in: parse
+
+======== E201 ========
+E201 expected an expression  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A value was expected here and something else was found.
+
+  what to type next: complete the expression; look for a trailing operator or comma
+
+  known causes, ranked; doctor checks them in this order
+  1. a trailing operator or comma with nothing after it
+     probe: source-line (the source line under the caret)
+     remedy: finish the expression, or delete the operator
+  2. a keyword used where a value should be
+     probe: source-line (the source line under the caret)
+     remedy: keywords are fine as map keys and member names, not as values
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E202 ========
+E202 unclosed block  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A `{` has no matching `}`.
+
+  what to type next: add the closing brace where the block ends
+
+  known causes, ranked; doctor checks them in this order
+  1. a block opened and never closed; the message names the line it opened on
+     probe: brace-balance (the count of { and } per line, to find the block that never closed)
+     remedy: add `}` at the end of that block
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E203 ========
+E203 expected end of statement  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Two statements share a line without a separator.
+
+  what to type next: put each statement on its own line, or separate them with `;`
+
+  known causes, ranked; doctor checks them in this order
+  1. two statements on one line
+     probe: source-line (the source line under the caret)
+     remedy: put each statement on its own line, or separate them with `;`
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E204 ========
+E204 not a statement  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A word that is not a keyword starts the line, usually a typo.
+
+  what to type next: use the spelling the hint suggests; `cig language` lists the keywords
+
+  known causes, ranked; doctor checks them in this order
+  1. a typo in a keyword
+     probe: similar-names (the names in scope, ranked by edit distance from the one used)
+     remedy: use the suggestion in the hint
+  2. a word from another language: let, var, const, def, function
+     probe: none; a suggestion, not a finding
+     remedy: `roll` for a variable, `stick` for a constant, `pull` for a function, `pack` for a lambda
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E205 ========
+E205 invalid assignment target  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The left side of `=` is not something that can hold a value.
+
+  what to type next: assign to a name, `list[i]` or `map.key`
+
+  known causes, ranked; doctor checks them in this order
+  1. assigning to a call result or a literal
+     probe: source-line (the source line under the caret)
+     remedy: assign to a name, `list[i]` or `map.key`
+  2. `=` where `==` was meant, inside a condition
+     probe: source-line (the source line under the caret)
+     remedy: write `==` to compare
+
+  arises in: parse
+
+======== E206 ========
+E206 chained comparison  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Comparisons cannot be chained like `a < b < c`.
+
+  what to type next: write `a < b and b < c`
+
+  known causes, ranked; doctor checks them in this order
+  1. `a < b < c` read as one expression
+     probe: source-line (the source line under the caret)
+     remedy: write `a < b and b < c`
+
+  arises in: parse  ·  tags: beginner-likely
+
+======== E207 ========
+E207 empty chain  (syntax, syntax family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A chain declares no steps.
+
+  what to type next: list the sticks (steps) to light: chain name { fetch, build }
+
+  known causes, ranked; doctor checks them in this order
+  1. `chain name { }` with nothing inside
+     probe: source-line (the source line under the caret)
+     remedy: put the steps inside, one per line or comma-separated
+
+  arises in: parse
+
+======== E300 ========
+E300 check error  (check, check family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The static checker found a mistake before running anything.
+
+  what to type next: read the message; `cig check` shows all of them at once
+
+  known causes, ranked; doctor checks them in this order
+  1. the message names the mistake and the line
+     probe: source-line (the source line under the caret)
+     remedy: fix it there; `cig check <file>` lists every one
+
+  arises in: check
+
+======== E301 ========
+E301 unknown name  (check, check family, since 1.0.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A name is used that was never declared in a visible scope.
+
+  what to type next: use the name the hint suggests, or declare it with `roll` or `stick` above this line
+
+  known causes, ranked; doctor checks them in this order
+  1. a typo; the hint names the closest declared name
+     probe: similar-names (the names in scope, ranked by edit distance from the one used)
+     remedy: use the suggested name
+  2. the name is declared later in the file, or inside another block
+     probe: none; a suggestion, not a finding
+     remedy: move the declaration above the first use, or out of the inner block
+  3. a module function called without its module: read_text instead of fs.read_text
+     probe: similar-names (the names in scope, ranked by edit distance from the one used)
+     remedy: prefix it with the module; `cig language` lists them
+
+  arises in: check  ·  related: E307, E501  ·  tags: beginner-likely
+
+======== E302 ========
+E302 stick reassigned  (check, check family, since 1.0.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A `stick` is a constant and cannot be assigned again.
+
+  what to type next: declare it with `roll` if it needs to change
+
+  known causes, ranked; doctor checks them in this order
+  1. a stick (constant binding) assigned a second time
+     probe: source-line (the source line under the caret)
+     remedy: declare it with `roll`; a stick is a promise that it will not change
+
+  arises in: check  ·  related: E507  ·  tags: beginner-likely
+
+======== E303 ========
+E303 effect outside burn  (check, check family, since 1.0.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A function that changes the world is called where no `burn` block encloses it.
+
+  what to type next: wrap the call in burn { ... }; inside a pull this is a warning, since the caller may burn
+
+  known causes, ranked; doctor checks them in this order
+  1. a world-changing call at the top level with no burn { } around it
+     probe: source-line (the source line under the caret)
+     remedy: wrap the call in burn { ... }, or the call to the function that makes it
+  2. inside a pull or pack: a warning, because the caller may burn
+     probe: none; a suggestion, not a finding
+     remedy: nothing, if every caller burns; wrap it if the function should work from anywhere
+
+  arises in: check  ·  related: E701  ·  tags: beginner-likely, kernel
+
+======== E304 ========
+E304 snuff outside a function  (check, check family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  `snuff` returns from a pull or pack and was used at the top level.
+
+  what to type next: use exit(code) to stop the script
+
+  known causes, ranked; doctor checks them in this order
+  1. `snuff` (return) at the top level of the script
+     probe: source-line (the source line under the caret)
+     remedy: use exit(code), or move the code into a pull
+
+  arises in: check
+
+======== E305 ========
+E305 break outside a loop  (check, check family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  `break` or `continue` appears outside `while` or `for`.
+
+  what to type next: move it inside the loop, or restructure with `if`
+
+  known causes, ranked; doctor checks them in this order
+  1. `break` or `continue` outside `while` or `for`
+     probe: source-line (the source line under the caret)
+     remedy: move it inside the loop, or restructure with `if`
+
+  arises in: check
+
+======== E306 ========
+E306 already declared  (check, check family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A name is declared twice in the same scope.
+
+  what to type next: assign with `name = ...` the second time, or choose another name
+
+  known causes, ranked; doctor checks them in this order
+  1. `roll x` twice in one scope
+     probe: source-line (the source line under the caret)
+     remedy: write `x = ...` the second time
+
+  arises in: check  ·  tags: beginner-likely
+
+======== E307 ========
+E307 unknown module member  (check, check family, since 1.0.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A module such as `fs` has no function by that name.
+
+  what to type next: use the member the hint suggests; `cig language` lists every one
+
+  known causes, ranked; doctor checks them in this order
+  1. a typo in the member: fs.read_txt
+     probe: similar-names (the names in scope, ranked by edit distance from the one used)
+     remedy: use the suggestion in the hint
+  2. a function from another language's library
+     probe: none; a suggestion, not a finding
+     remedy: `cig language` shows what exists; text.*, fs.* and path.* cover most needs
+
+  arises in: check  ·  related: E301  ·  tags: beginner-likely
+
+======== E400 ========
+E400 type error  (type, type family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A value of the wrong type reached an operation.
+
+  what to type next: convert with str(), int() or float(), or test with type_of()
+
+  known causes, ranked; doctor checks them in this order
+  1. the message names the type it got
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: convert the value first, or branch on type_of()
+
+  arises in: run
+
+======== E401 ========
+E401 wrong number of arguments  (type, type family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A call passes more or fewer arguments than the function takes.
+
+  what to type next: match the signature; packs have no optional parameters, pass null explicitly
+
+  known causes, ranked; doctor checks them in this order
+  1. the call passes more or fewer arguments than the pack or pull declares
+     probe: source-line (the source line under the caret)
+     remedy: match the declaration; pass null for an argument you do not have
+  2. a method called on the wrong receiver, so the receiver counted as an argument
+     probe: none; a suggestion, not a finding
+     remedy: check what the dot is applied to
+
+  arises in: run  ·  tags: beginner-likely
+
+======== E402 ========
+E402 wrong argument type  (type, type family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A library function received an argument of the wrong type.
+
+  what to type next: convert the value first: str(n), int(s), or path.join for paths
+
+  known causes, ranked; doctor checks them in this order
+  1. the message names the argument position and the expected type
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: convert the value first: str(n), int(s), float(s)
+
+  arises in: run
+
+======== E403 ========
+E403 operator not applicable  (type, type family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  An operator was applied to types it does not support.
+
+  what to type next: strings join with +, numbers add; convert first with str() or int()
+
+  known causes, ranked; doctor checks them in this order
+  1. a string plus a number
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: interpolate: "count: ${n}", or str(n) + "..."
+  2. arithmetic on null from a missing key or a ?. chain
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: give it a default: x ?? 0
+
+  arises in: run  ·  tags: beginner-likely
+
+======== E404 ========
+E404 not callable  (type, type family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Something that is not a function was called.
+
+  what to type next: only packs, pulls and library functions can be called
+
+  known causes, ranked; doctor checks them in this order
+  1. a name that holds a value, not a function, followed by ()
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: drop the parentheses, or call the function you meant
+  2. a module called as a function: fs()
+     probe: source-line (the source line under the caret)
+     remedy: call a member: fs.read_text(...)
+
+  arises in: run
+
+======== E405 ========
+E405 not indexable or iterable  (type, type family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Indexing or iteration was attempted on an unsupported type.
+
+  what to type next: lists, strings and maps support [] and for; check type_of()
+
+  known causes, ranked; doctor checks them in this order
+  1. indexing or looping over null, a number or a bool
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: check type_of(x); a missing key or an empty glob is the usual source of the null
+
+  arises in: run
+
+======== E500 ========
+E500 runtime error  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Something failed while the script was running.
+
+  what to type next: read the message; wrap risky code in try/ashtray to handle it
+
+  known causes, ranked; doctor checks them in this order
+  1. the message says what failed
+     probe: none; a suggestion, not a finding
+     remedy: wrap the risky code in try/ashtray to handle it
+
+  arises in: run
+
+======== E501 ========
+E501 unknown name at run time  (runtime, runtime family, since 1.0.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A name was looked up that is not in scope.
+
+  what to type next: run `cig check`; it finds this before anything runs
+
+  known causes, ranked; doctor checks them in this order
+  1. the check was skipped with --no-check
+     probe: none; a suggestion, not a finding
+     remedy: run `cig check <file>`
+
+  arises in: run  ·  related: E301
+
+======== E502 ========
+E502 division by zero  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  An integer or float was divided by zero, or the modulus was zero.
+
+  what to type next: guard the divisor: if d != 0 { ... }
+
+  known causes, ranked; doctor checks them in this order
+  1. the divisor came from data that was zero or empty
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: guard it: if d != 0 { ... }, or give it a default with ??
+
+  arises in: run  ·  tags: beginner-likely
+
+======== E503 ========
+E503 integer overflow  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  An integer operation left the 64-bit range.
+
+  what to type next: use floats (1.0 * n) for very large magnitudes, or check bounds first
+
+  known causes, ranked; doctor checks them in this order
+  1. a multiplication or a running sum left the 64-bit range
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: use floats for the large magnitude, or check the bound before the operation
+  2. negating -9223372036854775808, which has no positive twin
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: use a float
+
+  arises in: run  ·  related: E104
+
+======== E504 ========
+E504 index out of range  (runtime, runtime family, since 1.0.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A list or string index is outside its length.
+
+  what to type next: check .len() first, or use .get(i, default); [-1] is the last item
+
+  known causes, ranked; doctor checks them in this order
+  1. an index equal to len(); the last item is len() - 1
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: use [-1] for the last item, or check .len() first
+  2. an empty list from a filter or glob that matched nothing
+     probe: none; a suggestion, not a finding
+     remedy: test .len() == 0 first, or use .get(i, default)
+
+  arises in: run  ·  tags: beginner-likely
+
+======== E505 ========
+E505 missing key  (runtime, runtime family, since 1.0.0)
+
+  kind of no: don't have any over here  (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result)
+
+  A map has no entry for the key that was read.
+
+  what to type next: use m?.key for null, or m.get("key", default)
+
+  known causes, ranked; doctor checks them in this order
+  1. the key is spelled differently in the data (case, underscore, hyphen)
+     probe: similar-names (the names in scope, ranked by edit distance from the one used)
+     remedy: exhale m.keys() to see the exact names
+  2. the map came from JSON where the field is optional
+     probe: none; a suggestion, not a finding
+     remedy: use m?.key for null, or m.get("key", default)
+
+  arises in: run  ·  tags: beginner-likely
+
+======== E506 ========
+E506 call depth exceeded  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Recursion went deeper than 4,000 calls.
+
+  what to type next: add the base case first; rewrite as a loop if depth may legitimately exceed 4,000
+
+  known causes, ranked; doctor checks them in this order
+  1. recursion with no base case, or one that is never reached
+     probe: source-line (the source line under the caret)
+     remedy: add or fix the base case; rewrite as a loop if the depth is real
+
+  arises in: run  ·  tags: resource
+
+======== E507 ========
+E507 stick reassigned at run time  (runtime, runtime family, since 1.0.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A constant was assigned through a path the checker could not see.
+
+  what to type next: run `cig check`, then declare the binding with `roll` if it must change
+
+  known causes, ranked; doctor checks them in this order
+  1. an assignment the checker could not see (an unchecked run)
+     probe: none; a suggestion, not a finding
+     remedy: run `cig check`; declare the binding with `roll` if it must change
+
+  arises in: run  ·  related: E302
+
+======== E508 ========
+E508 file system failure  (runtime, runtime family, since 1.0.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  A file or directory operation failed; the message shows the path and the operating-system reason.
+
+  what to type next: check the path with fs.exists first; relative paths resolve against the working directory `cig runs <id>` shows
+
+  known causes, ranked; doctor checks them in this order
+  1. the path does not exist (No such file or directory): can't see any ciggies
+     probe: path-exists (stat of the path named in the message)
+     remedy: check it with fs.exists or fs.glob first; relative paths resolve against the working directory
+  2. permission denied: these are MY ciggies
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: `ls -l` the path and its parent to see who may write; chmod, or run as the owner
+  3. the parent directory is missing
+     probe: parent-exists (stat of the parent directory of the path)
+     remedy: fs.mkdir(path.dir(p)) first, inside the burn
+  4. the disk is full, or the mount is read-only
+     probe: disk-free (free space on the filesystem holding the path or the state directory)
+     remedy: free space, or write somewhere else
+  5. it is a directory where a file was expected, or the reverse
+     probe: path-is-dir (whether the path is a directory, a file or a link)
+     remedy: branch on fs.is_dir / fs.is_file
+
+  arises in: run, dry-run, unburn  ·  related: E702  ·  tags: beginner-likely
+
+======== E509 ========
+E509 process failure  (runtime, runtime family, since 1.0.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  A program could not be started, or exceeded its timeout and was killed.
+
+  what to type next: check it is installed with proc.which("name"), or raise {timeout_ms}
+
+  known causes, ranked; doctor checks them in this order
+  1. the program is not on PATH for this run: can't see any ciggies
+     probe: on-path (each directory on PATH, looking for the program named in the message)
+     remedy: proc.which("name") to check; give the full path, or fix PATH in the environment the run inherits
+  2. it ran longer than {timeout_ms} and was killed
+     probe: none; a suggestion, not a finding
+     remedy: raise {timeout_ms: N} on the proc.run, or split the work into smaller calls
+  3. the file exists but is not executable: these are MY ciggies
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: chmod +x it
+
+  arises in: run, light  ·  related: E603, E602
+
+======== E510 ========
+E510 invalid regular expression  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A pattern passed to the text module does not compile.
+
+  what to type next: write the pattern as a raw 'single-quoted' string and check it against the message
+
+  known causes, ranked; doctor checks them in this order
+  1. escapes eaten by a double-quoted string
+     probe: source-line (the source line under the caret)
+     remedy: write the pattern as a raw 'single-quoted' string
+  2. a construct the engine does not support: lookbehind, backreferences
+     probe: none; a suggestion, not a finding
+     remedy: rewrite without it; the message quotes the engine's reason
+
+  arises in: run
+
+======== E511 ========
+E511 parse failure  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Text that should be JSON or CSV is not.
+
+  what to type next: check the first bytes with fs.read_text(p).slice(0, 80); the message quotes the position
+
+  known causes, ranked; doctor checks them in this order
+  1. the file is not JSON or CSV, or has a BOM, a comment or a trailing comma
+     probe: none; a suggestion, not a finding
+     remedy: look at the position the message quotes; validate the producer's output
+
+  arises in: run
+
+======== E512 ========
+E512 range too large  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A range or list construction would exceed 10,000,000 items.
+
+  what to type next: iterate in pieces, or check the bounds that produced the range
+
+  known causes, ranked; doctor checks them in this order
+  1. a bound computed from bad arithmetic
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: exhale the bounds before the range; iterate with a while loop if the size is real
+
+  arises in: run  ·  related: E514  ·  tags: resource
+
+======== E513 ========
+E513 output closed  (runtime, runtime family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The reader of stdout went away (for example `| head`).
+
+  what to type next: nothing to fix; the script stopped when its reader did
+
+  known causes, ranked; doctor checks them in this order
+  1. the process reading stdout closed the pipe
+     probe: none; a suggestion, not a finding
+     remedy: nothing; this is the pipe working as designed
+
+  arises in: run  ·  tags: ci-likely
+
+======== E514 ========
+E514 allocation ceiling  (runtime, runtime family, since 1.1.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  An operation would build a value larger than the memory ceiling (256 MiB by default).
+
+  what to type next: work in smaller pieces, or raise the ceiling with CIG_MAX_ALLOC=<bytes>
+
+  known causes, ranked; doctor checks them in this order
+  1. a repeat count, width or size computed from bad arithmetic
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: exhale the count before using it
+  2. a legitimately large value: a big file read whole, or a large string built in one go
+     probe: env-var (an environment variable that changes the limit involved)
+     remedy: work in pieces (fs.read_lines, chunks), or raise the ceiling with CIG_MAX_ALLOC=<bytes> for this run
+
+  arises in: run  ·  related: E512, E515  ·  tags: resource
+
+======== E515 ========
+E515 step budget exceeded  (runtime, runtime family, since 1.1.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Your loop never ends, or the script needs more steps than the budget allows.
+
+  what to type next: check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables)
+
+  known causes, ranked; doctor checks them in this order
+  1. a while loop whose condition never becomes false
+     probe: source-line (the source line under the caret)
+     remedy: check what changes the condition inside the loop, at the line shown
+  2. a legitimately long computation
+     probe: env-var (an environment variable that changes the limit involved)
+     remedy: raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it)
+
+  arises in: run  ·  related: E514, E506  ·  tags: resource, beginner-likely
+
+======== E520 ========
+E520 read of a ghost-deleted path  (runtime, ghost family, since 1.1.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  In a dry-run, a step read a path that an earlier simulated op would have deleted or moved away.
+
+  what to type next: read the file before the step that removes it, or do not remove it; the plan shows the order
+
+  known causes, ranked; doctor checks them in this order
+  1. an earlier step's simulated delete or move took the path away
+     probe: plan-order (the dry-run plan, for the earlier op that took the path away)
+     remedy: move the read before that step, or drop the delete; the plan shows the op that took it
+
+  arises in: dry-run  ·  tags: kernel
+
+======== E600 ========
+E600 raised by the script  (cough, cough family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The script called `cough` and nothing caught it.
+
+  what to type next: catch it with try/ashtray where you can recover; burns are rolled back when nothing catches it
+
+  known causes, ranked; doctor checks them in this order
+  1. your own cough; the values in scope at the time are the useful thing
+     probe: none; a suggestion, not a finding
+     remedy: exhale the values before the cough, or catch it with try/ashtray and read the error map
+
+  arises in: run, light
+
+======== E601 ========
+E601 assertion failed  (cough, cough family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  assert() was given a false value.
+
+  what to type next: print the values it compares; the optional second argument becomes the message
+
+  known causes, ranked; doctor checks them in this order
+  1. assert(condition, message) saw false
+     probe: none; a suggestion, not a finding
+     remedy: exhale the values the condition compares
+
+  arises in: run, light
+
+======== E602 ========
+E602 chain failed  (cough, cough family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A step of a chain raised an error and the chain stopped.
+
+  what to type next: fix the step at the line shown, or light with {continue_on_error: true} and read failed[] from the report
+
+  known causes, ranked; doctor checks them in this order
+  1. a step raised; the message names the step and the line the error was raised on
+     probe: chain-report (the chain report: which step, its label, and the inner error)
+     remedy: fix the step; or light with {continue_on_error: true} to run the rest and read failed[]
+  2. a step expected the previous step's result and got null
+     probe: chain-report (the chain report: which step, its label, and the inner error)
+     remedy: a step that takes one parameter receives the previous result; give the earlier step a return value
+
+  arises in: run, light  ·  related: E603, E509
+
+======== E603 ========
+E603 process check failed  (cough, cough family, since 1.0.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  proc.run with {check: true} saw a non-zero exit code.
+
+  what to type next: read err from the ashtray value, or drop check and inspect .code yourself
+
+  known causes, ranked; doctor checks them in this order
+  1. the program exited non-zero; the error map holds code, out and err
+     probe: none; a suggestion, not a finding
+     remedy: read err from the ashtray value; the program's own message is there
+
+  arises in: run, light  ·  related: E509
+
+======== E700 ========
+E700 burn refused  (burn, kernel family, since 1.0.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The kernel refused a side effect.
+
+  what to type next: read the message; effects need a burn block
+
+  known causes, ranked; doctor checks them in this order
+  1. the kernel said no; the message says why
+     probe: none; a suggestion, not a finding
+     remedy: effects need a burn block; the message names the policy otherwise
+
+  arises in: run, dry-run  ·  tags: kernel
+
+======== E701 ========
+E701 effect outside burn  (burn, kernel family, since 1.0.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A world-changing call ran with no burn block active on the call stack.
+
+  what to type next: wrap the call, or the call to the function that makes it, in burn { }
+
+  known causes, ranked; doctor checks them in this order
+  1. the call is inside a function that was called from outside any burn
+     probe: none; a suggestion, not a finding
+     remedy: wrap the call to the function in burn { }, or the call itself
+  2. a lambda passed to .map or .each does the effect
+     probe: none; a suggestion, not a finding
+     remedy: burn around the .map call
+
+  arises in: run  ·  related: E303  ·  tags: kernel, beginner-likely
+
+======== E702 ========
+E702 journal failure  (burn, kernel family, since 1.0.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  The kernel could not record a burn before performing it, so it refused it.
+
+  what to type next: check space and permissions under ~/.cigscript (or CIGSCRIPT_HOME); `cig doctor` reports both
+
+  known causes, ranked; doctor checks them in this order
+  1. the state directory is not writable: these are MY ciggies
+     probe: state-dir-writable (whether the state directory (CIGSCRIPT_HOME or ~/.cigscript) can be written)
+     remedy: chmod it, or set CIGSCRIPT_HOME to a directory you own
+  2. the disk holding the state directory is full
+     probe: disk-free (free space on the filesystem holding the path or the state directory)
+     remedy: `cig runs --prune 20` frees old snapshots; or move CIGSCRIPT_HOME
+  3. the file vanished between the check and the snapshot
+     probe: path-exists (stat of the path named in the message)
+     remedy: retry; if it repeats, something else is editing that path during the run
+
+  arises in: run  ·  related: E508, E802  ·  tags: kernel
+
+======== E703 ========
+E703 snapshot missing  (burn, kernel family, since 1.1.0)
+
+  kind of no: don't have any over here  (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result)
+
+  A rollback was refused because at least one snapshot it needs is missing or corrupt; nothing was restored.
+
+  what to type next: `cig unburn <id> --dry-run` lists each problem; --force restores what can be and lists the rest
+
+  known causes, ranked; doctor checks them in this order
+  1. the run directory was pruned or edited
+     probe: snapshot-integrity (every snapshot the run's journal needs, its presence and its hash)
+     remedy: `cig unburn <id> --dry-run` to see what is missing; --force to restore the rest
+  2. a snapshot's bytes no longer match the hash the journal recorded
+     probe: snapshot-integrity (every snapshot the run's journal needs, its presence and its hash)
+     remedy: restore runs/<id>/snapshots from a backup first, then unburn
+
+  arises in: unburn  ·  related: E705, E704  ·  tags: kernel
+
+======== E704 ========
+E704 file changed since the run  (burn, kernel family, since 1.1.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A rollback was refused because a file the run touched has been changed by something else since; restoring would overwrite that newer content.
+
+  what to type next: look at the file, then pass --force if the old content is what you want
+
+  known causes, ranked; doctor checks them in this order
+  1. a later run or another program wrote the file
+     probe: file-hash (the current hash of a file against the hash the journal recorded)
+     remedy: `cig unburn <id> --dry-run` shows the changed-since column; --force if the old content is what you want
+
+  arises in: unburn  ·  related: E705, E703  ·  tags: kernel
+
+======== E705 ========
+E705 already rolled back  (burn, kernel family, since 1.1.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  This run was rolled back already; doing it again would overwrite whatever happened since.
+
+  what to type next: nothing, the world is already back; pass --force only if you mean to restore the old snapshots again
+
+  known causes, ranked; doctor checks them in this order
+  1. `cig unburn` was run twice for the same run
+     probe: run-record (run.json for the run: status, pid, totals)
+     remedy: nothing; --force only if you mean to restore the old snapshots again
+
+  arises in: unburn  ·  related: E703  ·  tags: kernel
+
+======== E706 ========
+E706 interrupted run  (burn, kernel family, since 1.1.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A run's process died mid-burn. The journal is intact and nothing has been restored yet.
+
+  what to type next: `cig unburn <id>` restores what the run had burned; `cig runs <id>` shows the journal
+
+  known causes, ranked; doctor checks them in this order
+  1. the process was killed, or the machine went down, mid-burn; the journal (write-ahead log) is intact
+     probe: pid-alive (whether the run's process still exists)
+     remedy: `cig unburn <id>` puts back what it burned; `cig runs <id>` shows the journal first  [doctor can apply it with a y; not reversible]
+
+  arises in: doctor, runs  ·  related: E703  ·  tags: kernel, fixable-by-doctor
+
+======== E800 ========
+E800 usage error  (usage, usage family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The command line or the environment is wrong.
+
+  what to type next: `cig --help`, or `cig <command> --help`
+
+  known causes, ranked; doctor checks them in this order
+  1. the message says which argument or setting
+     probe: none; a suggestion, not a finding
+     remedy: `cig <command> --help` shows the flags
+
+  arises in: any
+
+======== E801 ========
+E801 cannot read script  (usage, usage family, since 1.0.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  The script file could not be opened.
+
+  what to type next: check the path; scripts resolve against the current directory
+
+  known causes, ranked; doctor checks them in this order
+  1. the path is wrong, or relative to another directory: can't see any ciggies
+     probe: path-exists (stat of the path named in the message)
+     remedy: ls the path; run from the directory the script lives in, or give the full path
+  2. permission denied: these are MY ciggies
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: chmod +r the file
+
+  arises in: run, check, light
+
+======== E802 ========
+E802 state directory unavailable  (usage, usage family, since 1.0.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The state directory cannot be created or written.
+
+  what to type next: set CIGSCRIPT_HOME to a writable location; `cig doctor` shows which one is in use
+
+  known causes, ranked; doctor checks them in this order
+  1. ~/.cigscript (or CIGSCRIPT_HOME) cannot be created or written
+     probe: state-dir-writable (whether the state directory (CIGSCRIPT_HOME or ~/.cigscript) can be written)
+     remedy: set CIGSCRIPT_HOME to a directory you own
+
+  arises in: any  ·  related: E702
+
+======== E803 ========
+E803 no such run  (usage, usage family, since 1.0.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  No run record matches the id or prefix given.
+
+  what to type next: `cig runs` lists them; give more of the id if it is ambiguous
+
+  known causes, ranked; doctor checks them in this order
+  1. a typo, or a prefix that matches nothing or several runs
+     probe: run-list (the run records under the state directory)
+     remedy: `cig runs` lists them; give more of the id
+  2. the run was pruned
+     probe: run-list (the run records under the state directory)
+     remedy: nothing to restore from; `cig runs --prune N` keeps the newest N
+
+  arises in: unburn, runs
+
+======== E804 ========
+E804 no such chain  (usage, usage family, since 1.0.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  The script declares no chain by that name.
+
+  what to type next: `cig chains <file>` lists them
+
+  known causes, ranked; doctor checks them in this order
+  1. the script declares no chain by that name
+     probe: chain-list (the chains the script declares)
+     remedy: `cig chains <file>` lists them
+
+  arises in: light
+
+======== E805 ========
+E805 network tool missing  (usage, usage family, since 1.0.0)
+
+  kind of no: don't have any over here  (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result)
+
+  Neither `gh` nor `curl` is available for the update or report.
+
+  what to type next: install curl or gh; `cig doctor --fix` offers to
+
+  known causes, ranked; doctor checks them in this order
+  1. neither gh nor curl is on PATH
+     probe: network-tools (whether gh and curl are on PATH)
+     remedy: install curl from any package manager, or gh; `cig doctor --fix` offers to
+
+  arises in: update
+
+======== E806 ========
+E806 update failed  (usage, usage family, since 1.0.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  The release could not be fetched, verified or installed.
+
+  what to type next: the message says which step; retry, or install from the releases page
+
+  known causes, ranked; doctor checks them in this order
+  1. no network, or the release host refused
+     probe: none; a suggestion, not a finding
+     remedy: retry; `cig update --check` shows what it can reach
+  2. the checksum did not match: nothing was installed
+     probe: release-manifest (the cached release manifest and the checksum file for the asset)
+     remedy: retry once; report it if it repeats, since a mismatch means the download is not what was published
+  3. the install directory is not writable, or is group-writable (refused for safety)
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: chown or chmod the directory holding cig, or install to a directory only you can write
+
+  arises in: update
+
+======== E900 ========
+E900 internal error  (internal, internal family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  CigScript hit a condition it believes impossible.
+
+  what to type next: please report it: `cig crash send` after the crash, or file an issue with the script
+
+  known causes, ranked; doctor checks them in this order
+  1. a bug in CigScript; nothing you wrote should be able to cause this
+     probe: none; a suggestion, not a finding
+     remedy: file an issue with the script and the message; the crash pipeline makes this one command
+
+  arises in: any
+
+======== E901 ========
+E901 crash  (internal, internal family, since 1.0.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  CigScript panicked. A crash report was written locally.
+
+  what to type next: `cig crash list` then `cig crash send <id>`, or say yes at the prompt
+
+  known causes, ranked; doctor checks them in this order
+  1. CigScript panicked; a redacted report was written under the state directory
+     probe: crash-reports (the crash reports saved under the state directory)
+     remedy: `cig crash list`, then `cig crash send <id>`; you can read the file first, it is plain JSON
+
+  arises in: any

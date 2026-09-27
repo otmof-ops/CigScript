@@ -81,6 +81,9 @@ pub fn asset_name(version: &Version) -> String {
     format!("cig-v{version}-{os}-{}{ext}", std::env::consts::ARCH)
 }
 
+/// The message every "no transport" failure starts with; the CLI maps it to E805.
+pub const NO_TOOL: &str = "neither `gh` nor `curl` is installed";
+
 pub fn has_tool(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|p| {
@@ -166,7 +169,7 @@ fn releases_json(repo: &str) -> Result<String, String> {
         }
         return Ok(String::from_utf8_lossy(&out.stdout).to_string());
     }
-    Err("neither `gh` nor `curl` is installed; `cig doctor --fix` can install curl".to_string())
+    Err(format!("{NO_TOOL}; `cig doctor --fix` can install curl"))
 }
 
 fn pick(json: &str, prerelease_ok: bool) -> Result<Release, String> {
@@ -303,7 +306,7 @@ pub fn download(url: &str, dest: &Path) -> Result<(), String> {
         fs::rename(dir.join(&name), dest).map_err(|e| e.to_string())?;
         return Ok(());
     }
-    Err("neither `curl` nor `gh` is installed".to_string())
+    Err(NO_TOOL.to_string())
 }
 
 fn parse_asset_url(url: &str) -> Option<(String, String, String)> {

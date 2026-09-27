@@ -47,7 +47,7 @@ without a green test is not delivered.
 | 6 | Journal durability | 1 | journal entry and snapshot are synced before the effect; benchmark attached | delivered, `hammer/1` (≈1 ms/op, `docs/BURN.md`) |
 | 7 | Allocation ceiling | 1 | `"x".repeat(huge)` is a diagnostic, never an abort | delivered, `hammer/1` |
 | 8 | `unburn` idempotence and pre-check | 1 | second `unburn` is a no-op; missing snapshots refuse before touching anything | delivered, `hammer/1` |
-| 9 | Error-code registry as data | 8 | `ERRORS.md`, `explain`, `--json` schema and doctor's knowledge all generate from one file; CI fails on a code without an explain page | pending |
+| 9 | Error-code registry as data | 8 | `ERRORS.md`, `explain`, `--json` schema and doctor's knowledge all generate from one file; CI fails on a code without an explain page | delivered, `hammer/2` (`errors/registry.toml`) |
 | 10 | Doctor auto-fire | 9 | every diagnostic passes one emit hook; doctor prints verdict / why / fix / if-not; probes proven read-only | pending |
 | 11 | Step budget and `finally` | 2, 3 | `while true {}` ends with "your loop never ends" and a line number | pending |
 | 12 | Cross-run hash check on `unburn` | 1 | rolling back over newer content refuses unless `--force` | pending |

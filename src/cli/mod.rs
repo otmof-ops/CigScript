@@ -60,6 +60,9 @@ pub enum Command {
     Check {
         /// Script to check.
         file: PathBuf,
+        /// Exit non-zero when there are warnings (for CI).
+        #[arg(long)]
+        deny_warnings: bool,
     },
     /// Light a chain: run the script, then its named chain, step by step.
     Light(LightArgs),
@@ -106,6 +109,9 @@ pub enum Command {
     Explain {
         /// A code such as E502.
         code: Option<String>,
+        /// Print the JSON Schema for a diagnostic (generated from the registry).
+        #[arg(long)]
+        schema: bool,
     },
     /// Show or change settings in ~/.cigscript/config.
     Config {
@@ -195,14 +201,17 @@ pub fn main() -> i32 {
             Some(a.chain),
         ),
         Command::Chains { file } => chains::chains(&ctx, &file),
-        Command::Check { file } => run::check(&ctx, &file),
+        Command::Check {
+            file,
+            deny_warnings,
+        } => run::check(&ctx, &file, deny_warnings),
         Command::Eval { code } => run::eval(&ctx, &code),
         Command::Repl => repl::repl(&ctx),
         Command::Runs { id, prune } => runs::runs(&ctx, id, prune),
         Command::Unburn { id, dry_run, force } => runs::unburn(&ctx, &id, dry_run, force),
         Command::Doctor { fix } => doctor::doctor(&ctx, fix),
         Command::Language => language::language(&ctx),
-        Command::Explain { code } => explain::explain(&ctx, code),
+        Command::Explain { code, schema } => explain::explain(&ctx, code, schema),
         Command::Config { key, value, unset } => config::config(&ctx, key, value, unset),
         Command::Crash { command } => crash::crash(&ctx, command),
         Command::Update {

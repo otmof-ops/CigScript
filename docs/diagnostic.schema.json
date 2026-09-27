@@ -1,0 +1,214 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/otmof-ops/CigScript/blob/main/docs/diagnostic.schema.json",
+  "title": "CigScript diagnostic",
+  "description": "One diagnostic as `cig --json` prints it. Generated from errors/registry.toml (registry version 1) for cigscript 1.0.0.",
+  "type": "object",
+  "required": [
+    "code",
+    "kind",
+    "message"
+  ],
+  "properties": {
+    "code": {
+      "type": "string",
+      "enum": [
+        "E100",
+        "E101",
+        "E102",
+        "E103",
+        "E104",
+        "E200",
+        "E201",
+        "E202",
+        "E203",
+        "E204",
+        "E205",
+        "E206",
+        "E207",
+        "E300",
+        "E301",
+        "E302",
+        "E303",
+        "E304",
+        "E305",
+        "E306",
+        "E307",
+        "E400",
+        "E401",
+        "E402",
+        "E403",
+        "E404",
+        "E405",
+        "E500",
+        "E501",
+        "E502",
+        "E503",
+        "E504",
+        "E505",
+        "E506",
+        "E507",
+        "E508",
+        "E509",
+        "E510",
+        "E511",
+        "E512",
+        "E513",
+        "E514",
+        "E515",
+        "E520",
+        "E600",
+        "E601",
+        "E602",
+        "E603",
+        "E700",
+        "E701",
+        "E702",
+        "E703",
+        "E704",
+        "E705",
+        "E706",
+        "E800",
+        "E801",
+        "E802",
+        "E803",
+        "E804",
+        "E805",
+        "E806",
+        "E900",
+        "E901"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "lex",
+        "syntax",
+        "check",
+        "type",
+        "runtime",
+        "cough",
+        "burn",
+        "usage",
+        "internal"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
+    "hint": {
+      "type": "string",
+      "description": "what to type next"
+    },
+    "line": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "col": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "diagnosis": {
+      "$ref": "#/$defs/diagnosis"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "family": {
+      "type": "string",
+      "enum": [
+        "lex",
+        "syntax",
+        "check",
+        "type",
+        "runtime",
+        "ghost",
+        "hop",
+        "cough",
+        "kernel",
+        "fold",
+        "usage",
+        "update",
+        "internal"
+      ]
+    },
+    "no": {
+      "type": "string",
+      "enum": [
+        "none",
+        "cant-see-any",
+        "never-heard-of-you",
+        "these-are-mine",
+        "dont-have-any",
+        "depends"
+      ]
+    },
+    "diagnosis": {
+      "type": "object",
+      "description": "doctor's read-only diagnosis, when it fired: verdict, why, fix, and what to check if that is not it",
+      "required": [
+        "verdict"
+      ],
+      "properties": {
+        "verdict": {
+          "type": "string"
+        },
+        "why": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "fix": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "if_not": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "probes": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "check_report": {
+      "type": "object",
+      "description": "what `cig --json check <file>` prints",
+      "required": [
+        "file",
+        "ok",
+        "errors",
+        "warnings"
+      ],
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "$ref": "#"
+          }
+        },
+        "warnings": {
+          "type": "array",
+          "items": {
+            "$ref": "#"
+          }
+        }
+      }
+    }
+  }
+}

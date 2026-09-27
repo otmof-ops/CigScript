@@ -69,10 +69,14 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | serde_core | 1.0.229 | Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com> | https://github.com/serde-rs/serde |
 | serde_derive | 1.0.229 | Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com> | https://github.com/serde-rs/serde |
 | serde_json | 1.0.151 | Erick Tryzelaar <erick.tryzelaar@gmail.com>, David Tolnay <dtolnay@gmail.com> | https://github.com/serde-rs/json |
+| serde_spanned | 0.6.9 | unrecorded | https://github.com/toml-rs/toml |
 | sha2 | 0.10.9 | RustCrypto Developers | https://github.com/RustCrypto/hashes |
 | shlex | 2.0.1 | comex <comexk@gmail.com>, Fenhl <fenhl@fenhl.net>, Adrian Taylor <adetaylor@chromium.org>, Alex Touchet <alextouchet@outlook.com>, Daniel Parks <dp+git@oxidized.org>, Garrett Berg <googberg@gmail.com> | https://github.com/comex/rust-shlex |
 | syn | 2.0.119 | David Tolnay <dtolnay@gmail.com> | https://github.com/dtolnay/syn |
 | syn | 3.0.6 | David Tolnay <dtolnay@gmail.com> | https://github.com/dtolnay/syn |
+| toml | 0.8.23 | unrecorded | https://github.com/toml-rs/toml |
+| toml_datetime | 0.6.11 | unrecorded | https://github.com/toml-rs/toml |
+| toml_edit | 0.22.27 | unrecorded | https://github.com/toml-rs/toml |
 | typenum | 1.20.1 | unrecorded | https://github.com/paholg/typenum |
 | utf8parse | 0.2.2 | Joe Wilm <joe@jwilm.com>, Christian Duerr <contact@christianduerr.com> | https://github.com/alacritty/vte |
 | version_check | 0.9.5 | Sergio Benitez <sb@sergio.bz> | https://github.com/SergioBenitez/version_check |
@@ -96,6 +100,7 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | generic-array | 0.14.7 | Bartłomiej Kamiński <fizyk20@gmail.com>, Aaron Trent <novacrazy@gmail.com> | https://github.com/fizyk20/generic-array.git |
 | slab | 0.4.12 | Carl Lerche <me@carllerche.com> | https://github.com/tokio-rs/slab |
 | strsim | 0.11.1 | Danny Guo <danny@dannyguo.com>, maxbachmann <oss@maxbachmann.de> | https://github.com/rapidfuzz/strsim-rs |
+| winnow | 0.7.15 | unrecorded | https://github.com/winnow-rs/winnow |
 | zmij | 1.0.23 | David Tolnay <dtolnay@gmail.com> | https://github.com/dtolnay/zmij |
 
 ## (Apache-2.0 OR MIT) AND Unicode-3.0

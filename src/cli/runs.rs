@@ -68,13 +68,16 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
         Ok(None) => {
             eprintln!(
                 "{} no run matches `{id}` ({} recorded)",
-                ctx.red("error:"),
+                ctx.red("error[E803 usage]:"),
                 all.len()
             );
+            eprintln!("  = hint: `cig runs` lists them; give more of the id if it is ambiguous");
+            eprintln!("  = explain: cig explain E803");
             return exit::USAGE;
         }
         Err(e) => {
-            eprintln!("{} {e}", ctx.red("error:"));
+            eprintln!("{} {e}", ctx.red("error[E803 usage]:"));
+            eprintln!("  = explain: cig explain E803");
             return exit::USAGE;
         }
     };
@@ -161,11 +164,14 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     let mut rec = match runs::find(id) {
         Ok(Some(r)) => r,
         Ok(None) => {
-            eprintln!("{} no run matches `{id}`", ctx.red("error:"));
+            eprintln!("{} no run matches `{id}`", ctx.red("error[E803 usage]:"));
+            eprintln!("  = hint: `cig runs` lists them; give more of the id if it is ambiguous");
+            eprintln!("  = explain: cig explain E803");
             return exit::USAGE;
         }
         Err(e) => {
-            eprintln!("{} {e}", ctx.red("error:"));
+            eprintln!("{} {e}", ctx.red("error[E803 usage]:"));
+            eprintln!("  = explain: cig explain E803");
             return exit::USAGE;
         }
     };

@@ -47,6 +47,21 @@ seam; the package's manifest carries the state of each deliverable.
   hops, E70x kernel and journal, E75x folds and packs, E80x usage, E85x
   updater and doctor. New codes: `E514`, `E515`, `E520`, `E703`–`E706`.
 - `run.json` records the pid of the run.
+- The error-code registry is data: `errors/registry.toml` is the one place a
+  code is defined, with its family and kind, which of the four kinds of no it
+  is (the lexicon's vocabulary), where it arises, its ranked causes each with
+  a named read-only probe and a remedy, and its related codes. `cig explain`
+  renders it, `--json explain` prints the nodes, `cig explain --schema` prints
+  the JSON Schema for a diagnostic, and `docs/ERRORS.md` and
+  `docs/diagnostic.schema.json` are generated from it. `tests/registry.rs`
+  fails when the source emits a code the registry lacks, when the registry
+  holds a code nothing emits (unless tagged `planned`), when a page is
+  incomplete, or when the generated docs are stale; the explain pages are
+  golden-tested so wording cannot regress silently.
+- `cig check --deny-warnings` for CI: exit 2 when there are warnings.
+- The usage layer carries its codes: `E801` cannot read script, `E802` state
+  directory unavailable, `E803` no such run, and `E805` (no `gh` or `curl` at
+  all) is told apart from `E806` (the transport failed).
 
 ## 1.0.0 — 2026-09-26
 

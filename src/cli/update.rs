@@ -17,17 +17,11 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
     let release = match &to {
         Some(tag) => match update::find(&repo, tag) {
             Ok(r) => r,
-            Err(e) => {
-                eprintln!("{} {e}", ctx.red("error[E806 usage]:"));
-                return exit::USAGE;
-            }
+            Err(e) => return fail(ctx, &e),
         },
         None => match update::latest(&repo, prerelease) {
             Ok(r) => r,
-            Err(e) => {
-                eprintln!("{} {e}", ctx.red("error[E806 usage]:"));
-                return exit::USAGE;
-            }
+            Err(e) => return fail(ctx, &e),
         },
     };
     let Some(target) = release.version() else {
@@ -150,4 +144,17 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
             exit::USAGE
         }
     }
+}
+
+/// An update failure with its code: E805 when there is no transport at all,
+/// E806 for everything the transport then failed to do.
+fn fail(ctx: &Ctx, e: &str) -> i32 {
+    let code = if e.starts_with(update::NO_TOOL) {
+        "E805"
+    } else {
+        "E806"
+    };
+    eprintln!("{} {e}", ctx.red(&format!("error[{code} usage]:")));
+    eprintln!("  = explain: cig explain {code}");
+    exit::USAGE
 }
