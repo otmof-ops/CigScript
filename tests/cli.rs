@@ -1620,3 +1620,97 @@ fn finally_runs_on_exit_and_a_missing_ashtray_is_a_syntax_error() {
         "the write after the burn is still refused: {err}"
     );
 }
+
+// ----- the Hammer update: the cross-run check on unburn ------------------------
+
+#[test]
+fn unburn_refuses_when_a_file_changed_since_the_run_unless_forced() {
+    let sb = Sandbox::new();
+    sb.write("f.txt", "one");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"f.txt\", \"two\")\n  fs.write_text(\"g.txt\", \"new\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert!(sb
+        .home()
+        .join("runs")
+        .join(&id)
+        .join("after.json")
+        .is_file());
+    // Untouched since: the plan says so, and the rollback is allowed.
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("unchanged since") && !plan.contains("changed since:"),
+        "{plan}"
+    );
+    // Someone edits f.txt by hand.
+    sb.write("f.txt", "three");
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("changed since: ") && plan.contains("f.txt") && plan.contains("E704"),
+        "{plan}"
+    );
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E704 burn]:") && err.contains("f.txt") && err.contains("now a file"),
+        "{err}"
+    );
+    assert_eq!(
+        sb.read("f.txt"),
+        "three",
+        "a refused unburn touches nothing"
+    );
+    assert!(sb.exists("g.txt"));
+    sb.run_ok(&["unburn", &id, "--force"]);
+    assert_eq!(sb.read("f.txt"), "one");
+    assert!(!sb.exists("g.txt"));
+}
+
+#[test]
+fn unburn_names_the_later_run_that_changed_the_file() {
+    let sb = Sandbox::new();
+    sb.write("f.txt", "one");
+    sb.write("a.cig", "burn {\n  fs.write_text(\"f.txt\", \"two\")\n}\n");
+    sb.write(
+        "b.cig",
+        "burn {\n  fs.write_text(\"f.txt\", \"three\")\n}\n",
+    );
+    sb.run_ok(&["run", "a.cig"]);
+    let a = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // ids are second-resolution
+    sb.run_ok(&["run", "b.cig"]);
+    let b = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert_ne!(a, b);
+    let err = sb.run_err(&["unburn", &a], 1);
+    assert!(
+        err.contains("E704") && err.contains(&format!("changed by run {b}")),
+        "{err}"
+    );
+    let plan = sb.run_ok(&["unburn", &a, "--dry-run"]);
+    assert!(plan.contains(&format!("by run {b}")), "{plan}");
+    // Newest first across runs: unburn b, then a.
+    sb.run_ok(&["unburn", &b]);
+    assert_eq!(sb.read("f.txt"), "two");
+    sb.run_ok(&["unburn", &a]);
+    assert_eq!(sb.read("f.txt"), "one");
+}
+
+#[test]
+fn runs_without_after_state_are_still_unburnable_and_say_so() {
+    let sb = Sandbox::new();
+    sb.write("f.txt", "one");
+    sb.write("s.cig", "burn {\n  fs.write_text(\"f.txt\", \"two\")\n}\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    fs::remove_file(sb.home().join("runs").join(&id).join("after.json")).unwrap();
+    sb.write("f.txt", "three");
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("changed since: unknown") && plan.contains("predates"),
+        "{plan}"
+    );
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("f.txt"), "one");
+}

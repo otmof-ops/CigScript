@@ -419,6 +419,150 @@ pub(crate) fn resolve_symlink_chain(path: &Path) -> PathBuf {
     current
 }
 
+// ----- after-state: what the run left, so unburn can tell what changed since -----
+
+/// What a path looks like at one moment, in enough detail to notice a change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PathState {
+    Absent,
+    File { sha256: String, bytes: u64 },
+    Dir,
+    Symlink { target: PathBuf },
+}
+
+impl PathState {
+    pub fn observe(path: &Path) -> Self {
+        match fs::symlink_metadata(path) {
+            Err(_) => PathState::Absent,
+            Ok(m) if m.file_type().is_symlink() => PathState::Symlink {
+                target: fs::read_link(path).unwrap_or_default(),
+            },
+            Ok(m) if m.is_dir() => PathState::Dir,
+            Ok(m) => PathState::File {
+                sha256: sha256_file(path).unwrap_or_default(),
+                bytes: m.len(),
+            },
+        }
+    }
+
+    pub fn describe(&self) -> String {
+        match self {
+            PathState::Absent => "absent".to_string(),
+            PathState::File { sha256, bytes } => {
+                format!(
+                    "a file, {bytes} bytes, sha256 {}",
+                    &sha256[..sha256.len().min(12)]
+                )
+            }
+            PathState::Dir => "a directory".to_string(),
+            PathState::Symlink { target } => format!("a symlink to {}", target.display()),
+        }
+    }
+}
+
+/// `after.json`: every path the run touched, as the run left it.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AfterState {
+    pub recorded: String,
+    pub paths: std::collections::BTreeMap<PathBuf, PathState>,
+}
+
+/// A path that is no longer as the run left it.
+#[derive(Clone, Debug, Serialize)]
+pub struct Change {
+    pub path: PathBuf,
+    /// The first journal entry that touched the path.
+    pub seq: u64,
+    pub was: PathState,
+    pub now: PathState,
+}
+
+/// What `changed_since` knows: nothing at all for a run that predates
+/// after-state records, or the list of changes (possibly empty).
+#[derive(Clone, Debug, Serialize)]
+pub struct ChangedSince {
+    pub known: bool,
+    pub changes: Vec<Change>,
+}
+
+impl Journal {
+    /// Every path a rollback would touch, with the entry that first names it.
+    pub fn touched_paths(&self) -> Vec<(PathBuf, u64)> {
+        let mut seen: Vec<(PathBuf, u64)> = Vec::new();
+        for e in &self.entries {
+            if !e.reversible {
+                continue;
+            }
+            for b in &e.before {
+                if !seen.iter().any(|(p, _)| p == &b.path) {
+                    seen.push((b.path.clone(), e.seq));
+                }
+                if let Before::Moved { to } = &b.before {
+                    if !seen.iter().any(|(p, _)| p == to) {
+                        seen.push((to.clone(), e.seq));
+                    }
+                }
+            }
+        }
+        seen
+    }
+
+    /// Record what the run left behind, once its effects are complete.
+    pub fn write_after_state(&self) -> Result<(), io::Error> {
+        let Some(dir) = &self.run_dir else {
+            return Ok(());
+        };
+        let mut after = AfterState {
+            recorded: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            paths: Default::default(),
+        };
+        for (path, _) in self.touched_paths() {
+            after.paths.insert(path.clone(), PathState::observe(&path));
+        }
+        let text = serde_json::to_string_pretty(&after)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        fs::write(dir.join("after.json"), text)?;
+        Ok(())
+    }
+
+    pub fn after_state(&self) -> Option<AfterState> {
+        let dir = self.run_dir.as_ref()?;
+        let text = fs::read_to_string(dir.join("after.json")).ok()?;
+        serde_json::from_str(&text).ok()
+    }
+
+    /// Which touched paths are no longer as the run left them. Restoring
+    /// over one of these would overwrite work done since.
+    pub fn changed_since(&self) -> ChangedSince {
+        let Some(after) = self.after_state() else {
+            return ChangedSince {
+                known: false,
+                changes: Vec::new(),
+            };
+        };
+        let mut changes = Vec::new();
+        for (path, seq) in self.touched_paths() {
+            let Some(was) = after.paths.get(&path) else {
+                continue;
+            };
+            let now = PathState::observe(&path);
+            if &now != was {
+                changes.push(Change {
+                    path,
+                    seq,
+                    was: was.clone(),
+                    now,
+                });
+            }
+        }
+        ChangedSince {
+            known: true,
+            changes,
+        }
+    }
+}
+
 /// The topmost path component that does not exist yet (or `path` itself).
 fn first_missing_ancestor(path: &Path) -> PathBuf {
     let mut candidate = path.to_path_buf();
@@ -756,6 +900,43 @@ mod tests {
             PathBuf::from("nowhere/at/all")
         );
         assert_eq!(fs::read_to_string(root.join("target.txt")).unwrap(), "t");
+    }
+
+    #[test]
+    fn changed_since_sees_edits_after_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let run_dir = root.join("run");
+        fs::write(root.join("f.txt"), "one").unwrap();
+        let mut j = Journal::open(Some(run_dir.clone())).unwrap();
+        j.record(
+            1,
+            Op::Write {
+                path: root.join("f.txt"),
+            },
+        )
+        .unwrap();
+        fs::write(root.join("f.txt"), "two").unwrap();
+        j.record(
+            2,
+            Op::Write {
+                path: root.join("g.txt"),
+            },
+        )
+        .unwrap();
+        fs::write(root.join("g.txt"), "new").unwrap();
+        j.write_after_state().unwrap();
+        let loaded = Journal::load(&run_dir).unwrap();
+        let c = loaded.changed_since();
+        assert!(c.known && c.changes.is_empty(), "{c:?}");
+        fs::write(root.join("f.txt"), "three").unwrap();
+        fs::remove_file(root.join("g.txt")).unwrap();
+        let c = loaded.changed_since();
+        assert_eq!(c.changes.len(), 2, "{c:?}");
+        assert!(matches!(c.changes[1].now, PathState::Absent));
+        // A run without after.json knows nothing, and says so.
+        fs::remove_file(run_dir.join("after.json")).unwrap();
+        assert!(!loaded.changed_since().known);
     }
 
     #[test]

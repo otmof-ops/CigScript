@@ -339,6 +339,7 @@ for.
 | random ops over random trees, modes and links, then rollback | byte-identical every time, 60 seeds | 1.1.0 | `rollback_property_over_random_trees` |
 | `"x".repeat(i64::MAX)` | **aborted the process**; now `E514`, a diagnostic | fixed 1.1.0 | `allocation_ceiling_is_a_diagnostic_not_an_abort` |
 | `-9223372036854775808` as a literal | **lexer rejected it**; now parses | fixed 1.1.0 | `i64_min_is_a_literal_and_the_overflow_next_to_it_is_a_diagnostic` |
+| edit a file by hand after the run, then `unburn` | **restored the old snapshot over the edit**; now refused, `E704`, naming the later run when there is one | fixed 1.1.0 | `unburn_refuses_when_a_file_changed_since_the_run_unless_forced` |
 | `while true {}` | **hung until killed**; now `E515` "your loop never ends", with the line, after the step budget | fixed 1.1.0 | `while_true_ends_with_your_loop_never_ends_and_a_line` |
 | `unburn` the same run twice | **restored the old snapshots over newer work**; now refused, `E705` | fixed 1.1.0 | `unburn_refuses_a_second_time_without_force` |
 | delete one snapshot, then `unburn` | **restored half and stopped**; now refused before touching anything, `E703` | fixed 1.1.0 | `unburn_checks_every_snapshot_before_touching_anything` |
