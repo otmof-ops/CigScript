@@ -30,18 +30,73 @@ pub fn read_source(ctx: &Ctx, file: &Path) -> Result<String, i32> {
     })
 }
 
-/// Print a diagnostic the way every command does.
+/// Print a diagnostic the way every command does. This is the one emit
+/// point: doctor's automatic diagnosis fires here, after the diagnostic,
+/// unless `--no-doctor` or `CIG_DOCTOR=0` switched it off.
 pub fn report(ctx: &Ctx, diag: &Diagnostic, file: Option<&str>, source: Option<&str>) {
+    let diagnosis = if ctx.doctor {
+        cigscript::doctor::diagnose(diag, &cigscript::doctor::Context::here(source))
+    } else {
+        None
+    };
     if ctx.json {
         let mut obj = serde_json::to_value(diag).unwrap_or_default();
         if let Some(f) = file {
             obj["file"] = serde_json::Value::String(f.to_string());
         }
+        if let Some(dx) = &diagnosis {
+            obj["diagnosis"] = serde_json::to_value(dx).unwrap_or_default();
+        }
         outln!("{}", serde_json::to_string(&obj).unwrap_or_default());
         return;
     }
-    eprintln!("{}", ctx.red(NO_CIGARETTES));
+    if !ctx.plain {
+        eprintln!("{}", ctx.red(NO_CIGARETTES));
+    }
     eprint!("{}", diag.render(file, source));
+    if let Some(dx) = &diagnosis {
+        eprint!("{}", super::doctor::render_diagnosis(ctx, dx));
+    }
+}
+
+/// Several diagnostics from one check: the banner once, then each one
+/// through the same hook. In JSON mode each error carries its diagnosis.
+pub fn report_all(ctx: &Ctx, diags: &[Diagnostic], file: &str, source: &str) {
+    if ctx.json {
+        return;
+    }
+    if !ctx.plain {
+        eprintln!("{}", ctx.red(NO_CIGARETTES));
+    }
+    for d in diags {
+        eprint!("{}", d.render(Some(file), Some(source)));
+        if ctx.doctor {
+            if let Some(dx) =
+                cigscript::doctor::diagnose(d, &cigscript::doctor::Context::here(Some(source)))
+            {
+                eprint!("{}", super::doctor::render_diagnosis(ctx, &dx));
+            }
+        }
+    }
+}
+
+/// A check report's diagnostics as JSON, each with its diagnosis when
+/// doctor is on.
+pub fn diags_json(ctx: &Ctx, diags: &[Diagnostic], source: &str) -> Vec<serde_json::Value> {
+    diags
+        .iter()
+        .map(|d| {
+            let mut v = serde_json::to_value(d).unwrap_or_default();
+            if ctx.doctor {
+                if let Some(dx) =
+                    cigscript::doctor::diagnose(d, &cigscript::doctor::Context::here(Some(source)))
+                {
+                    v["diagnosis"] = serde_json::to_value(dx).unwrap_or_default();
+                }
+            }
+            v
+        })
+        .collect()
 }
 
 pub fn check(ctx: &Ctx, file: &Path, deny_warnings: bool) -> i32 {
@@ -63,7 +118,7 @@ pub fn check(ctx: &Ctx, file: &Path, deny_warnings: bool) -> i32 {
         let obj = serde_json::json!({
             "file": name,
             "ok": rep.ok(),
-            "errors": rep.errors,
+            "errors": diags_json(ctx, &rep.errors, &source),
             "warnings": rep.warnings,
             "warnings_denied": denied,
         });
@@ -103,10 +158,7 @@ pub fn check(ctx: &Ctx, file: &Path, deny_warnings: bool) -> i32 {
         );
         exit::OK
     } else {
-        eprintln!("{}", ctx.red(NO_CIGARETTES));
-        for e in &rep.errors {
-            eprint!("{}", e.render(Some(&name), Some(&source)));
-        }
+        report_all(ctx, &rep.errors, &name, &source);
         exit::SYNTAX_ERROR
     }
 }
@@ -177,10 +229,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
                     report(ctx, e, Some(&name), None);
                 }
             } else {
-                eprintln!("{}", ctx.red(NO_CIGARETTES));
-                for e in &rep.errors {
-                    eprint!("{}", e.render(Some(&name), Some(&source)));
-                }
+                report_all(ctx, &rep.errors, &name, &source);
             }
             return exit::SYNTAX_ERROR;
         }
@@ -305,6 +354,11 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
                 Some(d.message.clone()),
             ),
         };
+        if let Err(d) = &result {
+            let mut v = serde_json::to_value(d).unwrap_or_default();
+            v["file"] = serde_json::Value::String(name.clone());
+            record.diagnostic = Some(v);
+        }
         record.finish(status, error);
         if let Err(e) = record.save() {
             eprintln!(

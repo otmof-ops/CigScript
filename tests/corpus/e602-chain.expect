@@ -1,0 +1,14 @@
+chain deploy: step 1/2 step 1 ...
+chain deploy: step 1/2 step 1 ok (N ms)
+chain deploy: step 2/2 boom ...
+chain deploy: step 2/2 boom FAILED (N ms): kaboom
+Don't see any cigarettes.
+error[E602 cough]: chain `deploy` failed at step 2 (boom): kaboom (raised at line 3)
+  --> e602-chain.cig:7:3
+  |
+7 |   boom
+  |   ^^^^
+  = hint: catch it with try/ashtray, or light with {continue_on_error: true}
+  = explain: cig explain E602
+  = doctor: I think a step raised an error, because I checked the chain report: which step, its label, and the inner error and found step 2 (boom) raised the error, raised at line 3.
+  = fix: fix the step; or light with {continue_on_error: true} to run the rest and read failed[]

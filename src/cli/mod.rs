@@ -48,6 +48,12 @@ pub struct Cli {
     /// Never use colour (also honoured: NO_COLOR).
     #[arg(long, global = true)]
     pub no_color: bool,
+    /// Do not run doctor's automatic diagnosis on errors (also: CIG_DOCTOR=0).
+    #[arg(long, global = true)]
+    pub no_doctor: bool,
+    /// Same codes, spans, hints and facts, without the catchphrases (also: CIG_PLAIN=1).
+    #[arg(long, global = true)]
+    pub plain: bool,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -102,6 +108,8 @@ pub enum Command {
         /// Offer to repair what can be repaired, asking before each change.
         #[arg(long)]
         fix: bool,
+        /// A run id (or prefix): diagnose that run's recorded error again, read-only.
+        run: Option<String>,
     },
     /// Print the language legend and the standard library surface.
     Language,
@@ -186,6 +194,8 @@ pub fn main() -> i32 {
     let ctx = Ctx {
         json: cli.json,
         color,
+        doctor: !cli.no_doctor && cigscript::doctor::enabled_by_env(),
+        plain: cli.plain || plain_by_env(),
     };
     match cli.command {
         Command::Run(args) => run::run(&ctx, args, None),
@@ -209,7 +219,10 @@ pub fn main() -> i32 {
         Command::Repl => repl::repl(&ctx),
         Command::Runs { id, prune } => runs::runs(&ctx, id, prune),
         Command::Unburn { id, dry_run, force } => runs::unburn(&ctx, &id, dry_run, force),
-        Command::Doctor { fix } => doctor::doctor(&ctx, fix),
+        Command::Doctor { fix, run } => match run {
+            Some(id) => doctor::rediagnose(&ctx, &id),
+            None => doctor::doctor(&ctx, fix),
+        },
         Command::Language => language::language(&ctx),
         Command::Explain { code, schema } => explain::explain(&ctx, code, schema),
         Command::Config { key, value, unset } => config::config(&ctx, key, value, unset),
@@ -227,14 +240,28 @@ pub fn after_crash() {
     let ctx = Ctx {
         json: false,
         color: std::env::var_os("NO_COLOR").is_none() && stderr_is_tty(),
+        doctor: false,
+        plain: plain_by_env(),
     };
     crash::after_crash(&ctx);
+}
+
+/// `CIG_PLAIN=1` (or anything but 0/false/off) selects plain mode.
+pub fn plain_by_env() -> bool {
+    match std::env::var("CIG_PLAIN") {
+        Ok(v) => !matches!(v.as_str(), "" | "0" | "false" | "off"),
+        Err(_) => false,
+    }
 }
 
 #[derive(Clone, Copy)]
 pub struct Ctx {
     pub json: bool,
     pub color: bool,
+    /// Run doctor's automatic diagnosis when a diagnostic is reported.
+    pub doctor: bool,
+    /// Plain mode: the same information without the catchphrases.
+    pub plain: bool,
 }
 
 impl Ctx {

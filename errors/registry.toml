@@ -277,7 +277,7 @@ arises = ["parse"]
 tags = ["beginner-likely"]
 since = "1.0.0"
 [[code.cause]]
-why = "a character or literal the lexer does not know; the message names it"
+why = "a character or literal the lexer does not know"
 probe = "source-line"
 remedy = "fix it at the caret"
 
@@ -364,7 +364,7 @@ no = "none"
 arises = ["parse"]
 since = "1.0.0"
 [[code.cause]]
-why = "the caret marks where parsing stopped; the message names what was expected there"
+why = "parsing stopped at the caret, short of what was expected"
 probe = "source-line"
 remedy = "supply what was expected, or remove what was not"
 
@@ -396,7 +396,7 @@ arises = ["parse"]
 tags = ["beginner-likely"]
 since = "1.0.0"
 [[code.cause]]
-why = "a block opened and never closed; the message names the line it opened on"
+why = "a block opened and never closed"
 probe = "brace-balance"
 remedy = "add `}` at the end of that block"
 
@@ -487,7 +487,7 @@ no = "none"
 arises = ["check"]
 since = "1.0.0"
 [[code.cause]]
-why = "the message names the mistake and the line"
+why = "the checker found the mistake at the line shown"
 probe = "source-line"
 remedy = "fix it there; `cig check <file>` lists every one"
 
@@ -502,7 +502,7 @@ tags = ["beginner-likely"]
 since = "1.0.0"
 related = ["E307", "E501"]
 [[code.cause]]
-why = "a typo; the hint names the closest declared name"
+why = "a typo in the name"
 probe = "similar-names"
 remedy = "use the suggested name"
 [[code.cause]]
@@ -618,7 +618,7 @@ no = "none"
 arises = ["run"]
 since = "1.0.0"
 [[code.cause]]
-why = "the message names the type it got"
+why = "a value of the type the message names"
 probe = "value-types"
 remedy = "convert the value first, or branch on type_of()"
 
@@ -649,7 +649,7 @@ no = "none"
 arises = ["run"]
 since = "1.0.0"
 [[code.cause]]
-why = "the message names the argument position and the expected type"
+why = "an argument of the wrong type, at the position the message names"
 probe = "value-types"
 remedy = "convert the value first: str(n), int(s), float(s)"
 
@@ -712,7 +712,7 @@ no = "none"
 arises = ["run"]
 since = "1.0.0"
 [[code.cause]]
-why = "the message says what failed"
+why = "the operation the message names failed"
 probe = "none"
 remedy = "wrap the risky code in try/ashtray to handle it"
 
@@ -740,7 +740,7 @@ arises = ["run"]
 tags = ["beginner-likely"]
 since = "1.0.0"
 [[code.cause]]
-why = "the divisor came from data that was zero or empty"
+why = "the divisor was zero, from data that was zero or empty"
 probe = "value-types"
 remedy = "guard it: if d != 0 { ... }, or give it a default with ??"
 
@@ -837,17 +837,19 @@ tags = ["beginner-likely"]
 since = "1.0.0"
 related = ["E702"]
 [[code.cause]]
-why = "the path does not exist (No such file or directory): can't see any ciggies"
+why = "the path does not exist"
+no = "cant-see-any"
 probe = "path-exists"
 remedy = "check it with fs.exists or fs.glob first; relative paths resolve against the working directory"
 [[code.cause]]
-why = "permission denied: these are MY ciggies"
+why = "permission denied"
+no = "these-are-mine"
 probe = "path-permissions"
 remedy = "`ls -l` the path and its parent to see who may write; chmod, or run as the owner"
 [[code.cause]]
-why = "the parent directory is missing"
+why = "the directory itself is missing, not just the file"
 probe = "parent-exists"
-remedy = "fs.mkdir(path.dir(p)) first, inside the burn"
+remedy = "check the directory with fs.exists(path.dir(p)); a write creates missing directories, a read cannot"
 [[code.cause]]
 why = "the disk is full, or the mount is read-only"
 probe = "disk-free"
@@ -867,7 +869,8 @@ arises = ["run", "light"]
 since = "1.0.0"
 related = ["E603", "E602"]
 [[code.cause]]
-why = "the program is not on PATH for this run: can't see any ciggies"
+why = "the program is not on PATH for this run"
+no = "cant-see-any"
 probe = "on-path"
 remedy = "proc.which(\"name\") to check; give the full path, or fix PATH in the environment the run inherits"
 [[code.cause]]
@@ -875,7 +878,8 @@ why = "it ran longer than {timeout_ms} and was killed"
 probe = "none"
 remedy = "raise {timeout_ms: N} on the proc.run, or split the work into smaller calls"
 [[code.cause]]
-why = "the file exists but is not executable: these are MY ciggies"
+why = "the file exists but is not executable"
+no = "these-are-mine"
 probe = "path-permissions"
 remedy = "chmod +x it"
 
@@ -1030,7 +1034,7 @@ arises = ["run", "light"]
 since = "1.0.0"
 related = ["E603", "E509"]
 [[code.cause]]
-why = "a step raised; the message names the step and the line the error was raised on"
+why = "a step raised an error"
 probe = "chain-report"
 remedy = "fix the step; or light with {continue_on_error: true} to run the rest and read failed[]"
 [[code.cause]]
@@ -1048,7 +1052,7 @@ arises = ["run", "light"]
 since = "1.0.0"
 related = ["E509"]
 [[code.cause]]
-why = "the program exited non-zero; the error map holds code, out and err"
+why = "the program exited non-zero"
 probe = "none"
 remedy = "read err from the ashtray value; the program's own message is there"
 
@@ -1064,7 +1068,7 @@ arises = ["run", "dry-run"]
 tags = ["kernel"]
 since = "1.0.0"
 [[code.cause]]
-why = "the kernel said no; the message says why"
+why = "the kernel refused the effect"
 probe = "none"
 remedy = "effects need a burn block; the message names the policy otherwise"
 
@@ -1098,7 +1102,8 @@ tags = ["kernel"]
 since = "1.0.0"
 related = ["E508", "E802"]
 [[code.cause]]
-why = "the state directory is not writable: these are MY ciggies"
+why = "the state directory is not writable"
+no = "these-are-mine"
 probe = "state-dir-writable"
 remedy = "chmod it, or set CIGSCRIPT_HOME to a directory you own"
 [[code.cause]]
@@ -1188,7 +1193,7 @@ no = "none"
 arises = ["any"]
 since = "1.0.0"
 [[code.cause]]
-why = "the message says which argument or setting"
+why = "an argument or setting is wrong"
 probe = "none"
 remedy = "`cig <command> --help` shows the flags"
 
@@ -1201,11 +1206,13 @@ no = "depends"
 arises = ["run", "check", "light"]
 since = "1.0.0"
 [[code.cause]]
-why = "the path is wrong, or relative to another directory: can't see any ciggies"
+why = "the path is wrong, or relative to another directory"
+no = "cant-see-any"
 probe = "path-exists"
 remedy = "ls the path; run from the directory the script lives in, or give the full path"
 [[code.cause]]
-why = "permission denied: these are MY ciggies"
+why = "permission denied"
+no = "these-are-mine"
 probe = "path-permissions"
 remedy = "chmod +r the file"
 

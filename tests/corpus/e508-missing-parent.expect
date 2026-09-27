@@ -1,0 +1,10 @@
+Don't see any cigarettes.
+error[E508 runtime]: fs.read_text: out/in.csv: no such file or directory
+  --> e508-missing-parent.cig:2:8
+  |
+2 | exhale fs.read_text("out/in.csv")
+  |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = explain: cig explain E508
+  = doctor: I think the directory itself is missing, not just the file, because I checked stat of the parent directory of the path and found the parent `out` does not exist.
+  = fix: check the directory with fs.exists(path.dir(p)); a write creates missing directories, a read cannot
+  = if not: the path does not exist (I checked stat of the path named in the message and found nothing at `out/in.csv`, and its parent directory is missing too)

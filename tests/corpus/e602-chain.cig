@@ -1,0 +1,9 @@
+# A chain whose second step raises.
+roll boom = pack(x) {
+  cough "kaboom"
+}
+chain deploy {
+  pack() => 1
+  boom
+}
+light(deploy)

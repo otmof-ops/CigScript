@@ -745,6 +745,14 @@ fn interrupted_run_is_recognised_counted_from_the_journal_and_unburnable() {
         "{text}"
     );
 
+    let out = sb.cig(&["doctor", &id]);
+    let text = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        text.contains("error[E706 burn]")
+            && text.contains("= doctor: I think the process was killed"),
+        "{text}"
+    );
+
     sb.run_ok(&["unburn", &id]);
     assert_eq!(sb.read("a.txt"), "one");
     assert!(!sb.exists("b.txt"));
@@ -1128,4 +1136,277 @@ fn usage_layer_errors_carry_their_codes() {
         err.contains("error[E805 usage]") && err.contains("neither `gh` nor `curl`"),
         "{err}"
     );
+}
+
+// ----- the Hammer update: doctor on the emit hook -----------------------------
+
+/// Normalise the parts of doctor's output that legitimately vary.
+fn normalise(text: &str, sandbox: &Path) -> String {
+    let ms = regex::Regex::new(r"\(\d+ ms\)").unwrap();
+    let ids = regex::Regex::new(r"\b\d{8}T\d{6}-[0-9a-f]{6}\b").unwrap();
+    let t = text.replace(sandbox.to_str().unwrap(), "<sb>");
+    let t = ms.replace_all(&t, "(N ms)").to_string();
+    ids.replace_all(&t, "<run-id>").to_string()
+}
+
+fn corpus_env(sb: &Sandbox) -> Vec<(String, String)> {
+    vec![
+        ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+        ("HOME".to_string(), sb.path().to_str().unwrap().to_string()),
+    ]
+}
+
+fn run_corpus(sb: &Sandbox, name: &str, extra: &[(&str, &str)]) -> Output {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/corpus")
+        .join(name);
+    fs::copy(&src, sb.path().join(name)).unwrap();
+    let base = corpus_env(sb);
+    let mut envs: Vec<(&str, &str)> = base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    envs.extend_from_slice(extra);
+    sb.cig_env(&["run", name], &envs)
+}
+
+#[test]
+fn corpus_diagnoses_match_golden_output() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus");
+    let mut scripts: Vec<PathBuf> = fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "cig"))
+        .collect();
+    scripts.sort();
+    assert!(scripts.len() >= 8, "corpus has {} scripts", scripts.len());
+    let update = std::env::var_os("CIG_UPDATE_GOLDEN").is_some();
+    let mut failures = Vec::new();
+    for path in scripts {
+        let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        let sb = Sandbox::new();
+        let out = run_corpus(&sb, &name, &[]);
+        let text = normalise(&String::from_utf8_lossy(&out.stderr), sb.path());
+        let expect = path.with_extension("expect");
+        if update {
+            fs::write(&expect, &text).unwrap();
+        }
+        let want = fs::read_to_string(&expect).unwrap_or_else(|_| {
+            panic!("missing {}; run with CIG_UPDATE_GOLDEN=1", expect.display())
+        });
+        if text != want {
+            failures.push(format!("{name}:\n--- expected\n{want}\n--- got\n{text}"));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "doctor output changed; if intended, rerun with CIG_UPDATE_GOLDEN=1\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn no_doctor_is_byte_identical_to_the_bare_diagnostic() {
+    let sb = Sandbox::new();
+    let with = normalise(
+        &String::from_utf8_lossy(&run_corpus(&sb, "e508-missing-file.cig", &[]).stderr),
+        sb.path(),
+    );
+    let base = corpus_env(&sb);
+    let mut envs: Vec<(&str, &str)> = base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let flag = normalise(
+        &String::from_utf8_lossy(
+            &sb.cig_env(&["--no-doctor", "run", "e508-missing-file.cig"], &envs)
+                .stderr,
+        ),
+        sb.path(),
+    );
+    envs.push(("CIG_DOCTOR", "0"));
+    let env_off = normalise(
+        &String::from_utf8_lossy(&sb.cig_env(&["run", "e508-missing-file.cig"], &envs).stderr),
+        sb.path(),
+    );
+    assert!(with.contains("= doctor: I think"), "{with}");
+    assert!(!flag.contains("doctor"), "{flag}");
+    assert_eq!(flag, env_off);
+    let stripped: String = with
+        .lines()
+        .filter(|l| {
+            !(l.starts_with("  = doctor:")
+                || l.starts_with("  = fix:")
+                || l.starts_with("  = if not:")
+                || l.starts_with("  = maybe:")
+                || l.starts_with("  =  "))
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    assert_eq!(
+        flag, stripped,
+        "--no-doctor must only remove doctor's lines"
+    );
+}
+
+#[test]
+fn json_diagnostics_carry_the_diagnosis_within_budget() {
+    let sb = Sandbox::new();
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/e509-not-on-path.cig");
+    fs::copy(&src, sb.path().join("p.cig")).unwrap();
+    let out = sb.cig_env(&["--json", "run", "p.cig"], &[("PATH", "/usr/bin:/bin")]);
+    let first = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next()
+        .unwrap()
+        .to_string();
+    let v: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(v["code"], "E509");
+    assert_eq!(v["subject"], "definitely-not-a-program-xyz");
+    let dx = &v["diagnosis"];
+    assert_eq!(dx["confirmed"], true, "{dx}");
+    assert_eq!(dx["no"], "cant-see-any");
+    assert_eq!(dx["probes"][0]["probe"], "on-path");
+    assert_eq!(dx["probes"][0]["outcome"], "confirmed");
+    for key in [
+        "code",
+        "confirmed",
+        "verdict",
+        "why",
+        "fix",
+        "if_not",
+        "probes",
+        "ms",
+    ] {
+        assert!(dx.get(key).is_some(), "diagnosis lacks `{key}`: {dx}");
+    }
+    assert!(dx["ms"].as_u64().unwrap() < 500, "{dx}");
+    // The check command's JSON carries it per error too.
+    sb.write("t.cig", "roll count = 1\nexhale cuont\n");
+    let rep: serde_json::Value =
+        serde_json::from_slice(&sb.cig(&["--json", "check", "t.cig"]).stdout).unwrap();
+    assert_eq!(rep["errors"][0]["diagnosis"]["confirmed"], true, "{rep}");
+    assert!(rep["errors"][0]["diagnosis"]["why"][0]
+        .as_str()
+        .unwrap()
+        .contains("`count`"));
+}
+
+fn tree_fingerprint(root: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
+    let mut out = Vec::new();
+    for e in walkdir::WalkDir::new(root).sort_by_file_name() {
+        let e = e.unwrap();
+        let m = e.metadata().unwrap();
+        out.push((e.path().to_path_buf(), m.len(), m.modified().unwrap()));
+    }
+    out
+}
+
+#[test]
+fn rediagnosis_is_read_only_and_reproduces_the_verdict() {
+    let sb = Sandbox::new();
+    run_corpus(&sb, "e508-missing-file.cig", &[]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let before = tree_fingerprint(sb.path());
+    let out = sb.cig(&["doctor", &id]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("error[E508 runtime]")
+            && err.contains("= doctor: I think the path does not exist"),
+        "{err}"
+    );
+    assert_eq!(
+        before,
+        tree_fingerprint(sb.path()),
+        "cig doctor <run> wrote something"
+    );
+    // With the whole state directory read-only it still answers.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let home = sb.home();
+        if fs::metadata("/proc/self/status").is_ok()
+            && fs::read_to_string("/proc/self/status")
+                .unwrap()
+                .lines()
+                .any(|l| l.starts_with("Uid:\t0\t"))
+        {
+            return; // root ignores mode bits
+        }
+        for e in walkdir::WalkDir::new(&home).contents_first(false) {
+            let e = e.unwrap();
+            if e.file_type().is_dir() {
+                fs::set_permissions(e.path(), fs::Permissions::from_mode(0o500)).unwrap();
+            }
+        }
+        let out = sb.cig(&["doctor", &id]);
+        for e in walkdir::WalkDir::new(&home) {
+            let e = e.unwrap();
+            if e.file_type().is_dir() {
+                fs::set_permissions(e.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            }
+        }
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(String::from_utf8_lossy(&out.stderr).contains("= doctor: I think"));
+    }
+    // JSON form.
+    let v: serde_json::Value =
+        serde_json::from_slice(&sb.cig(&["--json", "doctor", &id]).stdout).unwrap();
+    assert_eq!(v["diagnosis"]["confirmed"], true, "{v}");
+    assert_eq!(v["diagnostic"]["code"], "E508");
+}
+
+#[test]
+fn plain_mode_drops_the_catchphrases_and_keeps_the_facts() {
+    let sb = Sandbox::new();
+    let themed = normalise(
+        &String::from_utf8_lossy(&run_corpus(&sb, "e508-missing-file.cig", &[]).stderr),
+        sb.path(),
+    );
+    let base = corpus_env(&sb);
+    let envs: Vec<(&str, &str)> = base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let plain = normalise(
+        &String::from_utf8_lossy(
+            &sb.cig_env(&["--plain", "run", "e508-missing-file.cig"], &envs)
+                .stderr,
+        ),
+        sb.path(),
+    );
+    let mut env_plain = envs.clone();
+    env_plain.push(("CIG_PLAIN", "1"));
+    let via_env = normalise(
+        &String::from_utf8_lossy(
+            &sb.cig_env(&["run", "e508-missing-file.cig"], &env_plain)
+                .stderr,
+        ),
+        sb.path(),
+    );
+    assert_eq!(plain, via_env);
+    assert!(
+        themed.starts_with("Don't see any cigarettes.\n"),
+        "{themed}"
+    );
+    assert!(
+        !plain.contains("cigarettes") && !plain.contains("ciggies"),
+        "{plain}"
+    );
+    assert!(
+        plain.contains("(wrong address"),
+        "the manual's name replaces the hallway phrase: {plain}"
+    );
+    // Everything else is identical: plain is a subtraction.
+    let themed_facts: Vec<&str> = themed
+        .lines()
+        .skip(1)
+        .map(|l| l.split(" (can't see any").next().unwrap())
+        .collect();
+    let plain_facts: Vec<&str> = plain
+        .lines()
+        .map(|l| l.split(" (wrong address").next().unwrap())
+        .collect();
+    assert_eq!(themed_facts, plain_facts);
 }

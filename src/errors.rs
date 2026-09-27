@@ -65,6 +65,9 @@ pub struct Probe {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Cause {
     pub why: String,
+    /// Which kind of no this cause is, when it is one (overrides the code's).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no: Option<String>,
     #[serde(default = "none")]
     pub probe: String,
     pub remedy: String,
@@ -235,6 +238,8 @@ pub fn diagnostic_schema() -> serde_json::Value {
             "hint": {"type": "string", "description": "what to type next"},
             "line": {"type": "integer", "minimum": 1},
             "col": {"type": "integer", "minimum": 1},
+            "subject": {"type": "string", "description": "the path, program, run id or name the message is about"},
+            "file": {"type": "string"},
             "diagnosis": {"$ref": "#/$defs/diagnosis"}
         },
         "additionalProperties": false,
@@ -244,9 +249,13 @@ pub fn diagnostic_schema() -> serde_json::Value {
             "diagnosis": {
                 "type": "object",
                 "description": "doctor's read-only diagnosis, when it fired: verdict, why, fix, and what to check if that is not it",
-                "required": ["verdict"],
+                "required": ["code", "confirmed", "verdict", "why", "fix", "if_not", "probes", "ms"],
                 "properties": {
+                    "code": {"type": "string"},
+                    "confirmed": {"type": "boolean"},
                     "verdict": {"type": "string"},
+                    "no": {"$ref": "#/$defs/no"},
+                    "ms": {"type": "integer", "minimum": 0},
                     "why": {"type": "array", "items": {"type": "string"}},
                     "fix": {"type": "array", "items": {"type": "string"}},
                     "if_not": {"type": "array", "items": {"type": "string"}},

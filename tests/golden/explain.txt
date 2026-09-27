@@ -106,7 +106,7 @@ E100 lexing error  (lex, lex family, since 1.0.0)
   what to type next: fix the character or literal the message names; `cig language` shows the forms
 
   known causes, ranked; doctor checks them in this order
-  1. a character or literal the lexer does not know; the message names it
+  1. a character or literal the lexer does not know
      probe: source-line (the source line under the caret)
      remedy: fix it at the caret
 
@@ -198,7 +198,7 @@ E200 syntax error  (syntax, syntax family, since 1.0.0)
   what to type next: look at the caret; the message says what was expected; `cig language` shows the forms
 
   known causes, ranked; doctor checks them in this order
-  1. the caret marks where parsing stopped; the message names what was expected there
+  1. parsing stopped at the caret, short of what was expected
      probe: source-line (the source line under the caret)
      remedy: supply what was expected, or remove what was not
 
@@ -233,7 +233,7 @@ E202 unclosed block  (syntax, syntax family, since 1.0.0)
   what to type next: add the closing brace where the block ends
 
   known causes, ranked; doctor checks them in this order
-  1. a block opened and never closed; the message names the line it opened on
+  1. a block opened and never closed
      probe: brace-balance (the count of { and } per line, to find the block that never closed)
      remedy: add `}` at the end of that block
 
@@ -335,7 +335,7 @@ E300 check error  (check, check family, since 1.0.0)
   what to type next: read the message; `cig check` shows all of them at once
 
   known causes, ranked; doctor checks them in this order
-  1. the message names the mistake and the line
+  1. the checker found the mistake at the line shown
      probe: source-line (the source line under the caret)
      remedy: fix it there; `cig check <file>` lists every one
 
@@ -351,7 +351,7 @@ E301 unknown name  (check, check family, since 1.0.0)
   what to type next: use the name the hint suggests, or declare it with `roll` or `stick` above this line
 
   known causes, ranked; doctor checks them in this order
-  1. a typo; the hint names the closest declared name
+  1. a typo in the name
      probe: similar-names (the names in scope, ranked by edit distance from the one used)
      remedy: use the suggested name
   2. the name is declared later in the file, or inside another block
@@ -475,7 +475,7 @@ E400 type error  (type, type family, since 1.0.0)
   what to type next: convert with str(), int() or float(), or test with type_of()
 
   known causes, ranked; doctor checks them in this order
-  1. the message names the type it got
+  1. a value of the type the message names
      probe: value-types (the types of the operands, as the message reports them)
      remedy: convert the value first, or branch on type_of()
 
@@ -510,7 +510,7 @@ E402 wrong argument type  (type, type family, since 1.0.0)
   what to type next: convert the value first: str(n), int(s), or path.join for paths
 
   known causes, ranked; doctor checks them in this order
-  1. the message names the argument position and the expected type
+  1. an argument of the wrong type, at the position the message names
      probe: value-types (the types of the operands, as the message reports them)
      remedy: convert the value first: str(n), int(s), float(s)
 
@@ -580,7 +580,7 @@ E500 runtime error  (runtime, runtime family, since 1.0.0)
   what to type next: read the message; wrap risky code in try/ashtray to handle it
 
   known causes, ranked; doctor checks them in this order
-  1. the message says what failed
+  1. the operation the message names failed
      probe: none; a suggestion, not a finding
      remedy: wrap the risky code in try/ashtray to handle it
 
@@ -612,7 +612,7 @@ E502 division by zero  (runtime, runtime family, since 1.0.0)
   what to type next: guard the divisor: if d != 0 { ... }
 
   known causes, ranked; doctor checks them in this order
-  1. the divisor came from data that was zero or empty
+  1. the divisor was zero, from data that was zero or empty
      probe: value-types (the types of the operands, as the message reports them)
      remedy: guard it: if d != 0 { ... }, or give it a default with ??
 
@@ -717,15 +717,15 @@ E508 file system failure  (runtime, runtime family, since 1.0.0)
   what to type next: check the path with fs.exists first; relative paths resolve against the working directory `cig runs <id>` shows
 
   known causes, ranked; doctor checks them in this order
-  1. the path does not exist (No such file or directory): can't see any ciggies
+  1. the path does not exist  (can't see any ciggies bro; wrong address: a path, a name, a directory not on PATH; ENOENT)
      probe: path-exists (stat of the path named in the message)
      remedy: check it with fs.exists or fs.glob first; relative paths resolve against the working directory
-  2. permission denied: these are MY ciggies
+  2. permission denied  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
      probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
      remedy: `ls -l` the path and its parent to see who may write; chmod, or run as the owner
-  3. the parent directory is missing
+  3. the directory itself is missing, not just the file
      probe: parent-exists (stat of the parent directory of the path)
-     remedy: fs.mkdir(path.dir(p)) first, inside the burn
+     remedy: check the directory with fs.exists(path.dir(p)); a write creates missing directories, a read cannot
   4. the disk is full, or the mount is read-only
      probe: disk-free (free space on the filesystem holding the path or the state directory)
      remedy: free space, or write somewhere else
@@ -745,13 +745,13 @@ E509 process failure  (runtime, runtime family, since 1.0.0)
   what to type next: check it is installed with proc.which("name"), or raise {timeout_ms}
 
   known causes, ranked; doctor checks them in this order
-  1. the program is not on PATH for this run: can't see any ciggies
+  1. the program is not on PATH for this run  (can't see any ciggies bro; wrong address: a path, a name, a directory not on PATH; ENOENT)
      probe: on-path (each directory on PATH, looking for the program named in the message)
      remedy: proc.which("name") to check; give the full path, or fix PATH in the environment the run inherits
   2. it ran longer than {timeout_ms} and was killed
      probe: none; a suggestion, not a finding
      remedy: raise {timeout_ms: N} on the proc.run, or split the work into smaller calls
-  3. the file exists but is not executable: these are MY ciggies
+  3. the file exists but is not executable  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
      probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
      remedy: chmod +x it
 
@@ -922,7 +922,7 @@ E602 chain failed  (cough, cough family, since 1.0.0)
   what to type next: fix the step at the line shown, or light with {continue_on_error: true} and read failed[] from the report
 
   known causes, ranked; doctor checks them in this order
-  1. a step raised; the message names the step and the line the error was raised on
+  1. a step raised an error
      probe: chain-report (the chain report: which step, its label, and the inner error)
      remedy: fix the step; or light with {continue_on_error: true} to run the rest and read failed[]
   2. a step expected the previous step's result and got null
@@ -941,7 +941,7 @@ E603 process check failed  (cough, cough family, since 1.0.0)
   what to type next: read err from the ashtray value, or drop check and inspect .code yourself
 
   known causes, ranked; doctor checks them in this order
-  1. the program exited non-zero; the error map holds code, out and err
+  1. the program exited non-zero
      probe: none; a suggestion, not a finding
      remedy: read err from the ashtray value; the program's own message is there
 
@@ -957,7 +957,7 @@ E700 burn refused  (burn, kernel family, since 1.0.0)
   what to type next: read the message; effects need a burn block
 
   known causes, ranked; doctor checks them in this order
-  1. the kernel said no; the message says why
+  1. the kernel refused the effect
      probe: none; a suggestion, not a finding
      remedy: effects need a burn block; the message names the policy otherwise
 
@@ -992,7 +992,7 @@ E702 journal failure  (burn, kernel family, since 1.0.0)
   what to type next: check space and permissions under ~/.cigscript (or CIGSCRIPT_HOME); `cig doctor` reports both
 
   known causes, ranked; doctor checks them in this order
-  1. the state directory is not writable: these are MY ciggies
+  1. the state directory is not writable  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
      probe: state-dir-writable (whether the state directory (CIGSCRIPT_HOME or ~/.cigscript) can be written)
      remedy: chmod it, or set CIGSCRIPT_HOME to a directory you own
   2. the disk holding the state directory is full
@@ -1082,7 +1082,7 @@ E800 usage error  (usage, usage family, since 1.0.0)
   what to type next: `cig --help`, or `cig <command> --help`
 
   known causes, ranked; doctor checks them in this order
-  1. the message says which argument or setting
+  1. an argument or setting is wrong
      probe: none; a suggestion, not a finding
      remedy: `cig <command> --help` shows the flags
 
@@ -1098,10 +1098,10 @@ E801 cannot read script  (usage, usage family, since 1.0.0)
   what to type next: check the path; scripts resolve against the current directory
 
   known causes, ranked; doctor checks them in this order
-  1. the path is wrong, or relative to another directory: can't see any ciggies
+  1. the path is wrong, or relative to another directory  (can't see any ciggies bro; wrong address: a path, a name, a directory not on PATH; ENOENT)
      probe: path-exists (stat of the path named in the message)
      remedy: ls the path; run from the directory the script lives in, or give the full path
-  2. permission denied: these are MY ciggies
+  2. permission denied  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
      probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
      remedy: chmod +r the file
 

@@ -1,0 +1,9 @@
+Don't see any cigarettes.
+error[E508 runtime]: fs.read_text: in.csv: no such file or directory
+  --> e508-missing-file.cig:2:8
+  |
+2 | exhale fs.read_text("in.csv")
+  |        ^^^^^^^^^^^^^^^^^^^^^^
+  = explain: cig explain E508
+  = doctor: I think the path does not exist (can't see any ciggies bro), because I checked stat of the path named in the message and found nothing at `in.csv` (resolved against <sb>).
+  = fix: check it with fs.exists or fs.glob first; relative paths resolve against the working directory

@@ -7,6 +7,9 @@
 use super::{exit, Ctx};
 use cigscript::burn::runs;
 use cigscript::config::Config;
+use cigscript::diagnostics::{Diagnostic, Kind};
+use cigscript::doctor::{self, Diagnosis};
+use cigscript::errors::lookup_no;
 use cigscript::{crash, update};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -379,4 +382,144 @@ fn dir_size(dir: &Path) -> u64 {
         .filter(|m| m.is_file())
         .map(|m| m.len())
         .sum()
+}
+
+// ----- automatic diagnosis: rendering and re-diagnosis -----------------------
+
+/// The layered output under a diagnostic. Same shape for every code:
+/// verdict, why, fix, if not. Themed and plain differ only in the kind-of-no
+/// phrase: the hallway version, or the manual's name.
+pub fn render_diagnosis(ctx: &Ctx, dx: &Diagnosis) -> String {
+    let mut out = String::new();
+    let no = dx.no.as_deref().and_then(lookup_no).map(|n| {
+        if ctx.plain {
+            format!(" ({})", n.manual)
+        } else {
+            format!(" ({})", n.hear)
+        }
+    });
+    if dx.confirmed {
+        let because = dx
+            .why
+            .first()
+            .map(|w| format!(", because {w}"))
+            .unwrap_or_default();
+        out.push_str(&format!(
+            "  = {} I think {}{}{because}.\n",
+            ctx.bold("doctor:"),
+            dx.verdict,
+            no.unwrap_or_default()
+        ));
+        for f in &dx.fix {
+            out.push_str(&format!("  = {} {f}\n", ctx.green("fix:")));
+        }
+        for (i, alt) in dx.if_not.iter().enumerate() {
+            let label = if i == 0 {
+                ctx.yellow("if not:")
+            } else {
+                "       ".to_string()
+            };
+            out.push_str(&format!("  = {label} {alt}\n"));
+        }
+    } else {
+        out.push_str(&format!(
+            "  = {} no known cause matched; cig explain {} for the general case\n",
+            ctx.bold("doctor:"),
+            dx.code
+        ));
+        for (i, alt) in dx.if_not.iter().enumerate() {
+            let label = if i == 0 {
+                ctx.yellow("maybe:")
+            } else {
+                "      ".to_string()
+            };
+            out.push_str(&format!("  = {label} {alt}\n"));
+        }
+    }
+    out
+}
+
+/// `cig doctor <run>`: diagnose a stored run's error again, from its record,
+/// without touching anything. What CI saw can be looked at on a laptop.
+pub fn rediagnose(ctx: &Ctx, id: &str) -> i32 {
+    let rec = match runs::find(id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            eprintln!("{} no run matches `{id}`", ctx.red("error[E803 usage]:"));
+            eprintln!("  = explain: cig explain E803");
+            return exit::USAGE;
+        }
+        Err(e) => {
+            eprintln!("{} {e}", ctx.red("error[E803 usage]:"));
+            return exit::USAGE;
+        }
+    };
+    let cx = doctor::Context {
+        cwd: PathBuf::from(&rec.cwd),
+        source: None,
+    };
+    let mut diag: Option<Diagnostic> = rec.diagnostic.as_ref().and_then(Diagnostic::from_json);
+    let file = rec
+        .diagnostic
+        .as_ref()
+        .and_then(|v| v.get("file"))
+        .and_then(|f| f.as_str())
+        .map(str::to_string);
+    if rec.is_interrupted() {
+        diag = Some(
+            Diagnostic::new(
+                Kind::Burn,
+                format!(
+                    "run {} was interrupted mid-burn: its process is gone and its journal is intact",
+                    rec.id
+                ),
+            )
+            .code("E706")
+            .with_hint(format!(
+                "cig unburn {} puts things back; cig runs {} shows what it burned",
+                rec.id, rec.id
+            ))
+            .with_subject(rec.id.clone()),
+        );
+    }
+    let diagnosis = diag.as_ref().and_then(|d| doctor::diagnose(d, &cx));
+    if ctx.json {
+        outln!(
+            "{}",
+            serde_json::json!({
+                "run": rec,
+                "diagnostic": diag,
+                "diagnosis": diagnosis,
+            })
+        );
+        return exit::OK;
+    }
+    outln!(
+        "{} {}  {}  {} burn{} ({} irreversible)  cwd {}",
+        ctx.bold(&rec.id),
+        rec.status,
+        rec.script,
+        rec.burns,
+        if rec.burns == 1 { "" } else { "s" },
+        rec.irreversible,
+        rec.cwd
+    );
+    let Some(d) = diag else {
+        outln!(
+            "{}",
+            ctx.dim("finished without a diagnostic; nothing to diagnose")
+        );
+        return exit::OK;
+    };
+    outln!();
+    eprint!("{}", d.render(file.as_deref(), None));
+    match diagnosis {
+        Some(dx) => eprint!("{}", render_diagnosis(ctx, &dx)),
+        None => eprintln!(
+            "  = {} nothing to add beyond the hint; cig explain {} for the page",
+            ctx.bold("doctor:"),
+            d.code
+        ),
+    }
+    exit::OK
 }

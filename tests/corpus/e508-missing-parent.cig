@@ -1,0 +1,2 @@
+# A read from a directory that does not exist: the directory is the story.
+exhale fs.read_text("out/in.csv")

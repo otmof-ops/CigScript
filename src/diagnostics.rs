@@ -61,6 +61,10 @@ pub struct Diagnostic {
     pub line: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub col: Option<u32>,
+    /// The path, program, run id or name the message is about, for doctor's
+    /// probes and for tools; the message already shows it to people.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     #[serde(skip)]
     pub span: Option<Span>,
 }
@@ -74,8 +78,36 @@ impl Diagnostic {
             hint: None,
             line: None,
             col: None,
+            subject: None,
             span: None,
         }
+    }
+
+    /// Name the thing the message is about (a path, a program, a run id).
+    pub fn with_subject(mut self, subject: impl Into<String>) -> Self {
+        self.subject = Some(subject.into());
+        self
+    }
+
+    /// Rebuild a diagnostic from its `--json` form (a stored run record).
+    pub fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let kind: Kind = serde_json::from_value(v.get("kind")?.clone()).ok()?;
+        let code = v
+            .get("code")
+            .and_then(|c| c.as_str())
+            .and_then(crate::errors::lookup)
+            .map(|c| c.code.as_str())
+            .unwrap_or(crate::errors::default_code(kind));
+        let mut d = Diagnostic::new(kind, v.get("message")?.as_str()?.to_string());
+        d.code = code;
+        d.hint = v.get("hint").and_then(|h| h.as_str()).map(str::to_string);
+        d.line = v.get("line").and_then(|l| l.as_u64()).map(|l| l as u32);
+        d.col = v.get("col").and_then(|l| l.as_u64()).map(|l| l as u32);
+        d.subject = v
+            .get("subject")
+            .and_then(|s| s.as_str())
+            .map(str::to_string);
+        Some(d)
     }
 
     /// Give the diagnostic a specific catalogue code.

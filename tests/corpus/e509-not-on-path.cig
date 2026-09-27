@@ -1,0 +1,4 @@
+# A program that is not on PATH.
+burn {
+  proc.run("definitely-not-a-program-xyz", [])
+}
