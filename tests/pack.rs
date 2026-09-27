@@ -385,3 +385,40 @@ fn a_hop_writing_through_a_link_inside_the_pack_is_watched() {
         "the file the hop wrote through the link was not removed on rollback: {err}"
     );
 }
+
+#[test]
+fn directories_a_hop_creates_are_removed_by_rollback_and_unburn() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("build")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./build\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"mkdir -p build/out/deep && echo x > build/out/deep/f.txt\"])\n  cough \"x\"\n}\n",
+    );
+    let err = sb.stderr(&["run", "s.cig"]);
+    assert!(err.contains("hop created <sb>/build/out"), "{err}");
+    assert!(
+        !sb.exists("build/out"),
+        "the directory survived the rollback: {err}"
+    );
+    assert!(sb.exists("build"), "the pack root itself stays");
+    // A run that succeeded, undone later.
+    sb.write(
+        "s.cig",
+        "pack { \"./build\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"mkdir -p build/dist && echo y > build/dist/app\"])\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(sb.exists("build/dist/app"));
+    let id = sb.run_id();
+    let out = sb.cig(&["unburn", &id]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!sb.exists("build/dist"), "unburn left the directory");
+}

@@ -283,6 +283,10 @@ pub fn inside_roots(path: &Path, roots: &[PathBuf]) -> bool {
     })
 }
 
+/// What `scan` records for a directory in place of a file's (mtime, size):
+/// directories are watched for being created, not for changing.
+const DIR_MARK: (u64, u64) = (u64::MAX, u64::MAX);
+
 fn scan(
     root: &Path,
     max_depth: usize,
@@ -302,6 +306,13 @@ fn scan(
         })
     {
         let Ok(entry) = entry else { continue };
+        if entry.file_type().is_dir() {
+            out.insert(entry.path().to_path_buf(), DIR_MARK);
+            if out.len() >= cap {
+                break;
+            }
+            continue;
+        }
         if !entry.file_type().is_file() {
             continue;
         }
@@ -466,6 +477,9 @@ impl Kernel {
             after.extend(scan(r, 64, 50_000));
         }
         let mut writes = HopWrites::default();
+        // A directory the hop created is journaled before the files in it
+        // (the map is ordered), so rollback, newest first, empties it and
+        // then removes it. A deleted directory is told by its files.
         for (p, meta) in &after {
             match watch.inside.get(p) {
                 None => writes.created.push(p.clone()),
@@ -473,15 +487,15 @@ impl Kernel {
                 Some(_) => {}
             }
         }
-        for p in watch.inside.keys() {
-            if !after.contains_key(p) {
+        for (p, meta) in &watch.inside {
+            if *meta != DIR_MARK && !after.contains_key(p) {
                 writes.deleted.push(p.clone());
             }
         }
         if let Some(w) = &watch.outside_root {
             let now = scan(w, 3, 5_000);
             for (p, meta) in &now {
-                if inside_roots(p, &roots) {
+                if *meta == DIR_MARK || inside_roots(p, &roots) {
                     continue;
                 }
                 match watch.outside.get(p) {
@@ -490,8 +504,8 @@ impl Kernel {
                     Some(_) => {}
                 }
             }
-            for p in watch.outside.keys() {
-                if !now.contains_key(p) && !inside_roots(p, &roots) {
+            for (p, meta) in &watch.outside {
+                if *meta != DIR_MARK && !now.contains_key(p) && !inside_roots(p, &roots) {
                     writes.outside.push(p.clone());
                 }
             }
