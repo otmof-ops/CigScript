@@ -8,6 +8,18 @@ project follows semantic versioning.
 Delivered from the "Hammer" update package (`HAMMER.md`), one pull request per
 seam; the package's manifest carries the state of each deliverable.
 
+### Language
+- **`finally`.** `try { } ashtray e { } finally { }`, or `try { } finally { }`
+  with no `ashtray`: the block runs whatever happened (a normal exit, a caught
+  or uncaught error, `snuff`, `break`, `continue`, `exit()`); its own signal
+  wins, otherwise the pending one carries on with its payload. `finally` is
+  still usable as a map key or member name, like every keyword.
+- **The step budget.** Every statement and loop iteration is a step; ten
+  million by default (`--max-steps N` on `run` and `light`, `CIG_MAX_STEPS=N`,
+  `0` disables). A loop that never ends now ends: `E515` *your loop never
+  ends*, pointing at the `while`, and doctor reads the condition (`true`, so
+  only a break can end it). Burns before the budget ran out are rolled back.
+
 ### Fixed
 - A deleted or overwritten symlink now rolls back as a symlink with its
   original target, dangling or not, including links inside a restored

@@ -537,7 +537,7 @@ runtime: a failure while the script was running, including the resource ceilings
 | [`E512`](#e512-range-too-large) | range too large | not one of the four | iterate in pieces, or check the bounds that produced the range |
 | [`E513`](#e513-output-closed) | output closed | not one of the four | nothing to fix; the script stopped when its reader did |
 | [`E514`](#e514-allocation-ceiling) | allocation ceiling | not one of the four | work in smaller pieces, or raise the ceiling with CIG_MAX_ALLOC=<bytes> |
-| [`E515`](#e515-step-budget-exceeded) | step budget exceeded *(planned)* | not one of the four | check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables) |
+| [`E515`](#e515-step-budget-exceeded) | step budget exceeded | not one of the four | check what changes the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it) |
 
 ### E500 runtime error
 
@@ -791,17 +791,17 @@ Related: `E512`, `E515`.
 
 ### E515 step budget exceeded
 
-*runtime · since 1.1.0 · arises in run · planned*
+*runtime · since 1.1.0 · arises in run, light*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
-Your loop never ends, or the script needs more steps than the budget allows.
+Your loop never ends, or the script needs more steps than the budget allows (ten million by default).
 
-**What to type next:** check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables)
+**What to type next:** check what changes the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it)
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. a while loop whose condition never becomes false (probe `source-line`). **Remedy:** check what changes the condition inside the loop, at the line shown
+1. a while loop whose condition never becomes false (probe `loop-condition`). **Remedy:** make something inside the loop change the condition, or break out of it
 2. a legitimately long computation (probe `env-var`). **Remedy:** raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it)
 
 Related: `E514`, `E506`.

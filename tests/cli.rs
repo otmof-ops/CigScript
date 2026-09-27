@@ -1199,6 +1199,8 @@ fn corpus_env(sb: &Sandbox) -> Vec<(String, String)> {
     vec![
         ("PATH".to_string(), "/usr/bin:/bin".to_string()),
         ("HOME".to_string(), sb.path().to_str().unwrap().to_string()),
+        // A small budget so the runaway-loop case ends in milliseconds.
+        ("CIG_MAX_STEPS".to_string(), "100000".to_string()),
     ]
 }
 
@@ -1531,4 +1533,90 @@ fn report_bundles_a_run_redacted() {
     assert_eq!(v["run"]["id"], id);
     let err = sb.run_err(&["report", "zzz"], 3);
     assert!(err.contains("error[E803 usage]"), "{err}");
+}
+
+// ----- the Hammer update: the step budget and finally -------------------------
+
+#[test]
+fn while_true_ends_with_your_loop_never_ends_and_a_line() {
+    let sb = Sandbox::new();
+    sb.write("loop.cig", "roll i = 0\nwhile true {\n  i += 1\n}\n");
+    let err = sb.run_err(&["run", "--max-steps", "5000", "loop.cig"], 1);
+    assert!(
+        err.contains("error[E515 runtime]: your loop never ends: 5000 steps and still going"),
+        "{err}"
+    );
+    assert!(err.contains("loop.cig:2:"), "the while line: {err}");
+    assert!(
+        err.contains("= doctor: I think a while loop whose condition never becomes false"),
+        "{err}"
+    );
+    assert!(err.contains("the condition on line 2 is `true`"), "{err}");
+    // The environment sets it too; 0 disables it.
+    let out = sb.cig_env(&["run", "loop.cig"], &[("CIG_MAX_STEPS", "3000")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("3000 steps"));
+    sb.write(
+        "bounded.cig",
+        "roll n = 0\nfor i in 1..20001 {\n  n += 1\n}\nexhale n\n",
+    );
+    let err = sb.run_err(&["run", "--max-steps", "100", "bounded.cig"], 1);
+    assert!(err.contains("E515"), "{err}");
+    assert_eq!(
+        sb.run_ok(&["run", "--max-steps", "0", "bounded.cig"])
+            .trim(),
+        "20000"
+    );
+    assert_eq!(
+        sb.run_ok(&["run", "bounded.cig"]).trim(),
+        "20000",
+        "the default budget is generous"
+    );
+    // Outside a loop the message does not blame a loop.
+    sb.write(
+        "deep.cig",
+        "pull f(n) {\n  if n == 0 { snuff 0 }\n  snuff f(n - 1)\n}\nexhale f(3000)\n",
+    );
+    let err = sb.run_err(&["run", "--max-steps", "1000", "deep.cig"], 1);
+    assert!(
+        err.contains("the script needs more than 1000 steps"),
+        "{err}"
+    );
+    // A run that fails on the budget still rolls back what it burned.
+    sb.write("k.txt", "keep");
+    sb.write(
+        "burnloop.cig",
+        "burn {\n  fs.write_text(\"k.txt\", \"changed\")\n  while true {}\n}\n",
+    );
+    let err = sb.run_err(&["run", "--max-steps", "1000", "burnloop.cig"], 1);
+    assert!(err.contains("E515") && err.contains("restored"), "{err}");
+    assert_eq!(sb.read("k.txt"), "keep");
+}
+
+#[test]
+fn finally_runs_on_exit_and_a_missing_ashtray_is_a_syntax_error() {
+    let sb = Sandbox::new();
+    sb.write(
+        "x.cig",
+        "try {\n  exit(4)\n} finally {\n  exhale \"cleanup\"\n}\nexhale \"not reached\"\n",
+    );
+    let out = sb.cig(&["run", "x.cig"]);
+    assert_eq!(out.status.code(), Some(4));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "cleanup\n");
+    sb.write("bad.cig", "try {\n  exhale 1\n}\nexhale 2\n");
+    let err = sb.run_err(&["run", "bad.cig"], 2);
+    assert!(
+        err.contains("expected `ashtray` or `finally` after the `try` block"),
+        "{err}"
+    );
+    sb.write("stray.cig", "finally {\n}\n");
+    let err = sb.run_err(&["run", "stray.cig"], 2);
+    assert!(err.contains("`finally` without a preceding `try`"), "{err}");
+    // finally inside a burn keeps the burn accounting straight.
+    sb.write("b.cig", "burn {\n  try {\n    fs.write_text(\"a.txt\", \"1\")\n  } finally {\n    fs.write_text(\"b.txt\", \"2\")\n  }\n}\nfs.write_text(\"c.txt\", \"3\")\n");
+    let err = sb.run_err(&["run", "b.cig"], 2);
+    assert!(
+        err.contains("E303"),
+        "the write after the burn is still refused: {err}"
+    );
 }

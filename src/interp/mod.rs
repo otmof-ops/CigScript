@@ -33,6 +33,20 @@ pub struct Interp {
     pub script_name: Option<String>,
     /// Exit code requested by `exit(n)`, if any.
     pub exit_requested: Option<i32>,
+    /// Statements and loop iterations executed so far.
+    pub steps: u64,
+    /// The step budget; 0 means none. `--max-steps` and `CIG_MAX_STEPS`.
+    pub max_steps: u64,
+    pub(crate) loop_depth: u32,
+}
+
+/// The default step budget: `CIG_MAX_STEPS`, else ten million, which a
+/// tree-walking interpreter spends in a few seconds. `0` disables it.
+pub fn default_max_steps() -> u64 {
+    std::env::var("CIG_MAX_STEPS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(10_000_000)
 }
 
 impl Interp {
@@ -53,7 +67,38 @@ impl Interp {
             cough_payload: None,
             script_name: None,
             exit_requested: None,
+            steps: 0,
+            max_steps: default_max_steps(),
+            loop_depth: 0,
         }
+    }
+
+    /// Set the step budget (0 disables it).
+    pub fn set_max_steps(&mut self, n: u64) {
+        self.max_steps = n;
+    }
+
+    /// Count one step; over the budget, the loop (or the script) is stopped
+    /// with E515 at `span`.
+    pub(crate) fn tick(&mut self, span: Span) -> Result<(), Diagnostic> {
+        self.steps += 1;
+        if self.max_steps != 0 && self.steps > self.max_steps {
+            let message = if self.loop_depth > 0 {
+                format!(
+                    "your loop never ends: {} steps and still going",
+                    self.max_steps
+                )
+            } else {
+                format!("the script needs more than {} steps", self.max_steps)
+            };
+            return Err(crate::diagnostics::runtime(message)
+                .code("E515")
+                .at(span)
+                .with_hint(
+                    "check what changes the loop condition at this line; --max-steps N or CIG_MAX_STEPS=N raises the budget (0 disables it)",
+                ));
+        }
+        Ok(())
     }
 
     /// Expose the script's own arguments as `args`.

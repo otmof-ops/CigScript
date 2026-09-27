@@ -322,15 +322,21 @@ impl Checker {
                 body,
                 catch_var,
                 handler,
+                finally,
                 span,
             } => {
                 self.block(body);
-                self.push();
-                if let Some(v) = catch_var {
-                    self.declare(v, Binding::Immutable, *span);
+                if let Some(handler) = handler {
+                    self.push();
+                    if let Some(v) = catch_var {
+                        self.declare(v, Binding::Immutable, *span);
+                    }
+                    self.block_stmts(&handler.stmts);
+                    self.pop();
                 }
-                self.block_stmts(&handler.stmts);
-                self.pop();
+                if let Some(f) = finally {
+                    self.block(f);
+                }
             }
             Stmt::Burn { body, .. } => {
                 self.burn_depth += 1;

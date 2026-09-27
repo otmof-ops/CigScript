@@ -371,28 +371,36 @@ impl Parser {
                 self.advance();
                 let body = self.block()?;
                 self.skip_newlines();
-                if !self.eat(&TokenKind::Ashtray) {
+                let mut catch_var = None;
+                let mut handler = None;
+                if self.eat(&TokenKind::Ashtray) {
+                    if let TokenKind::Ident(name) = self.peek().clone() {
+                        self.advance();
+                        catch_var = Some(name);
+                    }
+                    handler = Some(self.block()?);
+                    self.skip_newlines();
+                }
+                let finally = if self.eat(&TokenKind::Finally) {
+                    Some(self.block()?)
+                } else {
+                    None
+                };
+                if handler.is_none() && finally.is_none() {
                     return Err(syntax(
                         format!(
-                            "expected `ashtray` after the `try` block, found {}",
+                            "expected `ashtray` or `finally` after the `try` block, found {}",
                             self.peek().describe()
                         ),
                         self.span(),
                     )
-                    .with_hint("try { ... } ashtray err { ... }"));
+                    .with_hint("try { ... } ashtray err { ... }, or try { ... } finally { ... }"));
                 }
-                let catch_var = match self.peek().clone() {
-                    TokenKind::Ident(name) => {
-                        self.advance();
-                        Some(name)
-                    }
-                    _ => None,
-                };
-                let handler = self.block()?;
                 Ok(Stmt::Try {
                     body,
                     catch_var,
                     handler,
+                    finally,
                     span: start.to(self.prev_span()),
                 })
             }
@@ -422,6 +430,8 @@ impl Parser {
             }
             TokenKind::Else => Err(syntax("`else` without a preceding `if`", start)),
             TokenKind::Ashtray => Err(syntax("`ashtray` without a preceding `try`", start)),
+            TokenKind::Finally => Err(syntax("`finally` without a preceding `try`", start)
+                .with_hint("try { ... } finally { ... }")),
             TokenKind::LBrace => Err(syntax("a bare `{` cannot start a statement", start)
                 .with_hint(
                     "write `burn { ... }`; a map literal on its own line is not a statement",
@@ -1063,7 +1073,27 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(&p.body[1], Stmt::Try { catch_var: Some(v), .. } if v == "e"));
+        assert!(
+            matches!(&p.body[1], Stmt::Try { catch_var: Some(v), handler: Some(_), finally: None, .. } if v == "e")
+        );
+        let q = ok("try {\n exhale 1\n} finally {\n exhale 2\n}\ntry {\n exhale 1\n} ashtray {\n exhale 2\n} finally {\n exhale 3\n}\n");
+        assert!(matches!(
+            &q.body[0],
+            Stmt::Try {
+                handler: None,
+                finally: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &q.body[1],
+            Stmt::Try {
+                handler: Some(_),
+                finally: Some(_),
+                catch_var: None,
+                ..
+            }
+        ));
     }
 
     #[test]

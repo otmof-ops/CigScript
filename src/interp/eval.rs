@@ -33,6 +33,39 @@ impl Interp {
     // ----- blocks and statements ---------------------------------------------
 
     /// Run `stmts` in `env`, hoisting `pull` declarations first.
+    fn run_while(&mut self, cond: &Expr, body: &Block, env: &Env, span: Span) -> Exec {
+        while self.eval(cond, env)?.truthy() {
+            self.tick(span)?;
+            match self.exec_block(body, env) {
+                Ok(()) | Err(Signal::Continue(_)) => {}
+                Err(Signal::Break(_)) => break,
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(())
+    }
+
+    fn run_for(
+        &mut self,
+        var: &str,
+        items: Vec<Value>,
+        body: &Block,
+        env: &Env,
+        span: Span,
+    ) -> Exec {
+        for item in items {
+            self.tick(span)?;
+            let scope = Scope::child(env);
+            scope.declare(var, item, true);
+            match self.exec_block_in(&body.stmts, &scope) {
+                Ok(()) | Err(Signal::Continue(_)) => {}
+                Err(Signal::Break(_)) => break,
+                Err(other) => return Err(other),
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn exec_block_in(&mut self, stmts: &[Stmt], env: &Env) -> Exec {
         self.hoist(stmts, env)?;
         for stmt in stmts {
@@ -92,6 +125,7 @@ impl Interp {
     }
 
     fn exec(&mut self, stmt: &Stmt, env: &Env) -> Exec {
+        self.tick(stmt.span())?;
         match stmt {
             Stmt::Declare {
                 name,
@@ -220,15 +254,11 @@ impl Interp {
                 }
                 Ok(())
             }
-            Stmt::While { cond, body, .. } => {
-                while self.eval(cond, env)?.truthy() {
-                    match self.exec_block(body, env) {
-                        Ok(()) | Err(Signal::Continue(_)) => {}
-                        Err(Signal::Break(_)) => break,
-                        Err(other) => return Err(other),
-                    }
-                }
-                Ok(())
+            Stmt::While { cond, body, span } => {
+                self.loop_depth += 1;
+                let result = self.run_while(cond, body, env, *span);
+                self.loop_depth -= 1;
+                result
             }
             Stmt::For {
                 var,
@@ -238,16 +268,10 @@ impl Interp {
             } => {
                 let iterable = self.eval(iter, env)?;
                 let items = self.iterate(iterable, *span)?;
-                for item in items {
-                    let scope = Scope::child(env);
-                    scope.declare(var, item, true);
-                    match self.exec_block_in(&body.stmts, &scope) {
-                        Ok(()) | Err(Signal::Continue(_)) => {}
-                        Err(Signal::Break(_)) => break,
-                        Err(other) => return Err(other),
-                    }
-                }
-                Ok(())
+                self.loop_depth += 1;
+                let result = self.run_for(var, items, body, env, *span);
+                self.loop_depth -= 1;
+                result
             }
             Stmt::Break(span) => Err(Signal::Break(*span)),
             Stmt::Continue(span) => Err(Signal::Continue(*span)),
@@ -255,18 +279,39 @@ impl Interp {
                 body,
                 catch_var,
                 handler,
+                finally,
                 ..
-            } => match self.exec_block(body, env) {
-                Err(Signal::Error(diag)) if self.exit_requested.is_none() => {
-                    let payload = self.cough_payload.take();
-                    let scope = Scope::child(env);
-                    if let Some(name) = catch_var {
-                        scope.declare(name, error_value(&diag, payload), false);
+            } => {
+                let mut result = self.exec_block(body, env);
+                if let Some(handler) = handler {
+                    if matches!(result, Err(Signal::Error(_))) && self.exit_requested.is_none() {
+                        let Err(Signal::Error(diag)) = result else {
+                            unreachable!()
+                        };
+                        let payload = self.cough_payload.take();
+                        let scope = Scope::child(env);
+                        if let Some(name) = catch_var {
+                            scope.declare(name, error_value(&diag, payload), false);
+                        }
+                        result = self.exec_block_in(&handler.stmts, &scope);
                     }
-                    self.exec_block_in(&handler.stmts, &scope)
                 }
-                other => other,
-            },
+                if let Some(fin) = finally {
+                    // Runs whatever happened, exit() included. Its own
+                    // signal wins; otherwise the pending one carries on,
+                    // payload intact.
+                    let pending_payload = self.cough_payload.take();
+                    match self.exec_block(fin, env) {
+                        Ok(()) => {
+                            self.cough_payload = pending_payload;
+                            result
+                        }
+                        Err(sig) => Err(sig),
+                    }
+                } else {
+                    result
+                }
+            }
             Stmt::Burn { class, body, .. } => {
                 self.burn_depth += 1;
                 if *class == BurnClass::Unlit {

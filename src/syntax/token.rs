@@ -32,6 +32,7 @@ pub enum TokenKind {
     Exhale,
     Cough,
     Try,
+    Finally,
     Ashtray,
     Burn,
     Unlit,
@@ -119,6 +120,7 @@ impl TokenKind {
             TokenKind::Cough => "cough",
             TokenKind::Try => "try",
             TokenKind::Ashtray => "ashtray",
+            TokenKind::Finally => "finally",
             TokenKind::Burn => "burn",
             TokenKind::Unlit => "unlit",
             TokenKind::Chain => "chain",
@@ -183,6 +185,7 @@ impl TokenKind {
             | TokenKind::Cough
             | TokenKind::Try
             | TokenKind::Ashtray
+            | TokenKind::Finally
             | TokenKind::Burn
             | TokenKind::Unlit
             | TokenKind::Chain
@@ -214,6 +217,7 @@ impl TokenKind {
             "cough" => TokenKind::Cough,
             "try" => TokenKind::Try,
             "ashtray" => TokenKind::Ashtray,
+            "finally" => TokenKind::Finally,
             "burn" => TokenKind::Burn,
             "unlit" => TokenKind::Unlit,
             "chain" => TokenKind::Chain,

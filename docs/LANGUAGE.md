@@ -87,6 +87,14 @@ Calling a function stored in a map works as you expect: `obj.greet("x")` calls
 
 ## Control flow
 
+Every statement and every loop iteration is a *step*, and a run has a step
+budget: ten million by default, which a tree-walking interpreter spends in a
+few seconds. A loop that never ends therefore ends, with `E515`, *your loop
+never ends*, and the line of the `while`. `--max-steps N` (on `cig run` and
+`cig light`) or `CIG_MAX_STEPS=N` raises it; `0` disables it. Burns made
+before the budget ran out are rolled back like any other failure.
+
+
 ```cig
 if a > 1 { } else if a < 0 { } else { }
 while cond { }
@@ -108,6 +116,21 @@ try {
   risky()
 } ashtray err {
   exhale err.message, err.kind, err.line, err.code
+}
+```
+
+`finally { }` after the `ashtray` block (or straight after `try`, with no
+`ashtray`) runs whatever happened: after a normal exit, after a caught or
+uncaught error, after `snuff`, `break`, `continue` and `exit()`. Its own
+error or return wins over the one in flight; otherwise the pending one
+carries on, with its payload intact.
+
+```cig
+try {
+  stick fh = open_something()
+  use(fh)
+} finally {
+  close_something()        # runs either way
 }
 ```
 

@@ -1,0 +1,10 @@
+error[E515 runtime]: your loop never ends: 100000 steps and still going
+  --> e515-loop.cig:3:1
+  |
+3 | while true {
+  | ^^^^^^^^^^^^
+  = hint: check what changes the loop condition at this line; --max-steps N or CIG_MAX_STEPS=N raises the budget (0 disables it)
+  = explain: cig explain E515
+  = doctor: I think a while loop whose condition never becomes false, because I checked the loop's condition on the line the budget ran out and found the condition on line 3 is `true`, so only a break can end the loop.
+  = fix: make something inside the loop change the condition, or break out of it
+  = if not: a legitimately long computation (I checked an environment variable that changes the limit involved and found CIG_MAX_STEPS=100000 is set)
