@@ -3,6 +3,14 @@
 This is the contract for CigScript 2.x. `cig language` prints the short
 version.
 
+## The levels, in one line each
+
+A **stick** is one step. A **chain** is order: sticks that light from each
+other, fail together, roll back together. A **pack** (planned) is scope and
+reuse: a chain with its own root, ready to be lit from anywhere. A **carton**
+(planned) is distribution. Nobody has to be taught the hierarchy; the words
+are in [LEXICON.md](LEXICON.md) with the manual's names.
+
 ## Files and statements
 
 A script is a `.cig` file, UTF-8, one statement per line. A `#` starts a
@@ -40,6 +48,8 @@ is true, `"1" == 1` is false. Functions compare by identity.
 
 ## Declarations and assignment
 
+`roll` declares a variable (a mutable binding); `stick` declares a constant.
+
 ```cig
 roll x = 1          # variable
 stick y = 2         # constant; `y = 3` is a check error
@@ -55,6 +65,9 @@ Blocks, loops and functions each open a scope. Assigning to a name that was
 never declared is an error, not a silent global.
 
 ## Functions
+
+`pull` defines a named function; `pack` is a lambda (an anonymous function);
+`snuff` returns.
 
 ```cig
 pull add(a, b) {
@@ -130,6 +143,10 @@ stdout. Strings print raw; everything else prints as its literal form, so
 on stderr, keeping stdout for the program's real output.
 
 ## Burn blocks
+
+`burn { }` is the effect fence: the only place the world changes. `burn unlit
+{ }` is rehearsal: every motion, no burn, even in a real run; the intent is
+recorded instead.
 
 ```cig
 burn { ... }         # side effects allowed here, journaled, rolled back on failure

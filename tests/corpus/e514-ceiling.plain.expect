@@ -1,0 +1,10 @@
+error[E514 runtime]: repeat would need 9223372036854775807 bytes, over the ceiling of 268435456
+  --> e514-ceiling.cig:2:8
+  |
+2 | exhale "x".repeat(9223372036854775807)
+  |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  = hint: work in smaller pieces, or raise the ceiling with CIG_MAX_ALLOC=<bytes>
+  = explain: cig explain E514
+  = doctor: no known cause matched; cig explain E514 for the general case
+  = maybe: a repeat count, width or size computed from bad arithmetic (check the types of the operands, as the message reports them)
+  =        a legitimately large value: a big file read whole, or a large string built in one go (I checked an environment variable that changes the limit involved and found CIG_MAX_ALLOC is not set, so the limit is 268435456 bytes)

@@ -76,7 +76,7 @@ fn run(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
                 (other, _) => {
                     return Err(runtime(format!("proc.run: unknown option `{other}`"))
                         .at(s)
-                        .with_hint("options are cwd, env, timeout_ms, stdin, check"))
+                        .with_hint("use one of cwd, env, timeout_ms, stdin, check"))
                 }
             }
         }
@@ -117,7 +117,7 @@ fn run(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         .at(s)
         .with_subject(cmd.to_string());
         if e.kind() == std::io::ErrorKind::NotFound {
-            d = d.with_hint("is it installed and on PATH? proc.which(name) tells you");
+            d = d.with_hint("check with proc.which(name); install it, or give the full path");
         }
         d
     })?;

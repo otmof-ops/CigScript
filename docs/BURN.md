@@ -3,7 +3,15 @@
 <p align="center"><img src="assets/burn-model.svg" alt="The burn model" width="820"></p>
 
 The runtime is split into a language, which is pure, and a kernel, which owns
-every side effect. This document is the contract for the kernel.
+every side effect. This document is the contract for the kernel. The words,
+with the manual's name attached (all of them in [LEXICON.md](LEXICON.md)):
+*the kernel* (the effect executor, the one piece of code allowed to touch the
+world), *a snapshot* (a before-image: a copy taken before the op that will
+change it), *the journal* (a write-ahead log: written before each op, so a
+kill mid-burn still leaves a record), *newest first* (the order rollback
+replays it), *reversible* (the kernel did it itself and has the snapshot to
+prove it) and *irreversible* (something the kernel could not watch, and the
+plan says so out loud).
 
 ## Effects
 
@@ -142,7 +150,14 @@ shows one with its journal, `cig runs --prune N` keeps the newest N, and
 `CIGSCRIPT_HOME` relocates the whole state directory (tests use this to stay
 isolated).
 
-## What this does not promise
+## What it can't undo, and says so
+
+The irreversible label is the honesty guarantee. It is the one thing that
+must never be wrong, because the whole model is trusted through it: a plan
+that says *reversible* is a promise the kernel can keep, and a plan that says
+*irreversible* is the kernel refusing to launder what it cannot watch. Both
+are written before the effect and shown in the plan, the run record and the
+rollback report ("cannot undo"). What the label covers:
 
 - **No sandbox.** A script can read anything the user can read, and a burn can
   run any program. The kernel makes effects explicit and reversible where it

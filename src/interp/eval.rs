@@ -139,7 +139,9 @@ impl Interp {
                                 other.type_name()
                             ))
                             .at(expr.span)
-                            .with_hint("steps are sticks holding packs, pulls, or other chains")
+                            .with_hint(
+                                "make each step a stick holding a pack, a pull, or another chain",
+                            )
                             .into())
                         }
                     }
@@ -705,7 +707,7 @@ impl Interp {
                     }
                     Ok(Value::list((*a..*b).map(Int).collect()))
                 }
-                _ => Err(type_err("make a range from").with_hint("ranges are `int..int`")),
+                _ => Err(type_err("make a range from").with_hint("write the range as `int..int`")),
             },
             BinOp::And | BinOp::Or | BinOp::Coalesce => {
                 unreachable!("short-circuit ops are handled in eval")
@@ -753,7 +755,7 @@ impl Interp {
             other => Err(
                 type_error(format!("{} has no member `{name}`", other.type_name()))
                     .at(span)
-                    .with_hint("methods are called with parentheses, e.g. `.len()`"),
+                    .with_hint("add the parentheses: `.len()`"),
             ),
         }
     }

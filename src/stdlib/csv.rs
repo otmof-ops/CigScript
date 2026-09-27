@@ -43,7 +43,7 @@ fn opts(a: &[Value], i: usize, name: &str, s: Span) -> Result<Opts, Diagnostic> 
                 (other, _) => {
                     return Err(runtime(format!("{name}: unknown option `{other}`"))
                         .at(s)
-                        .with_hint("options are header (bool) and sep (string)"))
+                        .with_hint("use header (bool) or sep (string)"))
                 }
             }
         }

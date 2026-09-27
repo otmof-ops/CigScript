@@ -18,6 +18,7 @@ mod doctor;
 mod explain;
 mod language;
 mod repl;
+mod report;
 mod run;
 mod runs;
 mod update;
@@ -60,9 +61,9 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Run a script (burns are journaled and rolled back on failure).
+    /// Run a script for real: every burn journaled, rolled back if it fails (execute).
     Run(RunArgs),
-    /// Parse and statically check a script without running it.
+    /// Typos, sticks, effects: refuse before anything runs (static analysis).
     Check {
         /// Script to check.
         file: PathBuf,
@@ -70,9 +71,9 @@ pub enum Command {
         #[arg(long)]
         deny_warnings: bool,
     },
-    /// Light a chain: run the script, then its named chain, step by step.
+    /// Light a chain: each stick lit from the last, timed, stopping at the first failure (task runner).
     Light(LightArgs),
-    /// List the chains a script declares, without running it.
+    /// What can I light? The chains a script declares, without running it.
     Chains {
         /// Script to inspect.
         file: PathBuf,
@@ -82,9 +83,9 @@ pub enum Command {
         /// CigScript source, e.g. `[1,2,3].map(pack(x) => x * 2)`.
         code: String,
     },
-    /// Interactive session.
+    /// Interactive session (read, eval, print, loop).
     Repl,
-    /// List past runs, or show one.
+    /// The lab notebook: every run, its status, its burns; or one run with its journal (run history).
     Runs {
         /// A run id (or unique prefix) to show in detail.
         id: Option<String>,
@@ -92,7 +93,7 @@ pub enum Command {
         #[arg(long, value_name = "N")]
         prune: Option<usize>,
     },
-    /// Roll back the burns of a past run.
+    /// Put the world back the way it was, newest op first (rollback).
     Unburn {
         /// Run id or unique prefix.
         id: String,
@@ -103,7 +104,7 @@ pub enum Command {
         #[arg(long)]
         force: bool,
     },
-    /// Report on the installation, tools, updates and crash reports.
+    /// Look the install over, or diagnose a past run again; asks before it fixes anything (diagnostics).
     Doctor {
         /// Offer to repair what can be repaired, asking before each change.
         #[arg(long)]
@@ -111,9 +112,9 @@ pub enum Command {
         /// A run id (or prefix): diagnose that run's recorded error again, read-only.
         run: Option<String>,
     },
-    /// Print the language legend and the standard library surface.
+    /// The whole language and library on one screen (reference).
     Language,
-    /// What an error code means and how to fix it (all codes with no argument).
+    /// The long version of an error code: which kind of no, what to type next (error documentation).
     Explain {
         /// A code such as E502.
         code: Option<String>,
@@ -121,7 +122,7 @@ pub enum Command {
         #[arg(long)]
         schema: bool,
     },
-    /// Show or change settings in ~/.cigscript/config.
+    /// Show or change the few settings there are, in ~/.cigscript/config.
     Config {
         /// Key to read or set.
         key: Option<String>,
@@ -131,12 +132,20 @@ pub enum Command {
         #[arg(long)]
         unset: bool,
     },
-    /// Crash reports: list, show, send, delete.
+    /// Crash reports: list, show, send, delete; nothing leaves without a yes.
     Crash {
         #[command(subcommand)]
         command: Option<crash::CrashCommand>,
     },
-    /// Check for a newer release and install it.
+    /// Bundle a run for a bug report: plan, journal, diagnostic and doctor's diagnosis, redacted (reproducible report).
+    Report {
+        /// The run id, or a unique prefix of it.
+        id: String,
+        /// Write here instead of ~/.cigscript/reports/<id>.json; `-` prints to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Get the newer binary from the repo, verified before it is installed (self-update).
     Update {
         /// Only report whether a newer release exists.
         #[arg(long)]
@@ -227,6 +236,7 @@ pub fn main() -> i32 {
         Command::Explain { code, schema } => explain::explain(&ctx, code, schema),
         Command::Config { key, value, unset } => config::config(&ctx, key, value, unset),
         Command::Crash { command } => crash::crash(&ctx, command),
+        Command::Report { id, out } => report::report(&ctx, &id, out),
         Command::Update {
             check,
             allow_downgrade,

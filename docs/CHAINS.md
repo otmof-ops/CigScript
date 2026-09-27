@@ -2,12 +2,31 @@
 
 <p align="center"><img src="assets/chain.svg" alt="A chain, lit one stick from the last" width="820"></p>
 
-A chain is an ordered list of sticks. Light it and the sticks run one after
-another, each timed, each reported, the whole thing stopping at the first
-failure unless you say otherwise. Chains are how CigScript does what a
-Makefile, a `justfile` or a folder of shell scripts does, with the burn model
-underneath: a chain can be dry-run, its burns are journaled, and a failed
-chain is rolled back like any other run.
+Each stick lit from the last. A chain is an ordered list of sticks (steps).
+Light it and the sticks run one after another, each timed, each reported,
+the whole thing stopping at the first failure unless you say otherwise.
+Chains are how CigScript does what a Makefile, a `justfile` or a folder of
+shell scripts does (a task pipeline), with the burn model underneath: a chain
+can be dry-run, its burns are journaled, and a failed chain is rolled back
+like any other run.
+
+**Cross-step rollback** is the part no other task runner has. When step four
+goes out, everything steps one to three burned is put back, newest first,
+because the journal does not care about step boundaries: it is one run. A
+`make` target that fails halfway leaves the earlier targets' work on disk;
+a chain leaves the world the way it found it.
+
+## The levels
+
+| level | one line | status |
+|---|---|---|
+| stick | one step: a pack, a pull, or another chain | here |
+| chain | order: sticks that light from each other, fail together, roll back together | here |
+| pack | scope and reuse: a chain with its own root and doors, lit from anywhere, folded into a plan that still sees all the way down | planned (`HAMMER.md`, section 5) |
+| carton | distribution: packs published and pinned | planned (section 6) |
+
+Folding (automation of automation: chains that light chains, on a schedule or
+a watch) keeps one rule: the plan never hides what is folded away.
 
 ## Declaring one
 

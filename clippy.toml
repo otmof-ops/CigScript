@@ -1,0 +1,3 @@
+# Diagnostic is 144 bytes since it gained `subject`; it travels only on the
+# error path, and boxing its fields would cost more in churn than the copy.
+large-error-threshold = 192

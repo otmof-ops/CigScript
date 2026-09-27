@@ -424,7 +424,7 @@ impl Parser {
             TokenKind::Ashtray => Err(syntax("`ashtray` without a preceding `try`", start)),
             TokenKind::LBrace => Err(syntax("a bare `{` cannot start a statement", start)
                 .with_hint(
-                    "did you mean `burn { ... }`? Map literals are only valid in expressions",
+                    "write `burn { ... }`; a map literal on its own line is not a statement",
                 )),
             _ => self.expr_or_assign_stmt(),
         }
@@ -930,7 +930,7 @@ impl Parser {
                         self.span(),
                     )
                     .with_hint(
-                        "keys look like `name: value`, `\"text\": value` or `[expr]: value`",
+                        "write the key as `name: value`, `\"text\": value` or `[expr]: value`",
                     ))
                 }
             };

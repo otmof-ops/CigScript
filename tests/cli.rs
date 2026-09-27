@@ -1149,6 +1149,52 @@ fn normalise(text: &str, sandbox: &Path) -> String {
     ids.replace_all(&t, "<run-id>").to_string()
 }
 
+/// (hallway phrase, manual name) for every kind of no, from the binary.
+fn kinds_of_no() -> Vec<(String, String)> {
+    let sb = Sandbox::new();
+    let nodes: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "explain"])).unwrap();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut push = |v: &serde_json::Value| {
+        let pair = (
+            v["hear"].as_str().unwrap().to_string(),
+            v["manual"].as_str().unwrap().to_string(),
+        );
+        if !out.contains(&pair) {
+            out.push(pair);
+        }
+    };
+    for n in &nodes {
+        push(&n["no"]);
+        for c in n["causes"].as_array().unwrap() {
+            if let Some(id) = c["no"].as_str() {
+                if let Some(m) = nodes.iter().find(|x| x["no"]["id"] == id) {
+                    push(&m["no"]);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// What plain mode must equal: the themed text without the banner line and
+/// with every hallway phrase replaced by the manual's name.
+fn subtract_theme(themed: &str, nos: &[(String, String)]) -> String {
+    let mut out = String::new();
+    for line in themed.lines() {
+        if line == "Don't see any cigarettes." {
+            continue;
+        }
+        let mut l = line.to_string();
+        for (hear, manual) in nos {
+            l = l.replace(&format!(" ({hear})"), &format!(" ({manual})"));
+        }
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
 fn corpus_env(sb: &Sandbox) -> Vec<(String, String)> {
     vec![
         ("PATH".to_string(), "/usr/bin:/bin".to_string()),
@@ -1179,6 +1225,7 @@ fn corpus_diagnoses_match_golden_output() {
     scripts.sort();
     assert!(scripts.len() >= 8, "corpus has {} scripts", scripts.len());
     let update = std::env::var_os("CIG_UPDATE_GOLDEN").is_some();
+    let nos = kinds_of_no();
     let mut failures = Vec::new();
     for path in scripts {
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
@@ -1194,6 +1241,32 @@ fn corpus_diagnoses_match_golden_output() {
         });
         if text != want {
             failures.push(format!("{name}:\n--- expected\n{want}\n--- got\n{text}"));
+        }
+        // Plain mode: golden too, and a strict subtraction of the themed text.
+        let base = corpus_env(&sb);
+        let mut envs: Vec<(&str, &str)> =
+            base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        envs.push(("CIG_PLAIN", "1"));
+        let plain_out = sb.cig_env(&["run", &name], &envs);
+        let plain = normalise(&String::from_utf8_lossy(&plain_out.stderr), sb.path());
+        let plain_expect = path.with_extension("plain.expect");
+        if update {
+            fs::write(&plain_expect, &plain).unwrap();
+        }
+        let plain_want = fs::read_to_string(&plain_expect).unwrap_or_else(|_| {
+            panic!(
+                "missing {}; run with CIG_UPDATE_GOLDEN=1",
+                plain_expect.display()
+            )
+        });
+        if plain != plain_want {
+            failures.push(format!(
+                "{name} (plain):\n--- expected\n{plain_want}\n--- got\n{plain}"
+            ));
+        }
+        let subtracted = subtract_theme(&text, &nos);
+        if plain != subtracted {
+            failures.push(format!("{name}: plain mode is not a strict subtraction of themed mode\n--- themed minus catchphrases\n{subtracted}\n--- plain\n{plain}"));
         }
     }
     assert!(
@@ -1409,4 +1482,53 @@ fn plain_mode_drops_the_catchphrases_and_keeps_the_facts() {
         .map(|l| l.split(" (wrong address").next().unwrap())
         .collect();
     assert_eq!(themed_facts, plain_facts);
+}
+
+#[test]
+fn report_bundles_a_run_redacted() {
+    let sb = Sandbox::new();
+    run_corpus(&sb, "e509-not-on-path.cig", &[]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let base = corpus_env(&sb);
+    let envs: Vec<(&str, &str)> = base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let out = sb.cig_env(&["report", &id], &envs);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let printed = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        printed.starts_with("~/home/reports/"),
+        "the path is printed with ~ for HOME: {printed}"
+    );
+    let file = sb.home().join("reports").join(format!("{id}.json"));
+    let bundle: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(bundle["kind"], "cigscript-report");
+    assert_eq!(bundle["run"]["id"], id);
+    assert_eq!(
+        bundle["run"]["cwd"], "~",
+        "cwd under HOME is redacted to ~: {}",
+        bundle["run"]
+    );
+    assert_eq!(bundle["diagnostic"]["code"], "E509");
+    assert_eq!(
+        bundle["diagnosis"]["confirmed"], true,
+        "{}",
+        bundle["diagnosis"]
+    );
+    assert_eq!(bundle["journal"].as_array().unwrap().len(), 1);
+    assert_eq!(bundle["journal"][0]["reversible"], false);
+    assert!(bundle["note"].as_str().unwrap().contains("Redacted"));
+    let text = fs::read_to_string(&file).unwrap();
+    assert!(
+        !text.contains(sb.path().to_str().unwrap()),
+        "an absolute sandbox path leaked into the bundle"
+    );
+    let out = sb.cig_env(&["--json", "report", &id], &envs);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["run"]["id"], id);
+    let err = sb.run_err(&["report", "zzz"], 3);
+    assert!(err.contains("error[E803 usage]"), "{err}");
 }

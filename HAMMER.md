@@ -55,7 +55,7 @@ without a green test is not delivered.
 | 14 | Hop resilience + `proc.json/lines/csv` | 4 | every rule in the resilience list has a test; the deadlock and zombie cases pass | pending |
 | 15 | Pack + compensations + fold checks | 5, 6 | the four golden plans (inside / outside / cough / unburn) match; folds refuse with codes | pending |
 | 16 | Foreign scripts, Tier 1 then Python shim | 7 | an unchanged Python script gets plan and rollback; behaviour identical without `cig` | pending |
-| 17 | Lexicon rewrite of all repo artifacts | Part C | every artifact reads in the vernacular with the manual's name attached; plain mode strips it cleanly | pending |
+| 17 | Lexicon rewrite of all repo artifacts | Part C | every artifact reads in the vernacular with the manual's name attached; plain mode strips it cleanly | delivered, `hammer/4` (Parts B and C; `cig report`, templates, the wall) |
 | 18 | Playground | 3 | `fs.rm` and `unburn` clickable in a browser on a fake filesystem | pending |
 
 ## Delivery order
