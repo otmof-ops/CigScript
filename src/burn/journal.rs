@@ -55,6 +55,25 @@ pub struct Entry {
     /// Rolled back already, by a retry inside the run; skipped by `unburn`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub undone: bool,
+    /// An irreversible op inside a `burn { } unburn { }` block: the
+    /// compensation covers it, so the plan says `compensated`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compensated: bool,
+    /// For `Op::Compensate`: the compensation itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compensation: Option<Compensation>,
+}
+
+/// A compensation: the `unburn { }` block's source and the state map it
+/// was journaled with. It runs later, in another process, from this alone.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Compensation {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_name: Option<String>,
+    #[serde(default)]
+    pub state: serde_json::Value,
+    pub line: u32,
 }
 
 pub struct Journal {
@@ -67,8 +86,18 @@ pub struct Journal {
 pub struct RollbackReport {
     pub restored: Vec<String>,
     pub irreversible: Vec<String>,
+    /// Irreversible ops a compensation covers.
+    pub compensated: Vec<String>,
+    /// Compensations found and not run (no runner was given), newest first.
+    pub compensations: Vec<Compensation>,
     pub failed: Vec<String>,
+    /// Everything that happened, in the order it happened: (label, text).
+    /// Labels: restored, compensated, cannot undo, failed.
+    pub actions: Vec<(String, String)>,
 }
+
+/// Runs a compensation on the journal's behalf; `Err` is the message.
+pub type CompensationRunner<'a> = &'a mut dyn FnMut(&Compensation) -> Result<(), String>;
 
 impl RollbackReport {
     pub fn clean(&self) -> bool {
@@ -133,9 +162,13 @@ impl Journal {
         &self.entries
     }
 
-    /// Entries still standing (not undone by a retry).
+    /// Burns still standing: not undone by a retry, and not a compensation
+    /// record (which is the undo, not an effect).
     pub fn len(&self) -> usize {
-        self.entries.iter().filter(|e| !e.undone).count()
+        self.entries
+            .iter()
+            .filter(|e| !e.undone && e.compensation.is_none())
+            .count()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -160,7 +193,7 @@ impl Journal {
     /// them undone in the journal so a later `unburn` skips them. The op
     /// numbers stay; the retry's own entries follow.
     pub fn rollback_since(&mut self, mark: usize) -> RollbackReport {
-        let report = self.rollback_from(mark);
+        let report = self.rollback_from(mark, None);
         let mut markers = String::new();
         for e in self.entries.iter_mut().skip(mark) {
             if !e.undone {
@@ -179,6 +212,18 @@ impl Journal {
     /// Snapshot everything `op` will change, sync it, then append and sync
     /// the entry. Only after both are durable does the effect happen.
     pub fn record(&mut self, seq: u64, op: Op) -> Result<(), io::Error> {
+        self.record_with(seq, op, None, false)
+    }
+
+    /// `record`, with a compensation attached (for `Op::Compensate`) or the
+    /// `compensated` label (an irreversible op inside a compensating burn).
+    pub fn record_with(
+        &mut self,
+        seq: u64,
+        op: Op,
+        compensation: Option<Compensation>,
+        compensated: bool,
+    ) -> Result<(), io::Error> {
         let before = self.capture_before(seq, &op)?;
         let entry = Entry {
             seq,
@@ -187,6 +232,8 @@ impl Journal {
             op,
             before,
             undone: false,
+            compensated,
+            compensation,
         };
         if let Some(f) = &mut self.file {
             let mut line = serde_json::to_string(&entry)
@@ -221,7 +268,16 @@ impl Journal {
                 states.extend(self.destination_states(seq, to, 1)?);
                 states
             }
-            Op::Proc { .. } | Op::EnvSet { .. } | Op::EnvUnset { .. } => Vec::new(),
+            // A hop created this file: it did not exist before the hop.
+            Op::HopCreated { path } => vec![BeforeState {
+                path: path.clone(),
+                before: Before::Absent,
+            }],
+            Op::HopChanged { .. }
+            | Op::Compensate { .. }
+            | Op::Proc { .. }
+            | Op::EnvSet { .. }
+            | Op::EnvUnset { .. } => Vec::new(),
         })
     }
 
@@ -397,17 +453,55 @@ impl Journal {
     /// Restore every before-state, newest entry first. Call `verify` first;
     /// this does what it can and reports what it could not.
     pub fn rollback(&mut self) -> RollbackReport {
-        self.rollback_from(0)
+        self.rollback_from(0, None)
     }
 
-    fn rollback_from(&mut self, from: usize) -> RollbackReport {
+    /// Roll back with compensations run in place, newest first, by `runner`.
+    pub fn rollback_with(&mut self, runner: CompensationRunner<'_>) -> RollbackReport {
+        self.rollback_from(0, Some(runner))
+    }
+
+    fn rollback_from(
+        &mut self,
+        from: usize,
+        mut runner: Option<CompensationRunner<'_>>,
+    ) -> RollbackReport {
         let mut report = RollbackReport::default();
         for entry in self.entries.iter().skip(from).rev() {
             if entry.undone {
                 continue;
             }
+            if let Some(c) = &entry.compensation {
+                match runner.as_mut() {
+                    Some(run) => match run(c) {
+                        Ok(()) => {
+                            let text =
+                                format!("ran the compensation for the burn at line {}", c.line);
+                            report.actions.push(("compensated".to_string(), text));
+                        }
+                        Err(e) => {
+                            let text =
+                                format!("compensation for the burn at line {} failed: {e}", c.line);
+                            report.failed.push(text.clone());
+                            report.actions.push(("failed".to_string(), text));
+                        }
+                    },
+                    None => report.compensations.push(c.clone()),
+                }
+                continue;
+            }
             if !entry.reversible {
-                report.irreversible.push(entry.op.describe());
+                if entry.compensated {
+                    report.compensated.push(entry.op.describe());
+                    report
+                        .actions
+                        .push(("compensated".to_string(), entry.op.describe()));
+                } else {
+                    report.irreversible.push(entry.op.describe());
+                    report
+                        .actions
+                        .push(("cannot undo".to_string(), entry.op.describe()));
+                }
                 continue;
             }
             // Before-states are captured outermost-first (created parent, then
@@ -424,22 +518,37 @@ impl Journal {
             }
             for state in order {
                 match restore(state) {
-                    Ok(()) => report.restored.push(format!(
-                        "{} ({})",
-                        entry.op.describe(),
-                        match state.before {
-                            Before::Absent => "removed",
-                            Before::File { .. } => "file restored",
-                            Before::Dir { .. } => "directory restored",
-                            Before::Symlink { .. } => "link restored",
-                            Before::Moved { .. } => "moved back",
-                        }
-                    )),
-                    Err(e) => report.failed.push(format!(
-                        "{}: {} ({e})",
-                        entry.op.describe(),
-                        state.path.display()
-                    )),
+                    Ok(()) => {
+                        let text = format!(
+                            "{} ({})",
+                            entry.op.describe(),
+                            match state.before {
+                                Before::Absent => "removed",
+                                Before::File { .. } => "file restored",
+                                Before::Dir { .. } => "directory restored",
+                                Before::Symlink { .. } => "link restored",
+                                Before::Moved { .. } => "moved back",
+                            }
+                        );
+                        report.actions.push(("restored".to_string(), text));
+                        report.restored.push(format!(
+                            "{} ({})",
+                            entry.op.describe(),
+                            match state.before {
+                                Before::Absent => "removed",
+                                Before::File { .. } => "file restored",
+                                Before::Dir { .. } => "directory restored",
+                                Before::Symlink { .. } => "link restored",
+                                Before::Moved { .. } => "moved back",
+                            }
+                        ))
+                    }
+                    Err(e) => {
+                        let text =
+                            format!("{}: {} ({e})", entry.op.describe(), state.path.display());
+                        report.failed.push(text.clone());
+                        report.actions.push(("failed".to_string(), text));
+                    }
                 }
             }
         }

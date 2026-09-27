@@ -39,6 +39,9 @@ pub struct Interp {
     /// The step budget; 0 means none. `--max-steps` and `CIG_MAX_STEPS`.
     pub max_steps: u64,
     pub(crate) loop_depth: u32,
+    /// Chains being lit right now, outermost first, to catch a chain that
+    /// lights itself (E604) and to tag ops with their owner.
+    pub(crate) chain_stack: Vec<String>,
 }
 
 /// The default step budget: `CIG_MAX_STEPS`, else ten million, which a
@@ -71,6 +74,36 @@ impl Interp {
             steps: 0,
             max_steps: default_max_steps(),
             loop_depth: 0,
+            chain_stack: Vec::new(),
+        }
+    }
+
+    /// Run a journaled compensation: its `unburn { }` source with the state
+    /// map it was recorded with, effects allowed, nothing journaled. Used
+    /// by rollback in this process and by `cig unburn` in another.
+    pub fn run_compensation(
+        &mut self,
+        comp: &crate::burn::journal::Compensation,
+    ) -> Result<(), Diagnostic> {
+        let program = crate::syntax::parse(&comp.source)?;
+        let scope = Scope::child(&self.globals);
+        if let Some(name) = &comp.state_name {
+            scope.declare(
+                name,
+                crate::stdlib::json::to_value(comp.state.clone()),
+                false,
+            );
+        }
+        self.burn_depth += 1;
+        let result = self.exec_block_in(&program.body, &scope);
+        self.burn_depth -= 1;
+        self.out.flush().ok();
+        match result {
+            Ok(()) | Err(eval::Signal::Return(_)) => Ok(()),
+            Err(eval::Signal::Error(d)) => Err(d),
+            Err(eval::Signal::Break(span)) | Err(eval::Signal::Continue(span)) => Err(
+                Diagnostic::new(Kind::Runtime, "`break` or `continue` outside of a loop").at(span),
+            ),
         }
     }
 

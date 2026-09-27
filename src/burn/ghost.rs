@@ -286,7 +286,12 @@ impl Ghost {
                 self.remove_subtree(&from);
                 self.tombstones.push((from, seq, op.describe()));
             }
-            Op::Proc { .. } | Op::EnvSet { .. } | Op::EnvUnset { .. } => {}
+            Op::Proc { .. }
+            | Op::EnvSet { .. }
+            | Op::EnvUnset { .. }
+            | Op::HopCreated { .. }
+            | Op::HopChanged { .. }
+            | Op::Compensate { .. } => {}
         }
     }
 

@@ -22,11 +22,15 @@ a chain leaves the world the way it found it.
 |---|---|---|
 | stick | one step: a pack, a pull, or another chain | here |
 | chain | order: sticks that light from each other, fail together, roll back together | here |
-| pack | scope and reuse: a chain with its own root and doors, lit from anywhere, folded into a plan that still sees all the way down | planned (`HAMMER.md`, section 5) |
+| pack | scope: `pack { "./build" }` declares the roots every write must stay in; hops inside it are watched and their created files reversible; one journal for every chain in the script | here (scope); parameters and lighting a pack from elsewhere: planned (`HAMMER.md`, section 6) |
 | carton | distribution: packs published and pinned | planned (section 6) |
 
 Folding (automation of automation: chains that light chains, on a schedule or
-a watch) keeps one rule: the plan never hides what is folded away.
+a watch) keeps one rule: the plan never hides what is folded away. Every op
+in a dry-run plan is tagged with the chain and step that own it
+(`[release/build]`), a chain that lights itself is refused (`E604`) instead
+of running forever, and a step whose failed attempt ran a hop is not retried
+on its own (`HOPS.md`).
 
 ## Declaring one
 

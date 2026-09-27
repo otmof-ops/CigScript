@@ -27,6 +27,19 @@ struct Scope {
 
 pub struct Checker {
     scopes: Vec<Scope>,
+    /// Names the prelude provides (modules and builtins), which a
+    /// compensation may use.
+    prelude: std::collections::HashSet<String>,
+    /// Inside an `unburn { }` block: the scope index the block starts at.
+    /// Names resolved below it (other than the prelude) are E754.
+    comp_floor: Option<usize>,
+    /// The pack's literal roots, for E750.
+    pack_roots: Vec<std::path::PathBuf>,
+    pack_seen: bool,
+    /// Chains declared in the blocks being checked: usable inside a function
+    /// body before the declaration, since the body resolves names when it
+    /// runs, by which time the chain exists.
+    hoisted_chains: Vec<String>,
     /// Qualified builtin names with an effect that needs a burn, e.g. `fs.rm`.
     effectful: HashMap<String, Effect>,
     modules: HashMap<String, Vec<String>>,
@@ -52,6 +65,21 @@ impl Report {
 /// (for the REPL, everything already defined).
 pub fn check(program: &Program, extra_globals: &[String]) -> Report {
     let mut c = Checker::new(extra_globals);
+    for (i, stmt) in program.body.iter().enumerate() {
+        if let Stmt::Pack(p) = stmt {
+            if i != 0 {
+                c.error_code(
+                    "E753",
+                    "pack { } must be the first statement of the script",
+                    p.span,
+                )
+                .hint = Some(
+                    "move it above everything else; the scope is declared before anything can burn"
+                        .to_string(),
+                );
+            }
+        }
+    }
     c.block_stmts(&program.body);
     Report {
         errors: c.errors,
@@ -91,6 +119,7 @@ impl Checker {
         for g in extra_globals {
             root.names.insert(g.clone(), Binding::Mutable);
         }
+        let prelude: std::collections::HashSet<String> = root.names.keys().cloned().collect();
         Self {
             scopes: vec![
                 root,
@@ -98,6 +127,11 @@ impl Checker {
                     names: HashMap::new(),
                 },
             ],
+            prelude,
+            comp_floor: None,
+            pack_roots: Vec::new(),
+            pack_seen: false,
+            hoisted_chains: Vec::new(),
             effectful,
             modules,
             burn_depth: 0,
@@ -147,6 +181,46 @@ impl Checker {
                 "call the program directly with its arguments as a list, proc.pipe for a pipeline, or proc.shell if you mean the shell and the string is yours"
                     .to_string(),
             );
+        }
+    }
+
+    /// A literal path handed to a write, outside the declared pack: E750.
+    fn pack_check(&mut self, qualified: &str, args: &[Expr]) {
+        if self.pack_roots.is_empty() {
+            return;
+        }
+        let positions: &[usize] = match qualified {
+            "fs.write_text" | "fs.append_text" | "fs.mkdir" | "fs.rm" | "json.save"
+            | "csv.write" => &[0],
+            "fs.cp" => &[1],
+            "fs.mv" => &[0, 1],
+            _ => return,
+        };
+        for &pos in positions {
+            let Some(text) = args.get(pos).and_then(literal_text) else {
+                continue;
+            };
+            let abs = crate::burn::normalize_root(&text);
+            let inside = self
+                .pack_roots
+                .iter()
+                .any(|r| abs == *r || abs.starts_with(r));
+            if !inside {
+                let roots = self
+                    .pack_roots
+                    .iter()
+                    .map(|r| r.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.error_code(
+                    "E750",
+                    format!("`{text}` is outside the pack ({roots})"),
+                    args[pos].span,
+                )
+                .hint = Some(
+                    "move the path inside a declared root, or add its root to pack { }".to_string(),
+                );
+            }
         }
     }
 
@@ -223,6 +297,9 @@ impl Checker {
         for stmt in stmts {
             if let Stmt::Pull(f) = stmt {
                 self.declare(&f.name, Binding::Function, f.span);
+            }
+            if let Stmt::Chain(c) = stmt {
+                self.hoisted_chains.push(c.name.clone());
             }
         }
         for stmt in stmts {
@@ -380,10 +457,57 @@ impl Checker {
                     self.block(f);
                 }
             }
-            Stmt::Burn { body, .. } => {
+            Stmt::Burn {
+                state,
+                body,
+                unburn,
+                span,
+                ..
+            } => {
+                self.push();
+                if let Some(name) = state {
+                    self.declare(name, Binding::Immutable, *span);
+                }
                 self.burn_depth += 1;
-                self.block(body);
+                self.block_stmts(&body.stmts);
                 self.burn_depth -= 1;
+                self.pop();
+                if let Some(u) = unburn {
+                    // The compensation runs later, from the journal alone:
+                    // only the state map, the prelude and its own names.
+                    let floor = self.scopes.len();
+                    self.comp_floor = Some(floor);
+                    self.push();
+                    if let Some(name) = state {
+                        self.declare(name, Binding::Immutable, *span);
+                    }
+                    self.burn_depth += 1;
+                    self.block_stmts(&u.stmts);
+                    self.burn_depth -= 1;
+                    self.pop();
+                    self.comp_floor = None;
+                }
+            }
+            Stmt::Pack(p) => {
+                // Two scopes are the top level: the prelude and the script's own.
+                if self.scopes.len() > 2 {
+                    self.error_code("E753", "pack { } cannot be declared inside a block", p.span)
+                        .hint = Some("declare it once, at the top of the script".to_string());
+                } else if self.pack_seen {
+                    self.error_code(
+                        "E753",
+                        "a second pack { }; a script declares one scope",
+                        p.span,
+                    )
+                    .hint = Some("merge the roots into the first pack { }".to_string());
+                }
+                self.pack_seen = true;
+                for r in &p.roots {
+                    match literal_text(r) {
+                        Some(text) => self.pack_roots.push(crate::burn::normalize_root(&text)),
+                        None => self.expr(r),
+                    }
+                }
             }
             Stmt::Expr(e) => self.expr(e),
         }
@@ -419,7 +543,26 @@ impl Checker {
             }
             ExprKind::Ident(name) => {
                 if self.lookup(name).is_none() {
-                    self.unknown(name, expr.span);
+                    if !(self.fn_depth > 0 && self.hoisted_chains.iter().any(|c| c == name)) {
+                        self.unknown(name, expr.span);
+                    }
+                } else if let Some(floor) = self.comp_floor {
+                    let idx = self
+                        .scopes
+                        .iter()
+                        .rposition(|sc| sc.names.contains_key(name))
+                        .unwrap_or(0);
+                    let outer = idx < floor && !(idx == 0 && self.prelude.contains(name));
+                    if outer {
+                        self.error_code(
+                            "E754",
+                            format!("the compensation uses `{name}` from outside its state"),
+                            expr.span,
+                        )
+                        .hint = Some(format!(
+                            "put it in the state map inside the burn block (state.{name} = {name}) and read it from there"
+                        ));
+                    }
                 }
             }
             ExprKind::List(items) => items.iter().for_each(|i| self.expr(i)),
@@ -456,6 +599,7 @@ impl Checker {
                         && self.lookup(module) == Some(Binding::Immutable)
                     {
                         let qualified = format!("{module}.{name}");
+                        self.pack_check(&qualified, args);
                         if let Some(items) = self.modules.get(module) {
                             if !items.contains(name) {
                                 let hint =

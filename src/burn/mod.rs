@@ -53,6 +53,20 @@ pub enum Op {
     EnvUnset {
         key: String,
     },
+    /// A file a hop created inside the pack (observed after the hop).
+    HopCreated {
+        path: PathBuf,
+    },
+    /// A file a hop modified or deleted inside the pack (observed; the
+    /// kernel has no before-image, so it cannot be undone).
+    HopChanged {
+        path: PathBuf,
+        change: String,
+    },
+    /// The compensation recorded when a `burn { } unburn { }` block ends.
+    Compensate {
+        line: u32,
+    },
 }
 
 impl Op {
@@ -67,6 +81,9 @@ impl Op {
             Op::Proc { .. } => "proc",
             Op::EnvSet { .. } => "env_set",
             Op::EnvUnset { .. } => "env_unset",
+            Op::HopCreated { .. } => "hop-created",
+            Op::HopChanged { .. } => "hop-changed",
+            Op::Compensate { .. } => "compensate",
         }
     }
 
@@ -74,7 +91,10 @@ impl Op {
     /// die with the process, so they count as reversible; a spawned
     /// process does not.
     pub fn reversible(&self) -> bool {
-        !matches!(self, Op::Proc { .. })
+        !matches!(
+            self,
+            Op::Proc { .. } | Op::HopChanged { .. } | Op::EnvSet { .. } | Op::EnvUnset { .. }
+        ) || matches!(self, Op::EnvSet { .. } | Op::EnvUnset { .. })
     }
 
     pub fn describe(&self) -> String {
@@ -98,6 +118,9 @@ impl Op {
             }
             Op::EnvSet { key } => format!("set env {key}"),
             Op::EnvUnset { key } => format!("unset env {key}"),
+            Op::HopCreated { path } => format!("hop created {}", path.display()),
+            Op::HopChanged { path, change } => format!("hop {change} {}", path.display()),
+            Op::Compensate { line } => format!("compensation for the burn at line {line}"),
         }
     }
 }
@@ -127,6 +150,12 @@ pub struct PlannedOp {
     pub seq: u64,
     pub class: BurnClass,
     pub reversible: bool,
+    /// An irreversible op a compensation covers.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub compensated: bool,
+    /// The chain/step that owns the op, when one does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     pub summary: String,
     pub op: Op,
 }
@@ -157,6 +186,104 @@ pub struct Kernel {
     pub irreversible: usize,
     /// The ghost filesystem: present in dry-run mode only.
     ghost: Option<ghost::Ghost>,
+    /// The declared pack: every native write must stay inside these roots.
+    pack: Option<Vec<PathBuf>>,
+    /// Inside a `burn { } unburn { }` block: irreversible ops are compensated.
+    compensating: u32,
+    /// The chain/step path that owns the current ops, for the plan.
+    owner: Vec<String>,
+}
+
+/// What a hop changed, as observed by comparing the pack before and after.
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct HopWrites {
+    pub created: Vec<PathBuf>,
+    pub modified: Vec<PathBuf>,
+    pub deleted: Vec<PathBuf>,
+    /// Changes seen outside the pack (in the child's working directory).
+    pub outside: Vec<PathBuf>,
+}
+
+/// A snapshot of mtimes and sizes, cheap enough to take around every hop.
+pub struct PackWatch {
+    inside: std::collections::BTreeMap<PathBuf, (u64, u64)>,
+    outside: std::collections::BTreeMap<PathBuf, (u64, u64)>,
+    outside_root: Option<PathBuf>,
+}
+
+/// Expand `~`, make absolute against the working directory, and normalise
+/// lexically (no symlink resolution, no disk access).
+pub fn normalize_root(raw: &str) -> PathBuf {
+    let expanded = if let Some(rest) = raw.strip_prefix("~/") {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(|h| PathBuf::from(h).join(rest))
+            .unwrap_or_else(|| PathBuf::from(raw))
+    } else if raw == "~" {
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(raw))
+    } else {
+        PathBuf::from(raw)
+    };
+    let joined = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(expanded)
+    };
+    let mut out = PathBuf::new();
+    for c in joined.components() {
+        match c {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn inside_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    let abs = normalize_root(&path.to_string_lossy());
+    roots.iter().any(|r| abs == *r || abs.starts_with(r))
+}
+
+fn scan(
+    root: &Path,
+    max_depth: usize,
+    cap: usize,
+) -> std::collections::BTreeMap<PathBuf, (u64, u64)> {
+    let mut out = std::collections::BTreeMap::new();
+    for entry in walkdir::WalkDir::new(root)
+        .min_depth(1)
+        .max_depth(max_depth)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|e| {
+            let n = e.file_name().to_string_lossy();
+            n != ".git" && n != "node_modules" && n != "target" && n != ".cigscript"
+        })
+    {
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let Ok(m) = entry.metadata() else { continue };
+        let mtime = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        out.insert(entry.path().to_path_buf(), (mtime, m.len()));
+        if out.len() >= cap {
+            break;
+        }
+    }
+    out
 }
 
 impl Kernel {
@@ -175,7 +302,172 @@ impl Kernel {
             } else {
                 None
             },
+            pack: None,
+            compensating: 0,
+            owner: Vec::new(),
         })
+    }
+
+    /// Declare the pack: the roots every native write must stay inside.
+    pub fn set_pack(&mut self, roots: Vec<PathBuf>) {
+        self.pack = Some(roots);
+    }
+
+    pub fn pack(&self) -> Option<&[PathBuf]> {
+        self.pack.as_deref()
+    }
+
+    pub fn enter_compensating(&mut self) {
+        self.compensating += 1;
+    }
+
+    pub fn leave_compensating(&mut self) {
+        self.compensating = self.compensating.saturating_sub(1);
+    }
+
+    pub fn push_owner(&mut self, owner: String) {
+        self.owner.push(owner);
+    }
+
+    pub fn pop_owner(&mut self) {
+        self.owner.pop();
+    }
+
+    fn owner_path(&self) -> Option<String> {
+        if self.owner.is_empty() {
+            None
+        } else {
+            Some(self.owner.join("/"))
+        }
+    }
+
+    /// Record the compensation of a `burn { } unburn { }` block that
+    /// completed. In a dry-run it appears in the plan.
+    pub fn record_compensation(&mut self, comp: journal::Compensation) -> Result<(), Diagnostic> {
+        self.seq += 1;
+        let op = Op::Compensate { line: comp.line };
+        if self.mode == Mode::DryRun {
+            self.planned.push(PlannedOp {
+                seq: self.seq,
+                class: BurnClass::Burn,
+                reversible: true,
+                compensated: false,
+                owner: self.owner_path(),
+                summary: op.describe(),
+                op,
+            });
+            return Ok(());
+        }
+        self.journal
+            .record_with(self.seq, op, Some(comp), false)
+            .map_err(|e| {
+                burn_error(format!("could not journal the compensation: {e}")).code("E702")
+            })
+    }
+
+    /// Before a hop: remember the pack's files (and the child's working
+    /// directory, when it is outside the pack) by mtime and size.
+    pub fn pack_watch_begin(&self, cwd: Option<&Path>) -> Option<PackWatch> {
+        let roots = self.pack.as_ref()?;
+        if self.mode == Mode::DryRun {
+            return None;
+        }
+        let mut inside = std::collections::BTreeMap::new();
+        for r in roots {
+            inside.extend(scan(r, 64, 50_000));
+        }
+        let work = cwd
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .map(|p| normalize_root(&p.to_string_lossy()));
+        let outside_root = work.filter(|w| !inside_roots(w, roots));
+        let outside = outside_root
+            .as_ref()
+            .map(|w| scan(w, 3, 5_000))
+            .unwrap_or_default();
+        Some(PackWatch {
+            inside,
+            outside,
+            outside_root,
+        })
+    }
+
+    /// After a hop: what changed. Files the hop created inside the pack are
+    /// journaled as reversible (rollback removes them); modified or deleted
+    /// ones as irreversible with the detail; changes outside the pack are
+    /// returned for the caller to report (E752).
+    pub fn pack_watch_end(&mut self, watch: PackWatch) -> HopWrites {
+        let Some(roots) = self.pack.clone() else {
+            return HopWrites::default();
+        };
+        let mut after = std::collections::BTreeMap::new();
+        for r in &roots {
+            after.extend(scan(r, 64, 50_000));
+        }
+        let mut writes = HopWrites::default();
+        for (p, meta) in &after {
+            match watch.inside.get(p) {
+                None => writes.created.push(p.clone()),
+                Some(before) if before != meta => writes.modified.push(p.clone()),
+                Some(_) => {}
+            }
+        }
+        for p in watch.inside.keys() {
+            if !after.contains_key(p) {
+                writes.deleted.push(p.clone());
+            }
+        }
+        if let Some(w) = &watch.outside_root {
+            let now = scan(w, 3, 5_000);
+            for (p, meta) in &now {
+                if inside_roots(p, &roots) {
+                    continue;
+                }
+                match watch.outside.get(p) {
+                    None => writes.outside.push(p.clone()),
+                    Some(before) if before != meta => writes.outside.push(p.clone()),
+                    Some(_) => {}
+                }
+            }
+            for p in watch.outside.keys() {
+                if !now.contains_key(p) && !inside_roots(p, &roots) {
+                    writes.outside.push(p.clone());
+                }
+            }
+        }
+        let compensated = self.compensating > 0;
+        for p in &writes.created {
+            self.seq += 1;
+            self.executed += 1;
+            let _ = self.journal.record_with(
+                self.seq,
+                Op::HopCreated { path: p.clone() },
+                None,
+                compensated,
+            );
+        }
+        for (p, change) in writes
+            .modified
+            .iter()
+            .map(|p| (p, "modified"))
+            .chain(writes.deleted.iter().map(|p| (p, "deleted")))
+        {
+            self.seq += 1;
+            self.executed += 1;
+            if !compensated {
+                self.irreversible += 1;
+            }
+            let _ = self.journal.record_with(
+                self.seq,
+                Op::HopChanged {
+                    path: p.clone(),
+                    change: change.to_string(),
+                },
+                None,
+                compensated,
+            );
+        }
+        writes
     }
 
     /// The ghost filesystem, when this is a dry-run.
@@ -205,8 +497,37 @@ impl Kernel {
 
     /// Ask permission to perform `op`. `unlit` is true inside `burn unlit`.
     pub fn decide(&mut self, op: Op, unlit: bool) -> Result<Decision, Diagnostic> {
+        if let Some(roots) = &self.pack {
+            let outside: Vec<&PathBuf> = match &op {
+                Op::Write { path }
+                | Op::Append { path }
+                | Op::Delete { path }
+                | Op::Mkdir { path } => vec![path],
+                Op::Copy { to, .. } => vec![to],
+                Op::Move { from, to } => vec![from, to],
+                _ => Vec::new(),
+            }
+            .into_iter()
+            .filter(|p| !inside_roots(p, roots))
+            .collect();
+            if let Some(p) = outside.first() {
+                return Err(burn_error(format!(
+                    "{} is outside the pack ({})",
+                    p.display(),
+                    roots
+                        .iter()
+                        .map(|r| r.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ))
+                .code("E751")
+                .with_subject(p.display().to_string())
+                .with_hint("widen pack { } or fix the path; nothing was changed"));
+            }
+        }
         self.seq += 1;
         let simulate = unlit || self.mode == Mode::DryRun;
+        let compensated = self.compensating > 0 && !op.reversible();
         if simulate {
             if !unlit {
                 if let Some(g) = self.ghost.as_mut() {
@@ -221,16 +542,18 @@ impl Kernel {
                     BurnClass::Burn
                 },
                 reversible: op.reversible(),
+                compensated,
+                owner: self.owner_path(),
                 summary: op.describe(),
                 op,
             });
             return Ok(Decision::Simulate);
         }
-        if !op.reversible() {
+        if !op.reversible() && !compensated {
             self.irreversible += 1;
         }
         self.executed += 1;
-        self.journal.record(self.seq, op).map_err(|e| {
+        self.journal.record_with(self.seq, op, None, compensated).map_err(|e| {
             burn_error(format!("could not journal the burn: {e}"))
                 .code("E702")
                 .with_hint("free space or fix permissions under ~/.cigscript (CIGSCRIPT_HOME), then run again; nothing was changed")
@@ -241,6 +564,14 @@ impl Kernel {
     /// Undo every journaled op, newest first.
     pub fn rollback(&mut self) -> journal::RollbackReport {
         self.journal.rollback()
+    }
+
+    /// Undo every journaled op, running compensations in place.
+    pub fn rollback_with(
+        &mut self,
+        runner: journal::CompensationRunner<'_>,
+    ) -> journal::RollbackReport {
+        self.journal.rollback_with(runner)
     }
 
     /// A position in the journal, for a retry to roll back to.

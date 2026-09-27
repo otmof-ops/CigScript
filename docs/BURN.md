@@ -134,6 +134,31 @@ the journal is intact), shows it as `interrupted` with its burn count taken
 from the journal, and `cig doctor` reports it with `E706` and, under `--fix`,
 offers `cig unburn <id>`.
 
+## The pack, hops, and compensations
+
+A **pack** (`pack { "./build" }`, `LANGUAGE.md`) is the declared scope: the
+kernel refuses any native write outside its roots (`E751`; the checker
+catches literal paths first, `E750`) and prints the pack in the plan header.
+A **hop** inside a pack is *observed*: the pack's files are listed by mtime
+and size before the child runs and again after, and the difference is
+journaled as the hop's write set: files the child created are reversible
+(`hop created`, rollback removes them), files it modified or deleted are
+irreversible with the detail (`hop modified`, `hop deleted`), and changes in
+the child's working directory outside the pack are reported as `E752`. The
+scan skips `.git`, `node_modules`, `target` and `.cigscript`, and never
+hashes content.
+
+A **compensation** is the other half. `burn (s) { ... } unburn { ... }`
+journals the `unburn` block's source and the state map `s` when the block
+completes (`Op::Compensate`, reversible: it *is* the reversal). Rollback,
+here or in `cig unburn` later, runs each compensation at its place in the
+newest-first order, in a fresh interpreter with effects allowed and nothing
+journaled. Hops inside such a block are labelled `compensated` in the plan,
+the journal and the rollback report, never `irreversible`; a block that
+fails half-way records no compensation, so its hops stay honestly
+irreversible. No pack reverses `git push`; that is what the compensation is
+for, and the pack and the compensation are two halves of one feature.
+
 ## Chains
 
 A chain (`docs/CHAINS.md`) adds nothing to this model and needs nothing from
@@ -174,8 +199,11 @@ rollback report ("cannot undo"). What the label covers:
 - **No sandbox.** A script can read anything the user can read, and a burn can
   run any program. The kernel makes effects explicit and reversible where it
   performed them itself; it does not confine untrusted code.
-- **No rollback of what processes did.** `proc.run("rm", ...)` is journaled as
-  irreversible. Prefer `fs.rm`, which the kernel can undo.
+- **No rollback of what processes did, unless you say how.** A hop is
+  journaled as irreversible; inside a pack the files it created are removed
+  on rollback and the rest is listed; inside a `burn { } unburn { }` block
+  the compensation is the undo and the label says `compensated`. Prefer
+  `fs.rm`, which the kernel can undo on its own.
 - **Cross-run consistency is checked, not guaranteed.** When a run finishes,
   the kernel records what it left behind (`after.json`: the state of every
   path it touched). `cig unburn` compares that with the disk now and refuses

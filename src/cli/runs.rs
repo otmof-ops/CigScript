@@ -319,8 +319,12 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             );
         }
         for e in journal.entries().iter().rev() {
-            let tag = if e.reversible {
+            let tag = if e.compensation.is_some() {
+                "compensate"
+            } else if e.reversible {
                 "restore "
+            } else if e.compensated {
+                "compensated"
             } else {
                 "cannot undo"
             };
@@ -361,18 +365,30 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             exit::SCRIPT_ERROR
         };
     }
-    let report = journal.rollback();
+    // Compensations run in a fresh interpreter, effects allowed, nothing
+    // journaled: they are the undo. They run from the run's directory.
+    let kernel = cigscript::burn::Kernel::ephemeral(cigscript::burn::Mode::Run);
+    let mut interp = cigscript::interp::Interp::new(kernel);
+    let mut entered = true;
+    if let Ok(dir) = std::env::current_dir() {
+        if rec.cwd != dir.to_string_lossy() && std::env::set_current_dir(&rec.cwd).is_err() {
+            entered = false;
+        }
+    }
+    let mut report = journal.rollback_with(&mut |c| {
+        if !entered {
+            return Err(format!("cannot enter {} to run it", rec.cwd));
+        }
+        interp.run_compensation(c).map_err(|e| e.message)
+    });
+    if !entered && !report.actions.is_empty() {
+        report.failed.push(format!("could not enter {}", rec.cwd));
+    }
     if ctx.json {
         outln!("{}", serde_json::to_string(&report).unwrap_or_default());
     } else {
-        for r in &report.restored {
-            outln!("  {} {r}", ctx.green("restored"));
-        }
-        for r in &report.irreversible {
-            outln!("  {} {r}", ctx.yellow("cannot undo"));
-        }
-        for r in &report.failed {
-            outln!("  {} {r}", ctx.red("failed"));
+        for (label, text) in &report.actions {
+            outln!("  {} {text}", paint_action(ctx, label));
         }
     }
     rec.rolled_back = true;
@@ -386,5 +402,15 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         exit::OK
     } else {
         exit::SCRIPT_ERROR
+    }
+}
+
+/// The colour for a rollback action's label.
+pub fn paint_action(ctx: &Ctx, label: &str) -> String {
+    match label {
+        "restored" | "compensated" => ctx.green(label),
+        "cannot undo" => ctx.yellow(label),
+        "failed" => ctx.red(label),
+        other => other.to_string(),
     }
 }

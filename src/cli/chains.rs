@@ -54,19 +54,26 @@ pub fn chains(ctx: &Ctx, file: &Path) -> i32 {
             return exit::SYNTAX_ERROR;
         }
     };
+    let pack = declared_pack(&program);
     let found = declared(&program);
     if ctx.json {
         let items: Vec<serde_json::Value> = found
             .iter()
             .map(|c| serde_json::json!({"name": c.name, "line": c.line, "steps": c.steps}))
             .collect();
-        outln!("{}", serde_json::json!({"file": name, "chains": items}));
+        outln!(
+            "{}",
+            serde_json::json!({"file": name, "pack": pack, "chains": items})
+        );
         return exit::OK;
     }
     if found.is_empty() {
         eprintln!("{name}: no chains declared");
         eprintln!("{}", ctx.dim("declare one with: chain name { step, step }"));
         return exit::OK;
+    }
+    if let Some(roots) = &pack {
+        outln!("{} {}", ctx.dim("pack:"), roots.join(", "));
     }
     for c in &found {
         outln!(
@@ -83,4 +90,26 @@ pub fn chains(ctx: &Ctx, file: &Path) -> i32 {
         ctx.dim(&format!("light one with: cig light {name} <chain>"))
     );
     exit::OK
+}
+
+/// The literal roots of a script's `pack { }`, if it declares one.
+pub fn declared_pack(program: &cigscript::syntax::ast::Program) -> Option<Vec<String>> {
+    program.body.iter().find_map(|stmt| match stmt {
+        Stmt::Pack(p) => Some(
+            p.roots
+                .iter()
+                .map(|r| match &r.kind {
+                    ExprKind::Str(pieces) => pieces
+                        .iter()
+                        .map(|piece| match piece {
+                            cigscript::syntax::ast::StrPiece::Lit(t) => t.clone(),
+                            cigscript::syntax::ast::StrPiece::Expr(_) => "${...}".to_string(),
+                        })
+                        .collect::<String>(),
+                    _ => "(computed)".to_string(),
+                })
+                .collect(),
+        ),
+        _ => None,
+    })
 }

@@ -122,12 +122,28 @@ timeout, and every stage must exit 0 (the last one honours `ok`); a failure
 names the stage (`E553: stage 2 (grep ERROR) exited 1`), and a missing
 program names its stage (`E551`). `stdin` feeds the first stage.
 
+## Inside a pack: the hop's write set
+
+With `pack { "./build" }` declared, the kernel lists the pack's files (mtime
+and size) before a hop and again after, and journals the difference: files
+the child created are reversible (`hop created`; rollback removes them),
+files it modified or deleted are irreversible with the detail, and anything
+the child changed in its working directory outside the pack is reported as
+`E752` and never laundered. `BURN.md` has the rules.
+
+## Compensations
+
+`burn (s) { ... } unburn { ... }` is the undo for what no pack can reverse
+(`git push`, an API call). The compensation runs from the journal alone, so
+it may use only its state map `s`, modules and builtins (`E754` otherwise);
+hops inside the block show as `compensated` in the plan. `LANGUAGE.md` has
+the shape.
+
 ## What a hop cannot do yet
 
 The burn protocol (a child that speaks `CIG_DRY_RUN=1` and reports its own
 effects so the kernel can plan and journal them), adapters for `git`, `gh`,
-`docker` and friends as subtools, compensations for what the kernel cannot
-see, and shape assertions at the boundary are the next seams of `HAMMER.md`
-(sections 4 to 6). Until then a hop is honest about being opaque: the plan
+`docker` and friends as subtools, and shape assertions at the boundary are
+the next seams of `HAMMER.md` (sections 4 and 7). Until then a hop is honest about being opaque: the plan
 shows it, the label says irreversible, and the ghost filesystem does not
 pretend to know what it would have written.

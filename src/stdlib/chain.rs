@@ -122,6 +122,34 @@ fn run_chain(
     span: Span,
     depth: usize,
 ) -> Result<Value, Diagnostic> {
+    if i.chain_stack.iter().any(|n| n == &chain.name) {
+        let mut loop_path = i.chain_stack.clone();
+        loop_path.push(chain.name.clone());
+        return Err(Diagnostic::new(
+            Kind::Cough,
+            format!(
+                "chain `{}` lights itself: {}",
+                chain.name,
+                loop_path.join(" -> ")
+            ),
+        )
+        .code("E604")
+        .at(span)
+        .with_hint("take the chain out of its own steps"));
+    }
+    i.chain_stack.push(chain.name.clone());
+    let result = run_chain_inner(i, chain, opts, span, depth);
+    i.chain_stack.pop();
+    result
+}
+
+fn run_chain_inner(
+    i: &mut Interp,
+    chain: &Rc<Chain>,
+    opts: &Options,
+    span: Span,
+    depth: usize,
+) -> Result<Value, Diagnostic> {
     if depth > 32 {
         return Err(runtime(format!(
             "chain `{}` is nested too deeply; is it lighting itself?",
@@ -148,6 +176,8 @@ fn run_chain(
             );
         }
         let step_started = Instant::now();
+        i.kernel
+            .push_owner(format!("{}/{}", chain.name, step.label));
         let mut attempt = 0;
         let outcome = loop {
             let mark = i.kernel.mark();
@@ -201,6 +231,18 @@ fn run_chain(
                     }
                     // The retry runs against the rolled-back state.
                     let undone = i.kernel.rollback_since(mark);
+                    for comp in &undone.compensations {
+                        if let Err(e) = i.run_compensation(comp) {
+                            let _ = writeln!(
+                                i.err,
+                                "{indent}chain {}: step {} {}: compensation failed before the retry: {}",
+                                chain.name,
+                                index + 1,
+                                step.label,
+                                e.message
+                            );
+                        }
+                    }
                     if !opts.quiet && !undone.restored.is_empty() {
                         let _ = writeln!(
                             i.err,
@@ -234,6 +276,7 @@ fn run_chain(
                 Err(e) => break Err(e),
             }
         };
+        i.kernel.pop_owner();
         let ms = step_started.elapsed().as_millis() as i64;
         match outcome {
             Ok(value) => {
@@ -285,6 +328,11 @@ fn run_chain(
                     payload.insert("cause".to_string(), crate::interp::error_value(&e, cause));
                     payload.insert("steps".to_string(), Value::list(reports));
                     i.cough_payload = Some(Value::map(payload));
+                    // A chain that lights itself is a structural fault, not a
+                    // step failure: it surfaces as itself through every level.
+                    if e.code == "E604" {
+                        return Err(e);
+                    }
                     // Point at the step as written, not at the light() call;
                     // an ad-hoc step (a list of packs) falls back to the call.
                     let at = if step.span.line == 0 { span } else { step.span };

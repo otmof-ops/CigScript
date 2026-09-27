@@ -170,6 +170,16 @@ a redacted report you can read with `cig crash show` and file with one command,
 and it never sends anything without asking. `cig report <run>` bundles a run
 that went wrong *without* crashing the same way.
 
+**The pack and the compensation, two halves of one feature.** `pack {
+"./build" }` at the top of a script declares the scope every write must stay
+in; a literal path outside it is refused before the run, a computed one at
+run time, and a child process is watched: the files it creates inside the
+pack are removed on rollback, and anything it writes outside is reported,
+never hidden. For what no pack can reverse, `burn (s) { git_push() } unburn
+{ force_push_back(s.before) }` journals the undo with its state; the plan
+says `compensated` where it used to say `irreversible`, and `cig unburn` runs
+it weeks later from the journal alone.
+
 **Determinism you can build on.** Ordered maps, sorted directory listings,
 checked integer arithmetic, no random numbers. The same inputs give the same
 plan, which is what makes the dry-run worth reading.
@@ -365,6 +375,10 @@ for.
 | a child that ignores SIGTERM, with a grandchild in the background, under a timeout | **the grandchild outlived it**; now the whole process group is killed, SIGKILL after the grace period | fixed 1.1.0 | `a_timed_out_child_is_killed_with_its_whole_process_group` |
 | a tool that prints progress on stdout, through `proc.json` | **would have been a confusing parse error three steps later**; now `E556` at the hop, quoting the first bytes, no partial value | 1.1.0 | `stdout_and_stderr_are_never_merged_and_shape_is_checked_at_the_hop` |
 | a child killed by a signal | **came back as `code: -1` with half its output**; now `E555`, nothing passed on | fixed 1.1.0 | `timeouts_always_exist_and_partial_output_is_never_mistaken_for_output` |
+| a child writes inside the pack, then `cough` | the files it created are removed; the hop shows `compensated` when a compensation covers it | 1.1.0 | `plan_three_a_cough_rolls_back_and_runs_the_compensation` |
+| a child writes outside the pack | **would have been invisible**; now `E752` names the paths and says the kernel cannot undo them | 1.1.0 | `plan_two_child_writes_outside_the_pack_is_labelled_not_hidden` |
+| `unburn` weeks later, script deleted | the compensation runs from the journal alone, newest first across the whole run | 1.1.0 | `plan_four_unburn_after_a_success_unfolds_everything_in_reverse` |
+| a chain that lights itself through another chain | **ran until the step budget**; now `E604` with the loop | fixed 1.1.0 | `fold_checks_refuse_with_codes` |
 | retry a chain step that already pushed | **would have pushed twice**; now not retried unless `retry_irreversible`, and file-only attempts are rolled back before the retry | 1.1.0 | `retries_are_per_hop_and_idempotence_aware` |
 | dry-run reads a file a step just pretended to delete | **a misleading not-found**; now `E520`, naming the op that removed it | fixed 1.1.0 | `dry_run_reports_reads_of_ghost_removed_paths_as_e520_and_missing_sources_as_e508` |
 

@@ -1216,6 +1216,20 @@ why = "binary data on stdout"
 probe = "none"
 remedy = "redirect it to a file with the tool's own flag, then read the file"
 
+[[code]]
+code = "E604"
+title = "chain lights itself"
+meaning = "A chain is a step of itself, directly or through other chains; lighting it would never end."
+fix = "take the chain out of its own steps; the message shows the loop"
+no = "none"
+arises = ["run", "light"]
+since = "1.1.0"
+related = ["E602", "E515"]
+[[code.cause]]
+why = "chain a lights chain b which lights chain a"
+probe = "chain-report"
+remedy = "break the loop at the step named; a chain that repeats work belongs in a while loop with a condition"
+
 # --- kernel (E70x) ---
 
 [[code]]
@@ -1341,6 +1355,94 @@ remedy = "`cig unburn <id>` puts back what it burned; `cig runs <id>` shows the 
 fixable = true
 needs_burn = false
 reversible = false
+
+# --- folds and packs (E75x) ---
+
+[[code]]
+code = "E750"
+title = "literal path outside the pack"
+meaning = "A write names a literal path that sits outside the script's declared pack (its scope), so the checker refuses it before anything runs."
+fix = "move the path inside a declared root, or add the root to pack { }"
+no = "these-are-mine"
+arises = ["check"]
+tags = ["kernel"]
+since = "1.1.0"
+related = ["E751", "E753"]
+[[code.cause]]
+why = "the pack declares a narrower scope than the script writes to"
+probe = "source-line"
+remedy = "add the root to pack { } if the write is intended; otherwise fix the path"
+
+[[code]]
+code = "E751"
+title = "path outside the pack"
+meaning = "At run time a burn tried to touch a path outside the declared pack; the kernel refused it and nothing was changed."
+fix = "the plan shows the pack beside the ops; widen the pack or fix the computed path"
+no = "these-are-mine"
+arises = ["run", "dry-run", "light"]
+tags = ["kernel"]
+since = "1.1.0"
+related = ["E750", "E752"]
+[[code.cause]]
+why = "a computed path (joined, globbed, from args) resolved outside the pack's roots"
+probe = "path-exists"
+remedy = "exhale the path before the burn; the pack's roots are in the plan header"
+
+[[code]]
+code = "E752"
+title = "hop wrote outside the pack"
+meaning = "A child process changed files outside the declared pack. The kernel cannot undo them and did not watch them; they are listed so nothing is hidden."
+fix = "point the program at the pack (its cwd, an output flag), or add the root it wrote to"
+no = "these-are-mine"
+arises = ["run", "light"]
+tags = ["kernel", "irreversible-involved"]
+since = "1.1.0"
+related = ["E751"]
+[[code.cause]]
+why = "the program writes to its working directory, which is not in the pack"
+probe = "none"
+remedy = "run it with {cwd: <a pack root>}, or add that directory to pack { }"
+
+[[code]]
+code = "E753"
+title = "pack misplaced"
+meaning = "pack { } must be the first statement of a script and appear once: the scope is declared before anything can burn."
+fix = "move pack { } to the top of the file and keep one"
+no = "none"
+arises = ["check"]
+since = "1.1.0"
+related = ["E750"]
+[[code.cause]]
+why = "a second pack { }, or one below other statements"
+probe = "source-line"
+remedy = "one pack { }, first line after the comments"
+
+[[code]]
+code = "E754"
+title = "compensation reaches outside its state"
+meaning = "An unburn { } block refers to a name that is not its state map, a module or a builtin. Compensations run later, in another process, from the journal alone, so they may use only what was put in the state."
+fix = "put the value in the state map inside the burn block (burn (s) { s.sha = ... }) and read s.sha in unburn { }"
+no = "none"
+arises = ["check"]
+since = "1.1.0"
+[[code.cause]]
+why = "the compensation uses a variable from the surrounding script"
+probe = "source-line"
+remedy = "copy it into the state map in the burn block; the map is journaled with the compensation"
+
+[[code]]
+code = "E756"
+title = "fold shape mismatch"
+meaning = "A folded unit is lit with the wrong number or names of arguments; the error names the unit, the caller and the mismatch."
+fix = "match the declaration"
+no = "none"
+arises = ["check"]
+tags = ["planned"]
+since = "1.1.0"
+[[code.cause]]
+why = "the caller and the folded unit disagree on parameters"
+probe = "source-line"
+remedy = "match the declaration"
 
 # --- usage (E80x) ---
 

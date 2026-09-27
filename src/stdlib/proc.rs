@@ -570,7 +570,29 @@ fn hop(
     if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
     }
-    let raw = run_child(name, cmd, args, o, s)?;
+    let watch = i.kernel.pack_watch_begin(o.cwd.as_deref());
+    let ran = run_child(name, cmd, args, o, s);
+    if let Some(w) = watch {
+        let writes = i.kernel.pack_watch_end(w);
+        if !writes.outside.is_empty() {
+            let shown: Vec<String> = writes
+                .outside
+                .iter()
+                .take(5)
+                .map(|p| p.display().to_string())
+                .collect();
+            let _ = writeln!(
+                i.err,
+                "warning[E752 burn]: `{}` wrote outside the pack: {} path{} ({}{}); the kernel cannot undo them",
+                hop_label(cmd, args),
+                writes.outside.len(),
+                if writes.outside.len() == 1 { "" } else { "s" },
+                shown.join(", "),
+                if writes.outside.len() > 5 { ", ..." } else { "" }
+            );
+        }
+    }
+    let raw = ran?;
     let out = decode(name, "stdout", &raw.out, o.encoding, s)?;
     let err = decode(name, "stderr", &raw.err, Encoding::Lossy, s)?;
     let value = result_map(raw.code, &out, &err, raw.duration_ms, false);

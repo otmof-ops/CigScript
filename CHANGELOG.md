@@ -31,6 +31,22 @@ seam; the package's manifest carries the state of each deliverable.
   `fs.mv` or `fs.rm` of a path that exists nowhere fails in the plan as it
   would for real. `burn unlit` never enters the ghost.
 
+### The pack and compensations
+- **`pack { "./build" }`** declares the scope every native write must stay
+  in: literal paths outside it are refused by the checker (`E750`), computed
+  ones by the kernel (`E751`), the plan prints the pack, and one pack per
+  script, first (`E753`). Hops inside a pack are watched: the files a child
+  created are journaled as reversible and removed on rollback, files it
+  modified or deleted are listed as irreversible with the detail, and
+  writes outside the pack are reported (`E752`), never hidden.
+- **`burn (s) { } unburn { }`**: the compensation for what the kernel cannot
+  see. Journaled with its state map when the block completes; run on
+  rollback here or by `cig unburn` later, from the journal alone (so it may
+  use only its state, modules and builtins: `E754`). Hops inside show as
+  `compensated`, not `irreversible`.
+- The plan tags every op with the chain and step that own it
+  (`[release/build]`); a chain that lights itself is `E604` with the loop.
+
 ### Hops
 - **The boundary holds.** `proc.run` keeps one call shape and gains the
   rules: exit codes are a contract (`ok: [0, 1]`, `check` is `[0]`) and a
