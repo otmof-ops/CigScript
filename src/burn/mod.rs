@@ -87,9 +87,6 @@ impl Op {
         }
     }
 
-    /// Whether the kernel can undo this on its own. Environment changes
-    /// die with the process, so they count as reversible; a spawned
-    /// process does not.
     /// Can rollback undo this op on its own? Processes and environment
     /// changes cannot be watched or restored by the kernel, so they are
     /// irreversible and the plan says so.

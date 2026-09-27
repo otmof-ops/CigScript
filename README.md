@@ -415,6 +415,7 @@ for.
 | 300,000 chained `+ 1`; `CIG_MAX_STEPS=abc` | **stack overflow; silently ignored**; now `E208` past 10,000, and `E800` | fixed 1.1.1 | `chained_operators_are_capped_and_a_bad_step_budget_is_a_usage_error` |
 | `{ok: [0], check: false}` versus `{check: false, ok: [0]}` | **the contract depended on key order**; now `ok` wins either way | fixed 1.1.1 | `ok_and_check_resolve_the_same_whatever_their_order` |
 | `proc.run("/tmp")`, `proc.kv` of `export FOO=bar`, `proc.which("bin/ls")` | **"permission denied"; key `export FOO`; null**; now named as a directory, `FOO`, the path | fixed 1.1.1 | `a_directory_as_the_command_export_lines_and_a_path_to_which` |
+| `env.set` in a dry-run plan | **labelled reversible**, against the docs; now irreversible, which is what the kernel can do about it | fixed 1.1.1 | `env_changes_are_labelled_irreversible_in_the_plan` |
 | `cig run /dev/zero`; `cig frobnicate` | **read forever; exit 2 (a script error's code)**; now `E801`, and exit 3 | fixed 1.1.1 | `a_device_as_the_script_is_refused_and_a_bad_invocation_exits_3` |
 
 Add a row. The rules for reporting one are in

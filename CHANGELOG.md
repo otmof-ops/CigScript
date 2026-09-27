@@ -70,6 +70,9 @@ reproduced fixed, each with a row on the wall and a test named after it.
   empty `sep` are refused; a directory given as the command is named as
   one; `proc.kv` reads `export KEY=value`; `proc.which` resolves a name
   with a slash the way `proc.run` does.
+- Plan: `env.set` and `env.unset` are labelled irreversible, as `BURN.md` and
+  `STDLIB.md` have always said; 1.1.0 labelled them reversible although the
+  kernel restores nothing for them.
 - CLI: a malformed invocation exits 3 like every other usage problem; a
   script larger than 64 MiB, or a device like `/dev/zero`, is refused
   (`E801`) instead of read forever, and `E801` now carries the path for

@@ -2486,3 +2486,25 @@ fn crash_send_honours_never() {
         "{err}"
     );
 }
+
+#[test]
+fn env_changes_are_labelled_irreversible_in_the_plan() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn {\n  env.set(\"CIG_PROBE\", \"1\")\n  env.unset(\"CIG_PROBE\")\n}\n",
+    );
+    let out = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let plan = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{plan}");
+    assert!(
+        plan.contains("irreversible  set env CIG_PROBE")
+            && plan.contains("irreversible  unset env CIG_PROBE"),
+        "{plan}"
+    );
+    assert!(!plan.contains("reversible    set env"), "{plan}");
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("(2 irreversible)"), "{err}");
+}
