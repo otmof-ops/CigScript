@@ -55,9 +55,7 @@ The Corporation represents that it is legally entitled to grant the above
 licences; that the person signing is authorised to bind the Corporation; that
 each Contribution is the original creation of the Corporation or its
 designated employees, or is identified as third-party work with full details
-of its source and any licence or restriction; and that where a substantial
-part of a Contribution was produced with an automated tool, it has been
-reviewed and these representations hold for it.
+of its source and any licence or restriction.
 
 ## 5. No support obligation, no warranty
 

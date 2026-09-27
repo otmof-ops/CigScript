@@ -24,4 +24,3 @@
 - [ ] Doctor wording changes accepted with `CIG_UPDATE_GOLDEN=1` and read
 - [ ] New vernacular has a `docs/LEXICON.md` entry with the manual's name
 - [ ] Nothing here blames the reader or withholds the pointer
-- [ ] AI assistance, if substantial, is stated here

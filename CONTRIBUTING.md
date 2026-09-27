@@ -119,11 +119,3 @@ The lexicon's gap list is an open invitation; the [coined-a-term
 template](https://github.com/otmof-ops/CigScript/issues/new?template=coined-a-term.yml)
 requires the manual's name. A vernacular term used in any doc must resolve to
 a lexicon entry; `tests/docs.rs` checks the README's table.
-
-## AI assistance
-
-CigScript itself was built with AI assistance under human direction, and
-that is fine here too. Say so in the pull request when a substantial part of
-a contribution was generated, and make sure you have actually read and
-understood what you are submitting: the CLA's statement that the work is
-yours to contribute applies to it.
