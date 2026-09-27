@@ -108,6 +108,48 @@ impl Checker {
         }
     }
 
+    /// `proc.run("sh", ["-c", built])` with a command string built at run
+    /// time is where injection lives; a literal string is somebody's own.
+    fn shell_check(&mut self, args: &[Expr], span: Span) {
+        let Some(program) = args.first().and_then(literal_text) else {
+            return;
+        };
+        let shell = matches!(
+            program.rsplit('/').next().unwrap_or(&program),
+            "sh" | "bash"
+                | "zsh"
+                | "dash"
+                | "ksh"
+                | "fish"
+                | "cmd"
+                | "cmd.exe"
+                | "powershell"
+                | "pwsh"
+        );
+        if !shell {
+            return;
+        }
+        let Some(ExprKind::List(items)) = args.get(1).map(|a| &a.kind) else {
+            return;
+        };
+        let flag = items.first().and_then(literal_text).unwrap_or_default();
+        if !matches!(flag.as_str(), "-c" | "/C" | "/c" | "-Command") {
+            return;
+        }
+        let built = items.get(1).is_some_and(|e| literal_text(e).is_none());
+        if built {
+            self.warn_code(
+                "E308",
+                format!("`{program} {flag}` runs a shell with a command string built at run time"),
+                span,
+            )
+            .hint = Some(
+                "call the program directly with its arguments as a list, proc.pipe for a pipeline, or proc.shell if you mean the shell and the string is yours"
+                    .to_string(),
+            );
+        }
+    }
+
     fn error_code(
         &mut self,
         code: &'static str,
@@ -407,6 +449,9 @@ impl Checker {
             } => {
                 // `fs.rm(...)` parses as a method call on the module ident.
                 if let ExprKind::Ident(module) = &receiver.kind {
+                    if module == "proc" && name == "run" {
+                        self.shell_check(args, expr.span);
+                    }
                     if self.modules.contains_key(module)
                         && self.lookup(module) == Some(Binding::Immutable)
                     {
@@ -500,6 +545,23 @@ impl Checker {
         } else {
             self.error_code("E303", msg, span).hint = Some(hint);
         }
+    }
+}
+
+/// The text of a string literal with no interpolation, if that is what `e` is.
+fn literal_text(e: &Expr) -> Option<String> {
+    match &e.kind {
+        ExprKind::Str(pieces) => {
+            let mut out = String::new();
+            for p in pieces {
+                match p {
+                    StrPiece::Lit(t) => out.push_str(t),
+                    StrPiece::Expr(_) => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
     }
 }
 

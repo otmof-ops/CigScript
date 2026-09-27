@@ -243,6 +243,21 @@ impl Kernel {
         self.journal.rollback()
     }
 
+    /// A position in the journal, for a retry to roll back to.
+    pub fn mark(&self) -> usize {
+        self.journal.mark()
+    }
+
+    pub fn irreversible_since(&self, mark: usize) -> usize {
+        self.journal.irreversible_since(mark)
+    }
+
+    /// Undo what was journaled since `mark` (a failed attempt), so a retry
+    /// runs against the rolled-back state.
+    pub fn rollback_since(&mut self, mark: usize) -> journal::RollbackReport {
+        self.journal.rollback_since(mark)
+    }
+
     pub fn intents(&self) -> impl Iterator<Item = &PlannedOp> {
         self.planned.iter().filter(|p| p.class == BurnClass::Unlit)
     }

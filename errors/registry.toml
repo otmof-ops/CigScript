@@ -614,6 +614,20 @@ remedy = "`cig language` shows what exists; text.*, fs.* and path.* cover most n
 # --- types (E4xx) ---
 
 [[code]]
+code = "E308"
+title = "shell through proc.run"
+meaning = "proc.run is handed a shell (`sh -c`, `bash -c`, `cmd /C`) with a command string built at run time; that is where every injection bug in every glue script has lived."
+fix = "call the program directly with its arguments as a list; proc.pipe for a pipeline; proc.shell if you mean the shell and the string is yours"
+no = "none"
+arises = ["check"]
+tags = ["ci-likely"]
+since = "1.1.0"
+[[code.cause]]
+why = "a value that came from outside the script is spliced into a shell command"
+probe = "source-line"
+remedy = "pass the value as its own argument to the program; the shell never sees it"
+
+[[code]]
 code = "E400"
 title = "type error"
 meaning = "A value of the wrong type reached an operation."
@@ -865,13 +879,14 @@ remedy = "branch on fs.is_dir / fs.is_file"
 
 [[code]]
 code = "E509"
-title = "process failure"
-meaning = "A program could not be started, or exceeded its timeout and was killed."
-fix = "check it is installed with proc.which(\"name\"), or raise {timeout_ms}"
+title = "process failure (retired)"
+meaning = "Retired in 1.1.0: a hop that could not start is E551 or E552 and one that timed out is E554. Kept so old run records still decode."
+fix = "read E551, E552 and E554; the hop rules are in docs/HOPS.md"
 no = "depends"
 arises = ["run", "light"]
 since = "1.0.0"
-related = ["E603", "E602"]
+retired = true
+related = ["E551", "E552", "E554"]
 [[code.cause]]
 why = "the program is not on PATH for this run"
 no = "cant-see-any"
@@ -1048,17 +1063,158 @@ remedy = "a step that takes one parameter receives the previous result; give the
 
 [[code]]
 code = "E603"
-title = "process check failed"
-meaning = "proc.run with {check: true} saw a non-zero exit code."
-fix = "read err from the ashtray value, or drop check and inspect .code yourself"
+title = "process check failed (retired)"
+meaning = "Retired in 1.1.0: a non-zero exit under {check: true} is now E553, exit outside the contract. Kept so old run records still decode."
+fix = "read E553; the ashtray value is the same shape it always was"
 no = "depends"
 arises = ["run", "light"]
 since = "1.0.0"
-related = ["E509"]
+retired = true
+related = ["E553"]
 [[code.cause]]
 why = "the program exited non-zero"
 probe = "none"
-remedy = "read err from the ashtray value; the program's own message is there"
+remedy = "read E553, which replaced this code; the ashtray value has the same shape"
+
+# --- hops (E55x): child processes ---
+
+[[code]]
+code = "E550"
+title = "hop failed"
+meaning = "A child process could not be run for a reason none of the more specific hop codes covers; the message carries the operating system's words."
+fix = "read the message; proc.which(name) and the cwd option are the usual suspects"
+no = "depends"
+arises = ["run", "light"]
+since = "1.1.0"
+related = ["E551", "E552"]
+[[code.cause]]
+why = "the operating system refused the spawn for a reason other than a missing or unexecutable program"
+probe = "none"
+remedy = "the message quotes the reason; a missing cwd is the common one"
+
+[[code]]
+code = "E551"
+title = "command not found"
+meaning = "The program a hop names is not on PATH for this run, and is not a path that exists."
+fix = "proc.which(name) to check; install it, give the full path, or fix PATH in the environment the run inherits"
+no = "cant-see-any"
+arises = ["run", "light"]
+tags = ["beginner-likely", "ci-likely"]
+since = "1.1.0"
+related = ["E509", "E552"]
+[[code.cause]]
+why = "the program is not on PATH for this run"
+no = "cant-see-any"
+probe = "on-path"
+remedy = "proc.which(name) to check; give the full path, or fix PATH in the environment the run inherits"
+[[code.cause]]
+why = "a typo in the program's name"
+probe = "none"
+remedy = "compare with what `which` prints in a terminal"
+
+[[code]]
+code = "E552"
+title = "refused to start"
+meaning = "The program exists but the operating system would not execute it: no execute bit, or a user who may not."
+fix = "chmod +x it, or run as a user that may execute it"
+no = "these-are-mine"
+arises = ["run", "light"]
+since = "1.1.0"
+related = ["E551"]
+[[code.cause]]
+why = "the file is not executable"
+no = "these-are-mine"
+probe = "path-permissions"
+remedy = "chmod +x it; if it is a script, check its first line names an interpreter that exists"
+
+[[code]]
+code = "E553"
+title = "exit outside the contract"
+meaning = "A hop exited with a code outside its contract (the `ok` list; `[0]` for the parsing verbs and under `check`). The stderr's last line is in the message; the whole result is the ashtray value."
+fix = "if that code is an answer, not a failure, say so: {ok: [0, 1]}; otherwise read err in the ashtray value"
+no = "depends"
+arises = ["run", "light"]
+tags = ["ci-likely"]
+since = "1.1.0"
+related = ["E603", "E556"]
+[[code.cause]]
+why = "the program reported a failure; its stderr says what"
+probe = "none"
+remedy = "read err in the ashtray value, or run the command by hand"
+[[code.cause]]
+why = "the code is an answer for this tool (grep, diff, cmp)"
+probe = "none"
+remedy = "widen the contract: {ok: [0, 1]}"
+
+[[code]]
+code = "E554"
+title = "hop timed out"
+meaning = "A hop ran longer than its timeout and was killed with its whole process group. Whatever it had written was not passed on; the message says how much and quotes the start of it."
+fix = "raise {timeout_ms: N} on this hop, or split the work"
+no = "none"
+arises = ["run", "light"]
+tags = ["ci-likely"]
+since = "1.1.0"
+related = ["E555"]
+[[code.cause]]
+why = "the program waits for input or a network that never answers"
+probe = "none"
+remedy = "give it stdin with {stdin: ...}, or a flag that makes it non-interactive"
+[[code.cause]]
+why = "the work is legitimately longer than the timeout (ten minutes by default)"
+probe = "none"
+remedy = "raise {timeout_ms: N} on this hop"
+
+[[code]]
+code = "E555"
+title = "hop killed by a signal"
+meaning = "The child died of a signal (a crash, an out-of-memory kill, a kill from outside) instead of exiting. Its partial output was not passed on."
+fix = "run the program by hand to see it crash; the signal number and name are in the message"
+no = "none"
+arises = ["run", "light"]
+since = "1.1.0"
+related = ["E554"]
+[[code.cause]]
+why = "the program crashed (SIGSEGV, SIGABRT) or was killed (SIGKILL, often the out-of-memory killer)"
+probe = "none"
+remedy = "run it by hand with the same arguments; check dmesg for an out-of-memory kill"
+
+[[code]]
+code = "E556"
+title = "bad shape on stdout"
+meaning = "A parsing verb (proc.json, proc.csv, proc.kv) got something on stdout that is not the shape it expects; the first 200 bytes are in the message. Nothing was passed on."
+fix = "send progress and logs to stderr, or use proc.run and parse what you can"
+no = "none"
+arises = ["run", "light"]
+tags = ["ci-likely"]
+since = "1.1.0"
+related = ["E553", "E511"]
+[[code.cause]]
+why = "the program prints progress or a banner on stdout before the data"
+probe = "none"
+remedy = "a --quiet or --json flag usually silences it; otherwise proc.run and cut the prefix yourself"
+[[code.cause]]
+why = "the program wrote the data in another format than the verb expects"
+probe = "none"
+remedy = "match the verb to the output: proc.json, proc.csv, proc.kv, proc.lines"
+
+[[code]]
+code = "E557"
+title = "bad encoding on stdout"
+meaning = "A hop's output is not valid in the encoding expected (UTF-8 unless told otherwise); the byte offset is in the message. Nothing was silently replaced."
+fix = "add {encoding: \"lossy\"} to replace bad bytes, \"latin1\" for single-byte text, or \"utf-16\" for a Windows tool"
+no = "none"
+arises = ["run", "light"]
+tags = ["windows"]
+since = "1.1.0"
+[[code.cause]]
+why = "a Windows tool writing UTF-16, or a legacy tool writing CP-1252 / Latin-1"
+probe = "none"
+remedy = "{encoding: \"utf-16\"} or {encoding: \"latin1\"}"
+[[code.cause]]
+why = "binary data on stdout"
+probe = "none"
+remedy = "redirect it to a file with the tool's own flag, then read the file"
 
 # --- kernel (E70x) ---
 

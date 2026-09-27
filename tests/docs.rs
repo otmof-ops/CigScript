@@ -116,6 +116,7 @@ fn the_wall_names_only_tests_that_exist() {
     for f in [
         "tests/cli.rs",
         "tests/wall.rs",
+        "tests/hops.rs",
         "tests/registry.rs",
         "src/burn/journal.rs",
     ] {

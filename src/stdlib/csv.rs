@@ -91,7 +91,7 @@ pub(crate) fn parse_rows(text: &str, sep: char) -> Vec<Vec<String>> {
     rows
 }
 
-fn rows_to_value(rows: Vec<Vec<String>>, header: bool) -> Value {
+pub(crate) fn rows_to_value(rows: Vec<Vec<String>>, header: bool) -> Value {
     if !header {
         return Value::list(
             rows.into_iter()

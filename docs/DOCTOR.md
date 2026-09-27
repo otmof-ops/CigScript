@@ -10,10 +10,10 @@ a code is a node with ranked causes, a read-only **probe** for each, and a
 remedy for each.
 
 ```
-error[E509 runtime]: proc.run: could not start `kubectl`: no such file or directory
+error[E551 runtime]: proc.run: could not start `kubectl`: no such file or directory
   --> deploy.cig:14:3
   = hint: is it installed and on PATH? proc.which(name) tells you
-  = explain: cig explain E509
+  = explain: cig explain E551
   = doctor: I think the program is not on PATH for this run (can't see any ciggies bro), because I checked each directory on PATH, looking for the program named in the message and found no `kubectl` in the 7 directories on PATH; a `kubectl` exists at /home/me/bin/kubectl, and that directory is not on PATH for this run.
   = fix: proc.which("name") to check; give the full path, or fix PATH in the environment the run inherits
 ```
