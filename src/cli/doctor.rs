@@ -28,7 +28,13 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
         })
         .unwrap_or(false);
     let writable = check_writable(&home);
-    let run_count = runs::list().map(|l| l.len()).unwrap_or(0);
+    let all_runs = runs::list().unwrap_or_default();
+    let run_count = all_runs.len();
+    let interrupted: Vec<String> = all_runs
+        .iter()
+        .filter(|r| r.is_interrupted() && r.burns > 0)
+        .map(|r| r.id.clone())
+        .collect();
     let run_bytes = dir_size(&runs::runs_dir());
     let crashes = crash::list().unwrap_or_default();
     let unsent = crashes.iter().filter(|c| c.sent.is_none()).count();
@@ -86,6 +92,12 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
         ));
     }
 
+    for id in &interrupted {
+        problems.push(format!(
+            "run {id} was interrupted mid-burn: its process is gone and its journal is intact [E706]; `cig unburn {id}` puts things back, `cig runs {id}` shows what it burned"
+        ));
+    }
+
     if ctx.json {
         let obj = serde_json::json!({
             "version": cigscript::VERSION,
@@ -95,6 +107,7 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
             "state_dir_writable": writable.is_ok(),
             "runs": run_count,
             "runs_bytes": run_bytes,
+            "interrupted_runs": interrupted,
             "crash_reports": crashes.len(),
             "crash_reports_unsent": unsent,
             "tools": tools.iter().map(|t| serde_json::json!({"name": t.name, "present": t.present})).collect::<Vec<_>>(),
@@ -124,8 +137,13 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
     );
     outln!("  writable      {}", yes_no(ctx, writable.is_ok()));
     outln!(
-        "  runs          {run_count} recorded, {} KB",
-        run_bytes >> 10
+        "  runs          {run_count} recorded, {} KB{}",
+        run_bytes >> 10,
+        if interrupted.is_empty() {
+            String::new()
+        } else {
+            ctx.red(&format!("  {} interrupted", interrupted.len()))
+        }
     );
     outln!("  crash reports {} saved, {unsent} unsent", crashes.len());
     outln!(
@@ -180,6 +198,16 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
         return exit::USAGE;
     }
     let mut fixed = 0;
+    for id in &interrupted {
+        if ask(&format!(
+            "run {id} was interrupted mid-burn; roll back what it burned with `cig unburn {id}`?"
+        )) {
+            let code = super::runs::unburn(ctx, id, false, false);
+            if code == exit::OK {
+                fixed += 1;
+            }
+        }
+    }
     if !on_path {
         if let Some(dir) = &exe_dir {
             if let Some((rc, line)) = path_line(dir) {

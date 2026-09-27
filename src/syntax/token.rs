@@ -17,6 +17,8 @@ pub enum StrPart {
 pub enum TokenKind {
     // Literals and names
     Int(i64),
+    /// The magnitude of `i64::MIN`, valid only directly after a unary minus.
+    IntMinMagnitude,
     Float(f64),
     Str(Vec<StrPart>),
     Ident(String),
@@ -96,6 +98,7 @@ impl TokenKind {
     pub fn describe(&self) -> String {
         match self {
             TokenKind::Int(v) => format!("integer `{v}`"),
+            TokenKind::IntMinMagnitude => "integer `9223372036854775808`".to_string(),
             TokenKind::Float(v) => format!("float `{v}`"),
             TokenKind::Str(_) => "string".to_string(),
             TokenKind::Ident(s) => format!("`{s}`"),

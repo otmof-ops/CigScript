@@ -3,6 +3,51 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+Delivered from the "Hammer" update package (`HAMMER.md`), one pull request per
+seam; the package's manifest carries the state of each deliverable.
+
+### Fixed
+- A deleted or overwritten symlink now rolls back as a symlink with its
+  original target, dangling or not, including links inside a restored
+  directory. Writing through a link records the file the bytes land in, so
+  that file is restored too. In 1.0.0 the journal could not snapshot a link at
+  all and refused the burn with `E702`.
+- A run whose process died mid-burn was invisible: status `running`, zero
+  burns, nothing from `doctor`. It is now shown as `interrupted`, counted from
+  the journal, reported by `cig doctor` (`E706`) and offered for `cig unburn`
+  under `--fix`.
+- `-9223372036854775808` (`i64::MIN`) parses; the magnitude without the sign
+  is `E104` with a hint.
+- A chain failure points at the step as written, not at the `light()` call,
+  and never at `file:0:0` when lit from the CLI; the message also names the
+  line the underlying error was raised on.
+- A rollback that failed half-way through restoring a file could remove the
+  live file first. Files and directories are now staged beside the path and
+  swapped in.
+- `fs.exists` sees a dangling symlink, so `if fs.exists(p) { fs.rm(p) }` works.
+
+### Added
+- A property test for rollback: random op sequences (writes, appends,
+  deletes, moves, copies, mkdirs) over random trees with regular files, modes
+  and live and dangling symlinks; the tree after rollback must be identical to
+  the tree before, content, names, modes and link-ness included.
+- Journal durability: snapshot, snapshot directory and journal entry are
+  synced to disk before the effect. Measured at about 1 ms per journaled op
+  (see `docs/BURN.md`).
+- An allocation ceiling (256 MiB, `CIG_MAX_ALLOC` to change it): `repeat`,
+  `*` on strings, padding, and `fs.read_text`/`fs.read_lines`/`json.load`/
+  `csv.read` of an oversized file are refused with `E514` instead of aborting
+  the process.
+- `cig unburn` checks every snapshot and moved file before touching anything
+  (`E703`), refuses a second rollback of the same run (`E705`), and takes
+  `--force` for both; `--dry-run` lists the problems it found.
+- Reserved error-code sub-ranges: E51x runtime, E52x ghost filesystem, E55x
+  hops, E70x kernel and journal, E75x folds and packs, E80x usage, E85x
+  updater and doctor. New codes: `E514`, `E515`, `E520`, `E703`–`E706`.
+- `run.json` records the pid of the run.
+
 ## 1.0.0 — 2026-09-26
 
 First public release.

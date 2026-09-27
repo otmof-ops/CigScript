@@ -92,6 +92,7 @@ fn stringify(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> 
 
 fn load(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = expect_str(a, 0, "json.load", s)?;
+    super::fs::check_read_size("json.load", std::path::Path::new(p), s)?;
     let text = std::fs::read_to_string(p)
         .map_err(|e| runtime(format!("json.load: {p}: {}", super::fs::describe_io(&e))).at(s))?;
     serde_json::from_str::<serde_json::Value>(&text)

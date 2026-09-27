@@ -198,6 +198,7 @@ fn stringify(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> 
 fn read(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = expect_str(a, 0, "csv.read", s)?;
     let o = opts(a, 1, "csv.read", s)?;
+    super::fs::check_read_size("csv.read", std::path::Path::new(p), s)?;
     let text = std::fs::read_to_string(p)
         .map_err(|e| runtime(format!("csv.read: {p}: {}", super::fs::describe_io(&e))).at(s))?;
     Ok(rows_to_value(parse_rows(&text, o.sep), o.header))

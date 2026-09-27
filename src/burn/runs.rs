@@ -47,6 +47,9 @@ pub struct RunRecord {
     pub irreversible: usize,
     #[serde(default)]
     pub rolled_back: bool,
+    /// Process id of the run, to tell an interrupted run from a live one.
+    #[serde(default)]
+    pub pid: Option<u32>,
 }
 
 impl RunRecord {
@@ -77,7 +80,29 @@ impl RunRecord {
             burns: 0,
             irreversible: 0,
             rolled_back: false,
+            pid: Some(std::process::id()),
         }
+    }
+
+    /// Count burns from the journal, which is authoritative even when the
+    /// run never got to write its totals, and recognise a run whose process
+    /// died mid-burn.
+    pub fn refresh_from_journal(&mut self) {
+        if let Ok(j) = super::journal::Journal::load(&self.dir()) {
+            let burns = j.len();
+            let irreversible = j.entries().iter().filter(|e| !e.reversible).count();
+            if burns > self.burns {
+                self.burns = burns;
+                self.irreversible = irreversible;
+            }
+        }
+        if self.status == "running" && !self.pid.map(pid_alive).unwrap_or(false) {
+            self.status = "interrupted".to_string();
+        }
+    }
+
+    pub fn is_interrupted(&self) -> bool {
+        self.status == "interrupted"
     }
 
     pub fn dir(&self) -> PathBuf {
@@ -109,6 +134,37 @@ impl RunRecord {
 }
 
 /// All run records, newest first.
+/// Is a process with this id still alive? Read-only: no signal is sent.
+pub fn pid_alive(pid: u32) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        false
+    }
+}
+
 pub fn list() -> io::Result<Vec<RunRecord>> {
     let dir = runs_dir();
     let mut out = Vec::new();
@@ -120,7 +176,8 @@ pub fn list() -> io::Result<Vec<RunRecord>> {
     for entry in entries {
         let entry = entry?;
         if entry.path().join("run.json").is_file() {
-            if let Ok(rec) = RunRecord::load(&entry.path()) {
+            if let Ok(mut rec) = RunRecord::load(&entry.path()) {
+                rec.refresh_from_journal();
                 out.push(rec);
             }
         }

@@ -17,6 +17,11 @@
 //! | E8xx | the command line and the environment |
 //! | E9xx | internal: a bug in CigScript itself |
 //!
+//! Reserved sub-ranges, so a code never changes meaning: E51x general
+//! runtime, E52x the ghost filesystem (dry-run overlay), E55x hops (child
+//! processes and foreign scripts), E70x kernel and journal, E75x folds and
+//! packs, E80x usage, E85x updater and doctor.
+//!
 //! `cig explain <code>` prints an entry; `docs/ERRORS.md` is generated from
 //! this table so the two can never disagree.
 
@@ -109,6 +114,9 @@ pub static CATALOGUE: &[ErrorInfo] = &[
     e("E511", Kind::Runtime, "parse failure", "Text that should be JSON or CSV is not.", "Validate the input; the message includes the parser's reason."),
     e("E512", Kind::Runtime, "range too large", "A range or list construction would exceed 10,000,000 items.", "Iterate in smaller pieces."),
     e("E513", Kind::Runtime, "output closed", "The reader of stdout went away (for example `| head`).", "Nothing to fix; the script stopped cleanly."),
+    e("E514", Kind::Runtime, "allocation ceiling", "An operation would build a value larger than the memory ceiling (256 MiB by default).", "Work in smaller pieces, or raise the ceiling with CIG_MAX_ALLOC=<bytes>."),
+    e("E515", Kind::Runtime, "step budget exceeded", "Your loop never ends, or the script needs more steps than the budget allows.", "Check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables)."),
+    e("E520", Kind::Runtime, "read of a ghost-deleted path", "In a dry-run, a step read a path that an earlier simulated op would have deleted or moved away.", "The plan is telling you the order is wrong: read before the delete, or do not delete it."),
     // raised by the script
     e("E600", Kind::Cough, "raised by the script", "The script called `cough` and nothing caught it.", "Catch it with try/ashtray, or let it stop the run; burns are rolled back."),
     e("E601", Kind::Cough, "assertion failed", "assert() was given a false value.", "The optional second argument becomes the message."),
@@ -118,6 +126,10 @@ pub static CATALOGUE: &[ErrorInfo] = &[
     e("E700", Kind::Burn, "burn refused", "The kernel refused a side effect.", "Read the message; effects need a burn block."),
     e("E701", Kind::Burn, "effect outside burn", "A world-changing call ran with no burn block active on the call stack.", "Wrap the call, or the call to the function that makes it, in burn { }."),
     e("E702", Kind::Burn, "journal failure", "The kernel could not record a burn before performing it, so it refused it.", "Check disk space and permissions under ~/.cigscript (or CIGSCRIPT_HOME)."),
+    e("E703", Kind::Burn, "snapshot missing", "A rollback was refused because at least one snapshot it needs is missing or corrupt; nothing was restored.", "The run directory under ~/.cigscript/runs was altered; restore it from a backup, or pass --force to restore what can be and list what cannot."),
+    e("E704", Kind::Burn, "file changed since the run", "A rollback was refused because a file the run touched has been changed by something else since; restoring would overwrite that newer content.", "Look at the file, then pass --force if the old content is what you want."),
+    e("E705", Kind::Burn, "already rolled back", "This run was rolled back already; doing it again would overwrite whatever happened since.", "Pass --force only if you mean to restore the old snapshots again."),
+    e("E706", Kind::Burn, "interrupted run", "A run's process died mid-burn. The journal is intact and nothing has been restored yet.", "cig unburn <id> restores what the run had burned; cig runs <id> shows the journal."),
     // usage
     e("E800", Kind::Usage, "usage error", "The command line or the environment is wrong.", "See `cig --help`."),
     e("E801", Kind::Usage, "cannot read script", "The script file could not be opened.", "Check the path and permissions."),
@@ -144,7 +156,11 @@ mod tests {
     fn codes_are_unique_and_well_formed() {
         let mut seen = std::collections::HashSet::new();
         for e in CATALOGUE {
-            assert!(e.code.len() == 4 && e.code.starts_with('E'), "{}", e.code);
+            assert!(
+                (4..=5).contains(&e.code.len()) && e.code.starts_with('E'),
+                "{}",
+                e.code
+            );
             assert!(seen.insert(e.code), "duplicate {}", e.code);
             assert_eq!(
                 &e.code[1..2],

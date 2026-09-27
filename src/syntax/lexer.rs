@@ -185,14 +185,24 @@ impl<'a> Lexer<'a> {
                 .map_err(|_| lex(format!("malformed float literal `{text}`"), span).code("E104"))?;
             self.push(TokenKind::Float(v), span);
         } else {
-            let v: i64 = text.parse().map_err(|_| {
-                lex(
-                    format!("integer literal `{text}` does not fit in 64 bits"),
-                    span,
-                )
-                .code("E104")
-            })?;
-            self.push(TokenKind::Int(v), span);
+            match text.parse::<i64>() {
+                Ok(v) => self.push(TokenKind::Int(v), span),
+                // Only meaningful as `-9223372036854775808`; the parser folds
+                // the sign in, and rejects it anywhere else.
+                Err(_) if text == "9223372036854775808" => {
+                    self.push(TokenKind::IntMinMagnitude, span)
+                }
+                Err(_) => {
+                    return Err(lex(
+                        format!("integer literal `{text}` does not fit in 64 bits"),
+                        span,
+                    )
+                    .code("E104")
+                    .with_hint(
+                        "the largest int is 9223372036854775807; use a float for bigger magnitudes",
+                    ))
+                }
+            }
         }
         Ok(())
     }
