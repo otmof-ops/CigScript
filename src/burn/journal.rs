@@ -80,6 +80,9 @@ pub struct Journal {
     run_dir: Option<PathBuf>,
     file: Option<fs::File>,
     entries: Vec<Entry>,
+    /// The last line on disk was cut short (a crash mid-append); what came
+    /// before it loaded.
+    truncated: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -123,6 +126,7 @@ impl Journal {
             run_dir,
             file,
             entries: Vec::new(),
+            truncated: false,
         })
     }
 
@@ -130,15 +134,33 @@ impl Journal {
     pub fn load(run_dir: &Path) -> Result<Self, io::Error> {
         let text = fs::read_to_string(run_dir.join("journal.jsonl"))?;
         let mut entries: Vec<Entry> = Vec::new();
-        for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let v: serde_json::Value = serde_json::from_str(line)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            // `{"seq": N, "undone": true}` marks an earlier entry as rolled
-            // back by a retry inside the run.
-            if v.get("undone").and_then(|u| u.as_bool()) == Some(true) && v.get("op").is_none() {
-                if let Some(seq) = v.get("seq").and_then(|n| n.as_u64()) {
-                    if let Some(e) = entries.iter_mut().find(|e| e.seq == seq) {
+        let mut truncated = false;
+        let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+        for (i, line) in lines.iter().enumerate() {
+            let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
+            let v = match parsed {
+                Ok(v) => v,
+                // Only the last line may be damaged: that is what a crash
+                // mid-append leaves. Everything before it is intact and usable.
+                Err(_) if i + 1 == lines.len() => {
+                    truncated = true;
+                    break;
+                }
+                Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
+            };
+            // Markers: `{"seq": N, "undone": true}` says an earlier entry was
+            // rolled back by a retry, or never happened (`"failed": true`);
+            // `{"seq": N, "compensated": true}` says its block completed and
+            // the compensation recorded after it covers the op.
+            if v.get("op").is_none() {
+                let seq = v.get("seq").and_then(|n| n.as_u64());
+                let target = seq.and_then(|seq| entries.iter_mut().find(|e| e.seq == seq));
+                if let Some(e) = target {
+                    if v.get("undone").and_then(|u| u.as_bool()) == Some(true) {
                         e.undone = true;
+                    }
+                    if v.get("compensated").and_then(|u| u.as_bool()) == Some(true) {
+                        e.compensated = true;
                     }
                 }
                 continue;
@@ -151,7 +173,14 @@ impl Journal {
             run_dir: Some(run_dir.to_path_buf()),
             file: None,
             entries,
+            truncated,
         })
+    }
+
+    /// True when the journal on disk ended mid-line (a crash while appending)
+    /// and only the entries before that line were loaded.
+    pub fn truncated(&self) -> bool {
+        self.truncated
     }
 
     pub fn run_dir(&self) -> Option<&Path> {
@@ -207,6 +236,48 @@ impl Journal {
             let _ = f.sync_data();
         }
         report
+    }
+
+    fn append_marker(&mut self, marker: &str) {
+        if let Some(f) = &mut self.file {
+            let _ = f.write_all(marker.as_bytes());
+            let _ = f.flush();
+            let _ = f.sync_data();
+        }
+    }
+
+    /// The newest entry's effect never happened (its syscall refused before
+    /// changing anything): mark it undone, in memory and on disk, so
+    /// rollback skips it. Returns the entry's (reversible, compensated).
+    pub fn mark_last_failed(&mut self) -> Option<(bool, bool)> {
+        let e = self.entries.last_mut()?;
+        if e.undone || e.compensation.is_some() {
+            return None;
+        }
+        e.undone = true;
+        let out = (e.reversible, e.compensated);
+        let marker = format!("{{\"seq\":{},\"undone\":true,\"failed\":true}}\n", e.seq);
+        self.append_marker(&marker);
+        Some(out)
+    }
+
+    /// The block that began at `mark` completed and its compensation is
+    /// recorded: stamp its irreversible ops `compensated`, in memory and
+    /// on disk. Returns how many were stamped.
+    pub fn mark_compensated_since(&mut self, mark: usize) -> usize {
+        let mut markers = String::new();
+        let mut count = 0;
+        for e in self.entries.iter_mut().skip(mark) {
+            if !e.reversible && !e.undone && !e.compensated && e.compensation.is_none() {
+                e.compensated = true;
+                count += 1;
+                markers.push_str(&format!("{{\"seq\":{},\"compensated\":true}}\n", e.seq));
+            }
+        }
+        if count > 0 {
+            self.append_marker(&markers);
+        }
+        count
     }
 
     /// Snapshot everything `op` will change, sync it, then append and sync
@@ -326,6 +397,14 @@ impl Journal {
                 },
             });
         }
+        if !meta.is_dir() && !meta.is_file() {
+            // A pipe would block the copy forever; a socket or device has
+            // no content to keep. The op is refused before anything changes.
+            return Err(io::Error::other(format!(
+                "{} is not a regular file or directory (a pipe, socket or device); the kernel cannot snapshot it",
+                path.display()
+            )));
+        }
         let Some(dir) = &self.run_dir else {
             // In-memory journal (eval/repl): remember only that it existed.
             return Ok(BeforeState {
@@ -358,7 +437,7 @@ impl Journal {
                 before: Before::Dir { snapshot: snap },
             })
         } else {
-            fs::copy(path, &snap)?;
+            copy_file_with_mode(path, &snap)?;
             fs::File::open(&snap)?.sync_all()?;
             sync_dir(&dir.join("snapshots"))?;
             let sha256 = sha256_file(&snap)?;
@@ -516,19 +595,34 @@ impl Journal {
                 let moved = order.remove(pos);
                 order.insert(0, moved);
             }
+            let mut kept: Option<PathBuf> = None;
             for state in order {
+                if kept.as_deref() == Some(state.path.as_path()) {
+                    // The move back failed: the file at the destination is
+                    // the only copy, so the "remove the destination" step
+                    // that would follow is skipped.
+                    let text = format!(
+                        "{}: kept {} (the move back failed; it is the only copy)",
+                        entry.op.describe(),
+                        state.path.display()
+                    );
+                    report.failed.push(text.clone());
+                    report.actions.push(("kept".to_string(), text));
+                    continue;
+                }
                 match restore(state) {
                     Ok(()) => {
                         let text = format!(
-                            "{} ({})",
+                            "{} ({} {})",
                             entry.op.describe(),
                             match state.before {
                                 Before::Absent => "removed",
-                                Before::File { .. } => "file restored",
-                                Before::Dir { .. } => "directory restored",
-                                Before::Symlink { .. } => "link restored",
-                                Before::Moved { .. } => "moved back",
-                            }
+                                Before::File { .. } => "file restored:",
+                                Before::Dir { .. } => "directory restored:",
+                                Before::Symlink { .. } => "link restored:",
+                                Before::Moved { .. } => "moved back:",
+                            },
+                            state.path.display()
                         );
                         report.actions.push(("restored".to_string(), text));
                         report.restored.push(format!(
@@ -544,6 +638,9 @@ impl Journal {
                         ))
                     }
                     Err(e) => {
+                        if let Before::Moved { to } = &state.before {
+                            kept = Some(to.clone());
+                        }
                         let text =
                             format!("{}: {} ({e})", entry.op.describe(), state.path.display());
                         report.failed.push(text.clone());
@@ -593,9 +690,72 @@ pub(crate) fn resolve_symlink_chain(path: &Path) -> PathBuf {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum PathState {
     Absent,
-    File { sha256: String, bytes: u64 },
-    Dir,
-    Symlink { target: PathBuf },
+    File {
+        sha256: String,
+        bytes: u64,
+    },
+    /// A directory, fingerprinted by its entries (names, kinds, sizes and
+    /// mtimes) so that a file added or changed inside it since the run is
+    /// seen before rollback removes the directory. Records written before
+    /// 1.1.1 carry no fingerprint and compare as unknown.
+    Dir {
+        #[serde(default)]
+        fingerprint: String,
+        #[serde(default)]
+        entries: u64,
+    },
+    Symlink {
+        target: PathBuf,
+    },
+}
+
+/// Directory entries a fingerprint covers before it gives up and records
+/// only the count.
+const FINGERPRINT_CAP: u64 = 200_000;
+
+fn dir_fingerprint(dir: &Path) -> (String, u64) {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut count = 0u64;
+    for entry in walkdir::WalkDir::new(dir)
+        .min_depth(1)
+        .follow_links(false)
+        .sort_by_file_name()
+    {
+        let Ok(entry) = entry else { continue };
+        count += 1;
+        if count > FINGERPRINT_CAP {
+            return (String::new(), count);
+        }
+        let rel = entry.path().strip_prefix(dir).unwrap_or(entry.path());
+        let kind = if entry.file_type().is_symlink() {
+            "l"
+        } else if entry.file_type().is_dir() {
+            "d"
+        } else {
+            "f"
+        };
+        let (len, mtime) = entry
+            .metadata()
+            .map(|m| {
+                (
+                    m.len(),
+                    m.modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0),
+                )
+            })
+            .unwrap_or((0, 0));
+        hasher.update(rel.to_string_lossy().as_bytes());
+        hasher.update([0]);
+        hasher.update(kind.as_bytes());
+        hasher.update(len.to_le_bytes());
+        hasher.update(mtime.to_le_bytes());
+        hasher.update([0]);
+    }
+    (hex::encode(hasher.finalize()), count)
 }
 
 impl PathState {
@@ -605,11 +765,45 @@ impl PathState {
             Ok(m) if m.file_type().is_symlink() => PathState::Symlink {
                 target: fs::read_link(path).unwrap_or_default(),
             },
-            Ok(m) if m.is_dir() => PathState::Dir,
+            Ok(m) if m.is_dir() => {
+                let (fingerprint, entries) = dir_fingerprint(path);
+                PathState::Dir {
+                    fingerprint,
+                    entries,
+                }
+            }
             Ok(m) => PathState::File {
                 sha256: sha256_file(path).unwrap_or_default(),
                 bytes: m.len(),
             },
+        }
+    }
+
+    /// Same kind and same content, as far as each kind can be compared.
+    /// Two directories compare by fingerprint; when one side has none (a
+    /// record from before 1.1.1) nothing can be claimed and they count as
+    /// unchanged; when both were too large to fingerprint, the counts decide.
+    pub fn same_as(&self, other: &PathState) -> bool {
+        match (self, other) {
+            (
+                PathState::Dir {
+                    fingerprint: a,
+                    entries: ea,
+                },
+                PathState::Dir {
+                    fingerprint: b,
+                    entries: eb,
+                },
+            ) => {
+                if !a.is_empty() && !b.is_empty() {
+                    a == b
+                } else if *ea > 0 && *eb > 0 {
+                    ea == eb
+                } else {
+                    true
+                }
+            }
+            _ => self == other,
         }
     }
 
@@ -622,7 +816,14 @@ impl PathState {
                     &sha256[..sha256.len().min(12)]
                 )
             }
-            PathState::Dir => "a directory".to_string(),
+            PathState::Dir {
+                fingerprint,
+                entries,
+            } if fingerprint.is_empty() && *entries == 0 => "a directory".to_string(),
+            PathState::Dir { entries, .. } => format!(
+                "a directory with {entries} entr{}",
+                if *entries == 1 { "y" } else { "ies" }
+            ),
             PathState::Symlink { target } => format!("a symlink to {}", target.display()),
         }
     }
@@ -714,7 +915,7 @@ impl Journal {
                 continue;
             };
             let now = PathState::observe(&path);
-            if &now != was {
+            if !now.same_as(was) {
                 changes.push(Change {
                     path,
                     seq,
@@ -761,10 +962,31 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt;
+                if let Ok(m) = fs::symlink_metadata(path) {
+                    if m.is_file() && m.nlink() > 1 {
+                        // Other names share this inode: put the bytes back
+                        // in place so every link sees them, instead of
+                        // swapping in a new file and leaving the other
+                        // names with the run's content.
+                        let mut src = fs::File::open(snapshot)?;
+                        let mut dst = fs::OpenOptions::new()
+                            .write(true)
+                            .truncate(true)
+                            .open(path)?;
+                        io::copy(&mut src, &mut dst)?;
+                        dst.sync_all()?;
+                        fs::set_permissions(path, fs::metadata(snapshot)?.permissions())?;
+                        return Ok(());
+                    }
+                }
+            }
             // Stage beside the destination, then swap in, so a failure
             // half-way leaves whatever is there untouched.
             let staged = staging_path(path);
-            fs::copy(snapshot, &staged)?;
+            copy_file_with_mode(snapshot, &staged)?;
             if fs::symlink_metadata(path)
                 .map(|m| m.is_dir())
                 .unwrap_or(false)
@@ -808,9 +1030,32 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
                 fs::create_dir_all(parent)?;
             }
             remove_any(path)?;
-            fs::rename(to, path)
+            match fs::rename(to, path) {
+                Ok(()) => Ok(()),
+                // Across devices (the run moved it with a copy): copy it
+                // back the same way, and only then let go of the copy.
+                Err(e) if e.raw_os_error() == Some(18) => {
+                    if to.is_dir() {
+                        copy_tree(to, path)?;
+                    } else {
+                        copy_file_with_mode(to, path)?;
+                    }
+                    remove_any(to)
+                }
+                Err(e) => Err(e),
+            }
         }
     }
+}
+
+/// `fs::copy`, then the source's full mode applied again: the copy sets
+/// the mode when it creates the file, and writing the bytes afterwards
+/// clears a setuid or setgid bit.
+fn copy_file_with_mode(from: &Path, to: &Path) -> Result<u64, io::Error> {
+    let n = fs::copy(from, to)?;
+    #[cfg(unix)]
+    fs::set_permissions(to, fs::metadata(from)?.permissions())?;
+    Ok(n)
 }
 
 /// A sibling path to stage a restore in before swapping it into place.
@@ -900,16 +1145,24 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
             fs::create_dir_all(&dest)?;
             let meta = entry.metadata().map_err(io::Error::other)?;
             dir_modes.push((dest, meta.permissions()));
-        } else {
-            fs::copy(entry.path(), &dest)?;
+        } else if entry.file_type().is_file() {
+            copy_file_with_mode(entry.path(), &dest)?;
             if durable {
                 fs::File::open(&dest)?.sync_all()?;
             }
+        } else {
+            return Err(io::Error::other(format!(
+                "{} is not a regular file (a pipe, socket or device); the kernel cannot snapshot it",
+                entry.path().display()
+            )));
         }
     }
     for (dir, perms) in dir_modes.into_iter().rev() {
         fs::set_permissions(&dir, perms)?;
     }
+    // The root of the tree keeps its own mode too (a sticky or read-only
+    // directory comes back as it was).
+    fs::set_permissions(to, fs::metadata(from)?.permissions())?;
     if durable {
         sync_dir(to)?;
     }

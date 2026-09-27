@@ -13,8 +13,31 @@ use cigscript::NO_CIGARETTES;
 use std::io::Write;
 use std::path::Path;
 
+/// Scripts larger than this are not scripts; a device like /dev/zero would
+/// otherwise be read forever.
+const MAX_SCRIPT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn read_capped(file: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(file)?
+        .take(MAX_SCRIPT_BYTES + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > MAX_SCRIPT_BYTES {
+        return Err(std::io::Error::other(
+            "larger than 64 MiB, which no script is",
+        ));
+    }
+    String::from_utf8(buf).map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        )
+    })
+}
+
 pub fn read_source(ctx: &Ctx, file: &Path) -> Result<String, i32> {
-    std::fs::read_to_string(file).map_err(|e| {
+    read_capped(file).map_err(|e| {
         let hint = match e.kind() {
             std::io::ErrorKind::NotFound => {
                 "check the path; scripts resolve against the current directory"
@@ -24,6 +47,7 @@ pub fn read_source(ctx: &Ctx, file: &Path) -> Result<String, i32> {
         };
         let d = cigscript::diagnostics::usage(format!("cannot read {}: {e}", file.display()))
             .code("E801")
+            .with_subject(file.display().to_string())
             .with_hint(hint);
         report(ctx, &d, None, None);
         exit::USAGE
@@ -246,6 +270,17 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         }
     }
 
+    if let Ok(v) = std::env::var("CIG_MAX_STEPS") {
+        if v.trim().parse::<u64>().is_err() {
+            let d = cigscript::diagnostics::usage(format!(
+                "CIG_MAX_STEPS=`{v}` is not a step count"
+            ))
+            .code("E800")
+            .with_hint("give a whole number of steps, or 0 to disable the budget; --max-steps does the same");
+            report(ctx, &d, None, None);
+            return exit::USAGE;
+        }
+    }
     let mode = if args.dry_run {
         Mode::DryRun
     } else {
@@ -301,6 +336,9 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
 
     let mut code = match &result {
         Ok(()) => interp.exit_requested.unwrap_or(exit::OK),
+        // A check-family error reached at run time (`--no-check`, or a
+        // name the checker could not see) exits like the checker would.
+        Err(d) if d.kind == cigscript::diagnostics::Kind::Check => exit::SYNTAX_ERROR,
         Err(_) => exit::SCRIPT_ERROR,
     };
     let mut rolled_back = None;
@@ -346,10 +384,16 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         record.burns = interp.kernel.journal().len();
         record.irreversible = interp.kernel.irreversible;
         record.rolled_back = rolled_back.as_ref().is_some_and(|r| !r.restored.is_empty());
+        record.rollback_failed = rolled_back
+            .as_ref()
+            .map(|r| r.failed.clone())
+            .unwrap_or_default();
         let (status, error) = match &result {
             Ok(()) => ("ok", None),
             Err(d) => (
-                if record.rolled_back {
+                if !record.rollback_failed.is_empty() {
+                    "rollback_incomplete"
+                } else if record.rolled_back {
                     "rolled_back"
                 } else {
                     "error"

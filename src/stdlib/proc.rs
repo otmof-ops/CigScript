@@ -100,6 +100,10 @@ impl Options {
         let Some(opts) = opt_map(a, index, name, s)? else {
             return Ok(o);
         };
+        // `ok` is the contract itself and wins over `check` whatever the
+        // order of the keys; `check` alone sets it to [0] or clears it.
+        let mut check: Option<bool> = None;
+        let mut ok_given: Option<Option<Vec<i64>>> = None;
         for (k, v) in opts.borrow().iter() {
             match (k.as_str(), v) {
                 ("cwd", Value::Str(p)) => o.cwd = Some(PathBuf::from(p.to_string())),
@@ -112,14 +116,8 @@ impl Options {
                 ("timeout_ms", Value::Int(t)) if *t > 0 => o.timeout_ms = *t as u64,
                 ("grace_ms", Value::Int(t)) if *t >= 0 => o.grace_ms = *t as u64,
                 ("stdin", Value::Str(text)) => o.stdin = Some(text.to_string()),
-                ("check", v) => {
-                    if v.truthy() {
-                        o.ok = Some(vec![0]);
-                    } else if o.ok == Some(vec![0]) {
-                        o.ok = None;
-                    }
-                }
-                ("ok", Value::Int(n)) => o.ok = Some(vec![*n]),
+                ("check", v) => check = Some(v.truthy()),
+                ("ok", Value::Int(n)) => ok_given = Some(Some(vec![*n])),
                 ("ok", Value::List(l)) => {
                     let mut codes = Vec::new();
                     for item in l.borrow().iter() {
@@ -134,9 +132,16 @@ impl Options {
                             }
                         }
                     }
-                    o.ok = Some(codes);
+                    if codes.is_empty() {
+                        return Err(runtime(format!(
+                            "{name}: the `ok` contract is empty; no exit code could satisfy it"
+                        ))
+                        .at(s)
+                        .with_hint("list the codes that count as success, {ok: [0, 1]}, or ok: null for no contract"));
+                    }
+                    ok_given = Some(Some(codes));
                 }
-                ("ok", Value::Null) => o.ok = None,
+                ("ok", Value::Null) => ok_given = Some(None),
                 ("encoding", Value::Str(e)) => {
                     o.encoding = match e.to_ascii_lowercase().replace('_', "-").as_str() {
                         "utf-8" | "utf8" => Encoding::Utf8,
@@ -151,7 +156,18 @@ impl Options {
                     }
                 }
                 ("header", v) => o.header = v.truthy(),
-                ("sep", Value::Str(c)) => o.sep = c.chars().next().unwrap_or(','),
+                ("sep", Value::Str(c)) => {
+                    let mut chars = c.chars();
+                    match (chars.next(), chars.next()) {
+                        (Some(one), None) => o.sep = one,
+                        _ => {
+                            return Err(runtime(format!(
+                                "{name}: `sep` must be one character, got `{c}`"
+                            ))
+                            .at(s))
+                        }
+                    }
+                }
                 ("cwd" | "env" | "timeout_ms" | "grace_ms" | "stdin" | "ok" | "encoding" | "sep", other) => {
                     return Err(type_error(format!(
                         "{name}: option `{k}` has the wrong type ({})",
@@ -165,6 +181,12 @@ impl Options {
                         .with_hint("use one of cwd, env, clean_env, timeout_ms, grace_ms, stdin, check, ok, encoding, header, sep"))
                 }
             }
+        }
+        match (ok_given, check) {
+            (Some(ok), _) => o.ok = ok,
+            (None, Some(true)) => o.ok = Some(vec![0]),
+            (None, Some(false)) => o.ok = None,
+            (None, None) => {}
         }
         Ok(o)
     }
@@ -279,7 +301,140 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Command {
     c
 }
 
+/// A missing working directory is the hop's problem, not the program's:
+/// the spawn would report "not found" and blame the command.
+fn check_cwd(name: &str, o: &Options, s: Span) -> Result<(), Diagnostic> {
+    if let Some(dir) = &o.cwd {
+        if !dir.is_dir() {
+            return Err(runtime(format!(
+                "{name}: the working directory `{}` {}",
+                dir.display(),
+                if dir.exists() {
+                    "is not a directory"
+                } else {
+                    "does not exist"
+                }
+            ))
+            .code("E550")
+            .at(s)
+            .with_subject(dir.display().to_string())
+            .with_hint("create it first (fs.mkdir inside the burn), or drop the cwd option"));
+        }
+    }
+    Ok(())
+}
+
+// ----- signals reach the child's process group ---------------------------------
+//
+// Every child runs in its own process group (so a timeout can kill all of it),
+// which also means a Ctrl-C at the terminal reaches cig and not the child.
+// The forwarder sends SIGINT, SIGTERM and SIGHUP on to every live child group,
+// then lets the signal end cig the default way.
+
+#[cfg(unix)]
+mod forward {
+    use std::sync::atomic::{AtomicI32, Ordering};
+    use std::sync::OnceLock;
+
+    const SLOTS: usize = 64;
+    static ACTIVE: [AtomicI32; SLOTS] = [const { AtomicI32::new(0) }; SLOTS];
+
+    extern "C" fn on_signal(sig: libc::c_int) {
+        // Async-signal-safe: atomics, kill, signal, raise.
+        for slot in ACTIVE.iter() {
+            let pgid = slot.load(Ordering::Relaxed);
+            if pgid > 0 {
+                unsafe {
+                    libc::kill(-pgid, sig);
+                }
+            }
+        }
+        unsafe {
+            libc::signal(sig, libc::SIG_DFL);
+            libc::raise(sig);
+        }
+    }
+
+    pub fn install() {
+        static ONCE: OnceLock<()> = OnceLock::new();
+        ONCE.get_or_init(|| unsafe {
+            for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                libc::signal(
+                    sig,
+                    on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t,
+                );
+            }
+        });
+    }
+
+    pub fn register(pgid: u32) -> Option<usize> {
+        let pgid = pgid as i32;
+        (0..SLOTS).find(|&i| {
+            ACTIVE[i]
+                .compare_exchange(0, pgid, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+        })
+    }
+
+    pub fn unregister(slot: usize) {
+        ACTIVE[slot].store(0, Ordering::SeqCst);
+    }
+}
+
+#[cfg(unix)]
+const SIGPIPE: i32 = libc::SIGPIPE;
+#[cfg(not(unix))]
+const SIGPIPE: i32 = 13;
+
+fn install_signal_forwarding() {
+    #[cfg(unix)]
+    forward::install();
+}
+
+/// Keeps a child's process group registered with the signal forwarder for
+/// as long as the guard lives.
+struct ChildGuard {
+    #[cfg(unix)]
+    slot: Option<usize>,
+}
+
+impl ChildGuard {
+    fn register(pid: u32) -> Self {
+        #[cfg(unix)]
+        {
+            Self {
+                slot: forward::register(pid),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = pid;
+            Self {}
+        }
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Some(slot) = self.slot {
+            forward::unregister(slot);
+        }
+    }
+}
+
 fn spawn_error(name: &str, cmd: &str, e: std::io::Error, s: Span) -> Diagnostic {
+    // execve refuses a directory with the same "permission denied" it uses
+    // for a file without the execute bit; say which it was.
+    if e.kind() == std::io::ErrorKind::PermissionDenied && std::path::Path::new(cmd).is_dir() {
+        return runtime(format!(
+            "{name}: could not start `{cmd}`: it is a directory, not a program"
+        ))
+        .code("E552")
+        .at(s)
+        .with_subject(cmd.to_string())
+        .with_hint("name the program inside it, or check the path");
+    }
     let (code, hint) = match e.kind() {
         std::io::ErrorKind::NotFound => (
             "E551",
@@ -347,14 +502,25 @@ fn run_child(
     s: Span,
 ) -> Result<Raw, Diagnostic> {
     let started = Instant::now();
+    check_cwd(name, o, s)?;
+    install_signal_forwarding();
     let mut child = command(cmd, args, o)
         .spawn()
         .map_err(|e| spawn_error(name, cmd, e, s))?;
-    if let (Some(text), Some(mut pipe)) = (&o.stdin, child.stdin.take()) {
-        // A closed pipe is not an error: the child may not read stdin.
-        let _ = pipe.write_all(text.as_bytes());
-    }
+    let _guard = ChildGuard::register(child.id());
+    // Readers first, then a writer thread for stdin: writing before reading
+    // deadlocks as soon as the child fills a pipe while waiting for its input.
     let (out_thread, err_thread) = readers(&mut child);
+    let stdin_thread = child
+        .stdin
+        .take()
+        .zip(o.stdin.clone())
+        .map(|(mut pipe, text)| {
+            std::thread::spawn(move || {
+                // A closed pipe is not an error: the child may not read stdin.
+                let _ = pipe.write_all(text.as_bytes());
+            })
+        });
     let label = hop_label(cmd, args);
     let waited = child
         .wait_timeout(Duration::from_millis(o.timeout_ms))
@@ -364,6 +530,9 @@ fn run_child(
             kill_group(&mut child, o.grace_ms);
             let out = out_thread.join().unwrap_or_default();
             let err = err_thread.join().unwrap_or_default();
+            if let Some(t) = stdin_thread {
+                let _ = t.join();
+            }
             Err(runtime(format!(
                 "{name}: `{label}` ran longer than {} ms and was killed; it had written {} bytes to stdout{} and {} bytes to stderr{}",
                 o.timeout_ms,
@@ -380,6 +549,9 @@ fn run_child(
         Some(status) => {
             let out = out_thread.join().unwrap_or_default();
             let err = err_thread.join().unwrap_or_default();
+            if let Some(t) = stdin_thread {
+                let _ = t.join();
+            }
             let duration_ms = started.elapsed().as_millis() as i64;
             match status.code() {
                 Some(code) => Ok(Raw {
@@ -698,6 +870,11 @@ fn kv(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
+                // `export FOO=bar`, as `export -p` and .env files write it.
+                let line = line
+                    .strip_prefix("export ")
+                    .map(str::trim_start)
+                    .unwrap_or(line);
                 let Some((k, v)) = line.split_once('=') else {
                     return Err(bad_shape(
                         "proc.kv",
@@ -793,8 +970,12 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     if i.effect("proc.pipe", op, s)? == Decision::Simulate {
         return Ok(result_map(0, "", "", 0, true));
     }
+    check_cwd("proc.pipe", &o, s)?;
+    install_signal_forwarding();
     let started = Instant::now();
     let mut children: Vec<Child> = Vec::new();
+    // Registered with the signal forwarder for as long as the pipeline runs.
+    let mut _group_guard: Option<ChildGuard> = None;
     let mut err_readers: Vec<Reader> = Vec::new();
     let mut previous_out: Option<std::process::ChildStdout> = None;
     for (n, (cmd, args)) in stages.iter().enumerate() {
@@ -840,6 +1021,9 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         if n + 1 < stages.len() {
             previous_out = child.stdout.take();
         }
+        if n == 0 {
+            _group_guard = Some(ChildGuard::register(child.id()));
+        }
         children.push(child);
     }
     let last = children.len() - 1;
@@ -853,12 +1037,20 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     });
     let deadline = Instant::now() + Duration::from_millis(o.timeout_ms);
     let mut codes: Vec<Option<i32>> = vec![None; children.len()];
+    let mut signals: Vec<i32> = vec![0; children.len()];
     let mut timed_out = false;
     'wait: loop {
         for (n, child) in children.iter_mut().enumerate() {
             if codes[n].is_none() {
                 match child.try_wait() {
-                    Ok(Some(status)) => codes[n] = Some(status.code().unwrap_or(-1)),
+                    Ok(Some(status)) => {
+                        codes[n] = Some(status.code().unwrap_or(-1));
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::process::ExitStatusExt;
+                            signals[n] = status.signal().unwrap_or(0);
+                        }
+                    }
                     Ok(None) => {}
                     Err(_) => codes[n] = Some(-1),
                 }
@@ -898,6 +1090,10 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         .collect();
     let duration_ms = started.elapsed().as_millis() as i64;
     // Every stage but the last must exit 0; the last honours the contract.
+    // A stage ended by SIGPIPE was cut off by its consumer closing early
+    // (`yes | head -1`); whatever the consumer did next is the story, never
+    // the producer's death.
+    let closed_early = |n: usize| -> bool { n < last && signals[n] == SIGPIPE };
     for (n, code) in codes.iter().enumerate() {
         let code = code.unwrap_or(-1);
         let is_last = n == last;
@@ -906,6 +1102,9 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         } else {
             vec![0]
         };
+        if closed_early(n) {
+            continue;
+        }
         if !allowed.contains(&(code as i64)) {
             let (cmd, args) = &stages[n];
             let tail = last_line(&errs[n]);
@@ -948,10 +1147,17 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
             stages
                 .iter()
                 .zip(codes.iter())
-                .map(|((cmd, args), code)| {
+                .enumerate()
+                .map(|(n, ((cmd, args), code))| {
                     let mut sm = IndexMap::new();
                     sm.insert("cmd".to_string(), Value::str(hop_label(cmd, args)));
                     sm.insert("code".to_string(), Value::Int(code.unwrap_or(-1) as i64));
+                    if signals[n] != 0 {
+                        sm.insert("signal".to_string(), Value::Int(signals[n] as i64));
+                    }
+                    if closed_early(n) {
+                        sm.insert("closed_early".to_string(), Value::Bool(true));
+                    }
                     Value::map(sm)
                 })
                 .collect(),
@@ -962,6 +1168,16 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
 
 fn which(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let name = expect_str(a, 0, "proc.which", s)?;
+    // A name with a slash is a path, resolved as proc.run would: against
+    // the current directory, never PATH.
+    if name.contains('/') || name.contains(std::path::MAIN_SEPARATOR) {
+        let p = std::path::Path::new(name);
+        return Ok(if p.is_file() {
+            Value::str(p.to_string_lossy())
+        } else {
+            Value::Null
+        });
+    }
     let Some(paths) = std::env::var_os("PATH") else {
         return Ok(Value::Null);
     };

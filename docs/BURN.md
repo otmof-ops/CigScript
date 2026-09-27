@@ -85,7 +85,14 @@ not the target exists, and it is restored as a link. Writing through a link
 changes the file it points at, so both the link and that file are recorded.
 
 The journal is `journal.jsonl`, one entry per line. Snapshots live in
-`snapshots/` next to it. If the kernel cannot journal an op (disk full,
+`snapshots/` next to it. A last line cut short by a crash mid-append does
+not spoil the rest: `cig unburn` loads the entries before it, says the
+journal was cut, and restores them. An op the operating system refused
+before anything changed (a rename into its own subdirectory) is marked
+undone with the same kind of marker, so rollback never "moves back" a file
+that never left. A path that is not a file, a directory or a link (a named
+pipe, a socket, a device) cannot be snapshotted and the op is refused
+(`E702`) rather than hung on. If the kernel cannot journal an op (disk full,
 permissions), the op is refused and nothing is changed.
 
 **Durability.** The journal is write-ahead: the snapshot is copied and synced
@@ -139,6 +146,11 @@ offers `cig unburn <id>`.
 A **pack** (`pack { "./build" }`, `LANGUAGE.md`) is the declared scope: the
 kernel refuses any native write outside its roots (`E751`; the checker
 catches literal paths first, `E750`) and prints the pack in the plan header.
+Paths are resolved before they are judged: a symlink inside the pack that
+points outside is outside, and the refusal says where the write would land.
+When a hop's writes are watched, a link inside the pack is followed, so a
+file the child wrote through it is journaled like any other. An empty root
+is refused (`E755`): it would have meant the whole working directory.
 A **hop** inside a pack is *observed*: the pack's files are listed by mtime
 and size before the child runs and again after, and the difference is
 journaled as the hop's write set: files the child created are reversible
@@ -150,7 +162,9 @@ hashes content.
 
 A **compensation** is the other half. `burn (s) { ... } unburn { ... }`
 journals the `unburn` block's source and the state map `s` when the block
-completes (`Op::Compensate`, reversible: it *is* the reversal). Rollback,
+completes (`Op::Compensate`, reversible: it *is* the reversal), and only
+then stamps the block's irreversible ops `compensated`, in the journal as
+on disk. Rollback,
 here or in `cig unburn` later, runs each compensation at its place in the
 newest-first order, in a fresh interpreter with effects allowed and nothing
 journaled. Hops inside such a block are labelled `compensated` in the plan,
@@ -211,11 +225,24 @@ rollback report ("cannot undo"). What the label covers:
   `fs.rm`, which the kernel can undo on its own.
 - **Cross-run consistency is checked, not guaranteed.** When a run finishes,
   the kernel records what it left behind (`after.json`: the state of every
-  path it touched). `cig unburn` compares that with the disk now and refuses
+  path it touched; a file by hash and size, a directory by a fingerprint of
+  everything inside it, so a file you added to a directory the run created
+  counts as a change and is not swept away with it). `cig unburn` compares
+  that with the disk now and refuses
   with `E704` when anything changed since, naming the later run that touched
   the path when there is one, so runs are unburned newest first; `--force`
   restores over the newer content anyway. `cig unburn --dry-run` prints the
   plan with a *changed since* column. A run that predates after-state records
   says "unknown" and is allowed.
 - **Snapshots are plain copies**, unencrypted, under your home directory. Prune
-  them with `cig runs --prune` if they hold anything sensitive.
+  them with `cig runs --prune` if they hold anything sensitive. They keep the
+  full mode (setuid, setgid and sticky bits included), and a restored tree
+  keeps the mode of its root.
+- **Restores are atomic where they can be.** A file comes back beside its
+  destination and is swapped in, so a failure half-way leaves what is there
+  untouched; a file that has other hard links is restored in place instead,
+  so every name sees the old bytes. A file the run moved across filesystems
+  is copied back the same way, and when a move back fails the only copy is
+  kept, never removed. What a rollback could not restore is recorded on the
+  run (`rollback_incomplete`; `cig runs <id>` lists the failures) and
+  `cig unburn` refuses to start when it could not record itself.

@@ -90,11 +90,14 @@ impl Op {
     /// Whether the kernel can undo this on its own. Environment changes
     /// die with the process, so they count as reversible; a spawned
     /// process does not.
+    /// Can rollback undo this op on its own? Processes and environment
+    /// changes cannot be watched or restored by the kernel, so they are
+    /// irreversible and the plan says so.
     pub fn reversible(&self) -> bool {
         !matches!(
             self,
             Op::Proc { .. } | Op::HopChanged { .. } | Op::EnvSet { .. } | Op::EnvUnset { .. }
-        ) || matches!(self, Op::EnvSet { .. } | Op::EnvUnset { .. })
+        )
     }
 
     pub fn describe(&self) -> String {
@@ -192,6 +195,9 @@ pub struct Kernel {
     compensating: u32,
     /// The chain/step path that owns the current ops, for the plan.
     owner: Vec<String>,
+    /// Journal length at the start of each open `burn { } unburn { }`
+    /// block, so its ops can be stamped `compensated` when it completes.
+    compensating_marks: Vec<usize>,
 }
 
 /// What a hop changed, as observed by comparing the pack before and after.
@@ -246,9 +252,38 @@ pub fn normalize_root(raw: &str) -> PathBuf {
     out
 }
 
-fn inside_roots(path: &Path, roots: &[PathBuf]) -> bool {
+/// Where a path really is: lexically normalised, then the nearest existing
+/// ancestor canonicalised (symlinks resolved) with the rest appended. A
+/// symlink inside the pack that points outside resolves outside.
+pub fn scope_path(path: &Path) -> PathBuf {
     let abs = normalize_root(&path.to_string_lossy());
-    roots.iter().any(|r| abs == *r || abs.starts_with(r))
+    let mut existing = abs.clone();
+    let mut rest: Vec<std::ffi::OsString> = Vec::new();
+    while !existing.exists() {
+        match existing.file_name() {
+            Some(n) => {
+                rest.push(n.to_os_string());
+                if !existing.pop() {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+    let mut out = std::fs::canonicalize(&existing).unwrap_or(existing);
+    for c in rest.iter().rev() {
+        out.push(c);
+    }
+    out
+}
+
+/// Is `path` inside one of the roots, with symlinks resolved on both sides?
+pub fn inside_roots(path: &Path, roots: &[PathBuf]) -> bool {
+    let real = scope_path(path);
+    roots.iter().any(|r| {
+        let root = scope_path(r);
+        real == root || real.starts_with(&root)
+    })
 }
 
 fn scan(
@@ -257,10 +292,12 @@ fn scan(
     cap: usize,
 ) -> std::collections::BTreeMap<PathBuf, (u64, u64)> {
     let mut out = std::collections::BTreeMap::new();
+    // Links are followed: a directory linked from inside the pack is part
+    // of what a child can write through, and a loop is skipped by walkdir.
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
         .max_depth(max_depth)
-        .follow_links(false)
+        .follow_links(true)
         .into_iter()
         .filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
@@ -305,6 +342,7 @@ impl Kernel {
             pack: None,
             compensating: 0,
             owner: Vec::new(),
+            compensating_marks: Vec::new(),
         })
     }
 
@@ -319,10 +357,26 @@ impl Kernel {
 
     pub fn enter_compensating(&mut self) {
         self.compensating += 1;
+        self.compensating_marks.push(self.journal.entries().len());
     }
 
-    pub fn leave_compensating(&mut self) {
+    /// Leave the block; returns the journal mark where it began, for
+    /// [`Kernel::record_compensation`].
+    pub fn leave_compensating(&mut self) -> usize {
         self.compensating = self.compensating.saturating_sub(1);
+        self.compensating_marks.pop().unwrap_or(0)
+    }
+
+    /// The op just journaled did not happen (its syscall refused it before
+    /// changing anything): mark it undone so rollback and `cig unburn`
+    /// skip it, and take it back out of the counts.
+    pub fn op_failed(&mut self) {
+        if let Some((reversible, compensated)) = self.journal.mark_last_failed() {
+            self.executed = self.executed.saturating_sub(1);
+            if !reversible && !compensated {
+                self.irreversible = self.irreversible.saturating_sub(1);
+            }
+        }
     }
 
     pub fn push_owner(&mut self, owner: String) {
@@ -342,8 +396,15 @@ impl Kernel {
     }
 
     /// Record the compensation of a `burn { } unburn { }` block that
-    /// completed. In a dry-run it appears in the plan.
-    pub fn record_compensation(&mut self, comp: journal::Compensation) -> Result<(), Diagnostic> {
+    /// completed, and only then stamp the block's irreversible ops
+    /// `compensated`: a block that fails half-way, or a process that dies
+    /// inside one, leaves them honestly irreversible. In a dry-run the
+    /// compensation appears in the plan.
+    pub fn record_compensation(
+        &mut self,
+        comp: journal::Compensation,
+        mark: usize,
+    ) -> Result<(), Diagnostic> {
         self.seq += 1;
         let op = Op::Compensate { line: comp.line };
         if self.mode == Mode::DryRun {
@@ -362,7 +423,10 @@ impl Kernel {
             .record_with(self.seq, op, Some(comp), false)
             .map_err(|e| {
                 burn_error(format!("could not journal the compensation: {e}")).code("E702")
-            })
+            })?;
+        let stamped = self.journal.mark_compensated_since(mark);
+        self.irreversible = self.irreversible.saturating_sub(stamped);
+        Ok(())
     }
 
     /// Before a hop: remember the pack's files (and the child's working
@@ -511,8 +575,17 @@ impl Kernel {
             .filter(|p| !inside_roots(p, roots))
             .collect();
             if let Some(p) = outside.first() {
+                // A path that reads as inside but resolves outside is a
+                // symlink escape; say where it really lands.
+                let real = scope_path(p);
+                let lexical = normalize_root(&p.to_string_lossy());
+                let resolved = if real != lexical {
+                    format!(", it resolves to {}", real.display())
+                } else {
+                    String::new()
+                };
                 return Err(burn_error(format!(
-                    "{} is outside the pack ({})",
+                    "{} is outside the pack ({}){resolved}",
                     p.display(),
                     roots
                         .iter()
@@ -549,11 +622,14 @@ impl Kernel {
             });
             return Ok(Decision::Simulate);
         }
-        if !op.reversible() && !compensated {
+        // The journal entry is stamped `compensated` only when the block
+        // completes and its compensation is recorded (see
+        // `record_compensation`); until then the op is what it is.
+        if !op.reversible() {
             self.irreversible += 1;
         }
         self.executed += 1;
-        self.journal.record_with(self.seq, op, None, compensated).map_err(|e| {
+        self.journal.record_with(self.seq, op, None, false).map_err(|e| {
             burn_error(format!("could not journal the burn: {e}"))
                 .code("E702")
                 .with_hint("free space or fix permissions under ~/.cigscript (CIGSCRIPT_HOME), then run again; nothing was changed")

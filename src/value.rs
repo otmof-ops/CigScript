@@ -172,6 +172,13 @@ impl Value {
 
     /// Structural equality. Ints and floats compare numerically.
     pub fn equals(&self, other: &Value) -> bool {
+        self.equals_in(other, &mut Vec::new())
+    }
+
+    /// Structural equality that ends on values that contain themselves: a
+    /// pair of lists or maps already being compared further up the walk
+    /// counts as equal, since nothing in them has differed so far.
+    fn equals_in(&self, other: &Value, seen: &mut Vec<(usize, usize)>) -> bool {
         match (self, other) {
             (Value::Null, Value::Null) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -185,15 +192,38 @@ impl Value {
                 if Rc::ptr_eq(a, b) {
                     return true;
                 }
+                let key = (
+                    Rc::as_ptr(a) as *const () as usize,
+                    Rc::as_ptr(b) as *const () as usize,
+                );
+                if seen.contains(&key) {
+                    return true;
+                }
+                seen.push(key);
                 let (a, b) = (a.borrow(), b.borrow());
-                a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equals(y))
+                let eq =
+                    a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.equals_in(y, seen));
+                seen.pop();
+                eq
             }
             (Value::Map(a), Value::Map(b)) => {
                 if Rc::ptr_eq(a, b) {
                     return true;
                 }
+                let key = (
+                    Rc::as_ptr(a) as *const () as usize,
+                    Rc::as_ptr(b) as *const () as usize,
+                );
+                if seen.contains(&key) {
+                    return true;
+                }
+                seen.push(key);
                 let (a, b) = (a.borrow(), b.borrow());
-                a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| v.equals(w)))
+                let eq = a.len() == b.len()
+                    && a.iter()
+                        .all(|(k, v)| b.get(k).is_some_and(|w| v.equals_in(w, seen)));
+                seen.pop();
+                eq
             }
             (Value::Func(a), Value::Func(b)) => Rc::ptr_eq(a, b),
             (Value::Builtin(a), Value::Builtin(b)) => Rc::ptr_eq(a, b),
@@ -215,11 +245,20 @@ impl Value {
     /// The literal form of a value, round-trippable for data types.
     pub fn repr(&self) -> String {
         let mut out = String::new();
-        self.write_repr(&mut out);
+        self.write_repr(&mut out, 0);
         out
     }
 
-    fn write_repr(&self, out: &mut String) {
+    /// Nesting past which a printed value is elided: a list that contains
+    /// itself, or a value built deeper than anyone reads, prints `…` there
+    /// instead of overflowing the stack.
+    pub const MAX_REPR_DEPTH: usize = 512;
+
+    fn write_repr(&self, out: &mut String, depth: usize) {
+        if depth >= Self::MAX_REPR_DEPTH && matches!(self, Value::List(_) | Value::Map(_)) {
+            out.push('…');
+            return;
+        }
         match self {
             Value::Null => out.push_str("null"),
             Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
@@ -234,7 +273,7 @@ impl Value {
                     if i > 0 {
                         out.push_str(", ");
                     }
-                    v.write_repr(out);
+                    v.write_repr(out, depth + 1);
                 }
                 out.push(']');
             }
@@ -250,7 +289,7 @@ impl Value {
                         write_quoted(out, k);
                     }
                     out.push_str(": ");
-                    v.write_repr(out);
+                    v.write_repr(out, depth + 1);
                 }
                 out.push('}');
             }
@@ -279,7 +318,11 @@ pub fn format_float(f: f64) -> String {
         "nan".to_string()
     } else if f.is_infinite() {
         if f > 0.0 { "inf" } else { "-inf" }.to_string()
-    } else if f.fract() == 0.0 && f.abs() < 1e16 {
+    } else if f.abs() >= 1e16 {
+        // Past sixteen digits Display prints a bare integer that reads as
+        // an int; Debug keeps the exponent form, which is still a float.
+        format!("{f:?}")
+    } else if f.fract() == 0.0 {
         format!("{f:.1}")
     } else {
         format!("{f}")

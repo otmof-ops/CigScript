@@ -16,7 +16,7 @@ stick r = proc.run("git", ["status", "--porcelain"])     # {code, out, err, dura
 stick prs = proc.json("gh", ["pr", "list", "--json", "number,title"])   # a list of maps
 stick files = proc.lines("git", ["ls-files"])             # a list of strings
 stick rows = proc.csv("sqlite3", ["-csv", "-header", "db", "select * from t"])
-stick conf = proc.kv("git", ["config", "-l"])             # KEY=value lines as a map
+stick conf = proc.kv("git", ["config", "-l"])             # KEY=value lines as a map (a leading `export` is dropped)
 stick text = proc.text("date", ["+%F"])                   # stdout as one string
 ```
 
@@ -28,14 +28,14 @@ to die in step C.
 
 | option | meaning |
 |---|---|
-| `cwd` | working directory for the child |
+| `cwd` | working directory for the child; it must exist (`E550` names it otherwise) |
 | `env` | a map of variables added to the child's environment |
 | `clean_env` | start from a small documented environment (`PATH`, `HOME`, `USER`, `LANG`, `TERM`, `TMPDIR`, `TZ` and the Windows equivalents) instead of inheriting |
 | `timeout_ms` | wall-clock limit; ten minutes by default |
 | `grace_ms` | after SIGTERM, how long before SIGKILL; 500 ms by default |
 | `stdin` | text fed to the child's stdin |
-| `ok` | the exit-code contract: an int or a list of ints |
-| `check` | `true` means the contract `[0]` |
+| `ok` | the exit-code contract: an int or a list of ints; `null` for none. It wins over `check` whatever the order of the keys |
+| `check` | `true` means the contract `[0]`, `false` none; ignored when `ok` is given |
 | `encoding` | `utf-8` (strict, the default), `lossy`, `latin1`, `utf-16` |
 | `header`, `sep` | for `proc.csv` |
 
@@ -73,7 +73,9 @@ the message, not in a value.
 
 **Large output does not deadlock.** Both streams are read concurrently; a
 child filling stderr while stdout is awaited is the classic hang, and the
-test does it with 20 MB each way.
+test does it with 20 MB each way. `stdin` is written from its own thread
+beside the readers, so a child that echoes 8 MB straight back does not hang
+either.
 
 **Encoding is explicit.** Output that is not valid UTF-8 is `E557`, with the
 byte offset, never a silent replacement. `encoding: "lossy"` asks for
@@ -82,11 +84,16 @@ Windows tool (a byte-order mark is honoured, little-endian assumed without).
 
 **No zombies, no orphans.** Every child runs in its own process group. On
 timeout the group gets SIGTERM, a grace period, then SIGKILL, grandchildren
-included; a child that ignores SIGTERM still ends.
+included; a child that ignores SIGTERM still ends. A Ctrl-C at the terminal
+reaches cig, not a child in its own group, so SIGINT, SIGTERM and SIGHUP are
+forwarded to every live child group before cig ends the default way.
 
 **No shell by default.** Arguments are a list, never a string handed to `sh
 -c`, so there is nothing to inject into. `proc.shell(command)` exists for the
-honest cases, by name, with the warning in its name. `cig check` warns
+honest cases, by name, with the warning in its name. `proc.which(name)`
+resolves a bare name through PATH and a name with a slash against the
+current directory, exactly as `proc.run` will; a directory given as the
+command is refused as one (`E552`), not as a permissions problem. `cig check` warns
 (`E308`) when a shell is smuggled through `proc.run("sh", ["-c", built])`
 with a command string built at run time.
 
@@ -120,7 +127,10 @@ exhale errors.out, errors.stages   # every stage's command and exit code
 Stages are connected stdout to stdin, run in one process group under one
 timeout, and every stage must exit 0 (the last one honours `ok`); a failure
 names the stage (`E553: stage 2 (grep ERROR) exited 1`), and a missing
-program names its stage (`E551`). `stdin` feeds the first stage.
+program names its stage (`E551`). `stdin` feeds the first stage. A stage
+that died of SIGPIPE because the stage after it stopped reading (`yes | head
+-1`) is not a failure: its entry in `.stages` says `closed_early: true` and
+`signal: 13`, and whatever the consumer did next is what counts.
 
 ## Inside a pack: the hop's write set
 

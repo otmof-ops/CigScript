@@ -78,6 +78,9 @@ impl Ghost {
     }
 
     /// Absolute and lexically normalised, without touching the disk.
+    /// The ghost's key for a path: absolute, `.` and `..` folded, and the
+    /// part that exists on disk resolved through its symlinks, so that a
+    /// write through `link/x` and a read of `real/x` meet at one entry.
     fn abs(&self, p: &Path) -> PathBuf {
         let joined = if p.is_absolute() {
             p.to_path_buf()
@@ -94,7 +97,7 @@ impl Ghost {
                 other => out.push(other.as_os_str()),
             }
         }
-        out
+        super::scope_path(&out)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -230,19 +233,26 @@ impl Ghost {
         }
     }
 
+    /// Every ancestor a write creates gets its own entry, not only the
+    /// deepest: `fs.list` enumerates a directory from its entry, and a
+    /// parent known only through a live child would list as empty.
     fn ensure_dirs(&mut self, abs: &Path, seq: u64) {
         for ancestor in abs.ancestors().skip(1) {
             if ancestor.as_os_str().is_empty() || ancestor.parent().is_none() {
                 break;
             }
-            match self.stat_abs(ancestor, u64::MAX, 0) {
-                Stat::Dir => break,
-                Stat::Passthrough if Self::disk_exists(ancestor) => break,
-                _ => {
-                    self.entries
-                        .insert(ancestor.to_path_buf(), (seq, Node::Dir));
-                }
+            let tomb = self.tombstone_at(ancestor, u64::MAX).map(|(s, _)| s);
+            let live_entry = self
+                .entry_at(ancestor, u64::MAX)
+                .is_some_and(|(seq, _)| tomb.is_none_or(|t| seq > t));
+            if live_entry {
+                break;
             }
+            if tomb.is_none() && Self::disk_exists(ancestor) {
+                break;
+            }
+            self.entries
+                .insert(ancestor.to_path_buf(), (seq, Node::Dir));
         }
     }
 

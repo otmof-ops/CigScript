@@ -17,6 +17,7 @@ E200-E299  parsing: the tokens do not follow the grammar
   E205  invalid assignment target          syntax
   E206  chained comparison                 syntax
   E207  empty chain                        syntax
+  E208  nesting too deep                   syntax
 
 E300-E399  static check (`cig check`): a mistake found before anything runs
   E300  check error                        check
@@ -90,6 +91,7 @@ E750-E769  folds and packs: refusals when automation is composed
   E752  hop wrote outside the pack         burn
   E753  pack misplaced                     burn
   E754  compensation reaches outside its state burn
+  E755  bad pack root                      burn
   E756  fold shape mismatch                burn  (planned)
 
 E800-E849  the command line and the environment
@@ -336,6 +338,25 @@ E207 empty chain  (syntax, syntax family, since 1.0.0)
   1. `chain name { }` with nothing inside
      probe: source-line (the source line under the caret)
      remedy: put the steps inside, one per line or comma-separated
+
+  arises in: parse
+
+======== E208 ========
+E208 nesting too deep  (syntax, syntax family, since 1.1.1)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Brackets, parentheses or blocks nest deeper than 5,000 levels, or more than 10,000 operators are chained in one expression; the parser refuses rather than run out of stack.
+
+  what to type next: flatten it; a value this deep is better built in a loop
+
+  known causes, ranked; doctor checks them in this order
+  1. generated or pasted code with thousands of open brackets
+     probe: source-line (the source line under the caret)
+     remedy: build the structure in a loop, or split it across statements
+  2. a generated expression with tens of thousands of chained operators
+     probe: source-line (the source line under the caret)
+     remedy: split it across statements, or build the value in a loop
 
   arises in: parse
 
@@ -664,6 +685,9 @@ E503 integer overflow  (runtime, runtime family, since 1.0.0)
   2. negating -9223372036854775808, which has no positive twin
      probe: value-types (the types of the operands, as the message reports them)
      remedy: use a float
+  3. int() of a float or a numeric string beyond the 64-bit range (1e300)
+     probe: value-types (the types of the operands, as the message reports them)
+     remedy: keep it a float, or clamp it first
 
   arises in: run  ·  related: E104
 
@@ -820,6 +844,9 @@ E511 parse failure  (runtime, runtime family, since 1.0.0)
   1. the file is not JSON or CSV, or has a BOM, a comment or a trailing comma
      probe: none; a suggestion, not a finding
      remedy: look at the position the message quotes; validate the producer's output
+  2. JSON nested deeper than 128 levels, the parser's recursion limit
+     probe: none; a suggestion, not a finding
+     remedy: flatten the document, or read it in parts
 
   arises in: run
 
@@ -987,9 +1014,12 @@ E550 hop failed  (runtime, hop family, since 1.1.0)
   what to type next: read the message; proc.which(name) and the cwd option are the usual suspects
 
   known causes, ranked; doctor checks them in this order
-  1. the operating system refused the spawn for a reason other than a missing or unexecutable program
+  1. the working directory given as cwd does not exist, or is not a directory
+     probe: path-exists (stat of the path named in the message)
+     remedy: create it first (fs.mkdir inside the burn), or drop the cwd option
+  2. the operating system refused the spawn for a reason other than a missing or unexecutable program
      probe: none; a suggestion, not a finding
-     remedy: the message quotes the reason; a missing cwd is the common one
+     remedy: the message quotes the reason
 
   arises in: run, light  ·  related: E551, E552
 
@@ -1022,7 +1052,10 @@ E552 refused to start  (runtime, hop family, since 1.1.0)
   what to type next: chmod +x it, or run as a user that may execute it
 
   known causes, ranked; doctor checks them in this order
-  1. the file is not executable  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
+  1. the path names a directory, not a program  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
+     probe: path-is-dir (whether the path is a directory, a file or a link)
+     remedy: name the program inside it, or check the path
+  2. the file is not executable  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
      probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
      remedy: chmod +x it; if it is a script, check its first line names an interpreter that exists
 
@@ -1130,7 +1163,7 @@ E604 chain lights itself  (cough, cough family, since 1.1.0)
   what to type next: take the chain out of its own steps; the message shows the loop
 
   known causes, ranked; doctor checks them in this order
-  1. chain a lights chain b which lights chain a
+  1. a step of chain a lights chain a again, directly or through another chain (declarations are not hoisted, so `chain a { b }` before `chain b { a }` is an unknown name, E301, first)
      probe: chain-report (the chain report: which step, its label, and the inner error)
      remedy: break the loop at the step named; a chain that repeats work belongs in a while loop with a condition
 
@@ -1190,6 +1223,9 @@ E702 journal failure  (burn, kernel family, since 1.0.0)
   3. the file vanished between the check and the snapshot
      probe: path-exists (stat of the path named in the message)
      remedy: retry; if it repeats, something else is editing that path during the run
+  4. the path is a named pipe, a socket or a device, which the kernel cannot snapshot
+     probe: path-exists (stat of the path named in the message)
+     remedy: remove or write it through a hop (proc.run) if you mean to; the kernel can restore only files, directories and links
 
   arises in: run  ·  related: E508, E802  ·  tags: kernel
 
@@ -1225,6 +1261,9 @@ E704 file changed since the run  (burn, kernel family, since 1.1.0)
   1. a later run or another program wrote the file
      probe: file-hash (the current hash of a file against the hash the journal recorded)
      remedy: `cig unburn <id> --dry-run` shows the changed-since column; --force if the old content is what you want
+  2. something was added to, or changed inside, a directory the run created; removing the directory would take it too
+     probe: file-hash (the current hash of a file against the hash the journal recorded)
+     remedy: move what you added out of that directory, then unburn; or --force to lose it knowingly
 
   arises in: unburn  ·  related: E705, E703  ·  tags: kernel
 
@@ -1340,6 +1379,22 @@ E754 compensation reaches outside its state  (burn, fold family, since 1.1.0)
 
   arises in: check
 
+======== E755 ========
+E755 bad pack root  (burn, fold family, since 1.1.1)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A pack root is empty, which would have meant the whole working directory; the pack is refused before anything runs.
+
+  what to type next: name the directory the script may write in, pack { "./build" }
+
+  known causes, ranked; doctor checks them in this order
+  1. pack { "" }, or a root computed from an empty string
+     probe: source-line (the source line under the caret)
+     remedy: give the root a name; an empty string is not a directory
+
+  arises in: check, run  ·  related: E750, E751
+
 ======== E756 ========
 E756 fold shape mismatch  (burn, fold family, since 1.1.0)
   planned: reserved for a feature that has not shipped yet
@@ -1370,6 +1425,12 @@ E800 usage error  (usage, usage family, since 1.0.0)
   1. an argument or setting is wrong
      probe: none; a suggestion, not a finding
      remedy: `cig <command> --help` shows the flags
+  2. CIG_MAX_STEPS is set to something other than a whole number
+     probe: none; a suggestion, not a finding
+     remedy: give a whole number of steps, or 0 to disable the budget
+  3. cig crash send while crash_reports is "never"
+     probe: none; a suggestion, not a finding
+     remedy: cig config crash_reports ask, then send it again
 
   arises in: any
 
@@ -1389,6 +1450,9 @@ E801 cannot read script  (usage, usage family, since 1.0.0)
   2. permission denied  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
      probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
      remedy: chmod +r the file
+  3. the path is a device or something larger than 64 MiB, which no script is
+     probe: path-is-dir (whether the path is a directory, a file or a link)
+     remedy: give the script file's path
 
   arises in: run, check, light
 

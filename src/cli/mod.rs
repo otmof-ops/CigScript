@@ -204,7 +204,22 @@ pub struct LightArgs {
 }
 
 pub fn main() -> i32 {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            // --help and --version are answers, not errors. A malformed
+            // invocation is a usage problem and exits like one (3), not
+            // with the parser's own 2, which here means a script that
+            // failed to parse or check.
+            let code = if e.use_stderr() {
+                exit::USAGE
+            } else {
+                exit::OK
+            };
+            let _ = e.print();
+            return code;
+        }
+    };
     let color = !cli.no_color && std::env::var_os("NO_COLOR").is_none() && stderr_is_tty();
     let ctx = Ctx {
         json: cli.json,

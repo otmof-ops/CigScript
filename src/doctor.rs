@@ -734,7 +734,11 @@ fn chain_report(cause: &Cause, d: &Diagnostic) -> (Outcome, String) {
             )
         };
     }
-    let mut evidence = format!("step {step} raised the error");
+    let mut evidence = if step.is_empty() {
+        "the chain itself raised the error, not one of its steps".to_string()
+    } else {
+        format!("step {step} raised the error")
+    };
     if let Some(r) = raised {
         evidence.push_str(&format!(", {r}"));
     }

@@ -72,6 +72,11 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn run(mut self) -> Result<Vec<Token>, Diagnostic> {
+        // A byte-order mark is not part of the script; some editors on
+        // Windows put one at the front of every file.
+        if self.pos == 0 && self.src.starts_with('\u{feff}') {
+            self.pos = '\u{feff}'.len_utf8();
+        }
         while let Some(b) = self.peek() {
             let start = self.pos;
             let (line, col) = (self.line, self.col);
@@ -256,6 +261,18 @@ impl<'a> Lexer<'a> {
                 b'"' => {
                     self.bump();
                     break;
+                }
+                b'\n' => {
+                    // A string ends on the line it opened; the closing quote
+                    // on a later line is the E101 the registry describes.
+                    return Err(lex(
+                        "unterminated string literal: the line ends before the closing quote",
+                        self.span_from(start, line, col),
+                    )
+                    .code("E101")
+                    .with_hint(
+                        "close the string on this line; write \\n for a line break inside it",
+                    ));
                 }
                 b'\\' => {
                     let esc_start = self.pos;

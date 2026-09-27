@@ -1868,3 +1868,621 @@ fn unlit_burns_stay_out_of_the_ghost_and_off_the_disk() {
     );
     assert!(!sb.exists("u.txt") && !sb.exists("w.txt"));
 }
+
+#[test]
+fn a_file_added_to_a_run_created_directory_is_not_lost_by_unburn() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.mkdir(\"made\")\n  fs.write_text(\"made/a.txt\", \"a\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    // Untouched since: the directory's fingerprint matches.
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("unchanged since") && !plan.contains("changed since:"),
+        "{plan}"
+    );
+    // Someone keeps their own file in the directory the run created.
+    sb.write("made/keep.txt", "mine");
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("changed since: ") && plan.contains("made") && plan.contains("E704"),
+        "{plan}"
+    );
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E704 burn]:") && err.contains("now a directory with 2 entries"),
+        "{err}"
+    );
+    assert_eq!(
+        sb.read("made/keep.txt"),
+        "mine",
+        "a refused unburn touches nothing"
+    );
+    // --force is the knowing choice.
+    sb.run_ok(&["unburn", &id, "--force"]);
+    assert!(!sb.exists("made"));
+}
+
+#[test]
+fn a_journal_cut_short_by_a_crash_still_unburns_what_came_before_it() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"one.txt\", \"1\")\n  fs.write_text(\"two.txt\", \"2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let journal = sb.home().join("runs").join(&id).join("journal.jsonl");
+    // A crash while appending leaves half a line.
+    let mut text = fs::read_to_string(&journal).unwrap();
+    text.push_str("{\"seq\": 3, \"op\": {\"kind\": \"wri");
+    fs::write(&journal, text).unwrap();
+    let out = sb.cig(&["unburn", &id]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("the journal's last line was cut short")
+            && err.contains("2 entries before it loaded"),
+        "{err}"
+    );
+    assert!(!sb.exists("one.txt") && !sb.exists("two.txt"));
+}
+
+#[test]
+fn fifty_thousand_nested_brackets_are_a_diagnostic_not_a_stack_overflow() {
+    let sb = Sandbox::new();
+    let deep = format!("stick x = {}{}\n", "[".repeat(50_000), "]".repeat(50_000));
+    sb.write("deep.cig", &deep);
+    let err = sb.run_err(&["run", "deep.cig"], 2);
+    assert!(
+        err.contains("error[E208 syntax]: nesting deeper than 5000 levels"),
+        "{err}"
+    );
+    // The 100 kB line is windowed around the caret, not printed whole.
+    assert!(
+        err.len() < 2_000,
+        "the source line was printed whole: {} bytes",
+        err.len()
+    );
+    assert!(err.contains("…[[[["), "{err}");
+    let deep = format!("stick y = {}1{}\n", "(".repeat(50_000), ")".repeat(50_000));
+    sb.write("parens.cig", &deep);
+    let err = sb.run_err(&["run", "parens.cig"], 2);
+    assert!(err.contains("E208"), "{err}");
+    let deep = format!("{}{}", "if true {\n".repeat(20_000), "}\n".repeat(20_000));
+    sb.write("blocks.cig", &deep);
+    let err = sb.run_err(&["run", "blocks.cig"], 2);
+    assert!(err.contains("E208"), "{err}");
+}
+
+#[test]
+fn a_utf8_byte_order_mark_is_skipped() {
+    let sb = Sandbox::new();
+    sb.write("bom.cig", "\u{feff}exhale \"bom ok\"\n");
+    let out = sb.run_ok(&["run", "bom.cig"]);
+    assert_eq!(out.trim(), "bom ok");
+}
+
+#[test]
+fn a_list_that_contains_itself_prints_without_overflowing() {
+    let sb = Sandbox::new();
+    sb.write(
+        "cyc.cig",
+        "roll l = [1]\nl.push(l)\nexhale l\nroll m = {}\nm.me = m\nexhale m\n",
+    );
+    let out = sb.run_ok(&["run", "cyc.cig"]);
+    assert!(out.contains("…"), "{out}");
+    assert!(out.len() < 20_000, "{} bytes", out.len());
+}
+
+// ----- hardening, second round --------------------------------------------
+
+#[test]
+fn a_copy_or_move_onto_itself_or_into_itself_is_refused() {
+    let sb = Sandbox::new();
+    sb.write("a.txt", "hello");
+    sb.write("s.cig", "burn {\n  fs.cp(\"a.txt\", \"a.txt\")\n}\n");
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("error[E508 runtime]: fs.cp: a.txt and a.txt are the same file"),
+        "{err}"
+    );
+    assert_eq!(sb.read("a.txt"), "hello", "the copy truncated the file");
+    sb.write("s.cig", "burn {\n  fs.mv(\"a.txt\", \"./a.txt\")\n}\n");
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("are the same file"), "{err}");
+    assert_eq!(sb.read("a.txt"), "hello");
+    sb.write("d/f.txt", "keep");
+    sb.write("s.cig", "burn {\n  fs.cp(\"d\", \"d/sub\")\n}\n");
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("fs.cp: d/sub is inside d, the directory being copied"),
+        "{err}"
+    );
+    assert!(!sb.exists("d/sub"));
+}
+
+#[test]
+fn a_move_the_os_refused_is_marked_undone_and_never_moved_back() {
+    let sb = Sandbox::new();
+    // Caught inside the run: the journal must not say the move happened.
+    sb.write("d/f.txt", "keep");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"d/g.txt\", \"g\")\n  try {\n    fs.mv(\"d\", \"d/sub\")\n  } ashtray e {\n    exhale \"caught\"\n  }\n}\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(out.trim(), "caught");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(sb.runs()[0]["burns"], 1, "the refused move is not a burn");
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("d/f.txt"), "keep");
+    assert!(!sb.exists("d/g.txt"));
+    // Uncaught, onto a non-empty directory: rollback leaves the source alone.
+    sb.write("important.txt", "important");
+    sb.write("blocker/other.txt", "other");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.mv(\"important.txt\", \"blocker\")\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("error[E508 runtime]: fs.mv: important.txt"),
+        "{err}"
+    );
+    assert_eq!(sb.read("important.txt"), "important");
+    assert_eq!(sb.read("blocker/other.txt"), "other");
+}
+
+#[test]
+fn a_cross_device_move_rolls_back_by_copying() {
+    use std::os::unix::fs::MetadataExt;
+    let sb = Sandbox::new();
+    let shm = Path::new("/dev/shm");
+    let Ok(other) = tempfile::tempdir_in(shm) else {
+        return; // no second filesystem to move across on this machine
+    };
+    if fs::metadata(other.path()).map(|m| m.dev()).ok()
+        == fs::metadata(sb.path()).map(|m| m.dev()).ok()
+    {
+        return;
+    }
+    let src = other.path().join("src.txt");
+    fs::write(&src, "across").unwrap();
+    sb.write(
+        "s.cig",
+        &format!(
+            "burn {{\n  fs.mv(\"{}\", \"landed.txt\")\n  cough \"x\"\n}}\n",
+            src.display()
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("moved back"), "{err}");
+    assert_eq!(fs::read_to_string(&src).unwrap(), "across");
+    assert!(!sb.exists("landed.txt"));
+}
+
+#[test]
+fn a_hardlinked_file_is_restored_in_place() {
+    let sb = Sandbox::new();
+    sb.write("orig", "before");
+    fs::hard_link(sb.path().join("orig"), sb.path().join("other")).unwrap();
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"orig\", \"after\")\n  cough \"x\"\n}\n",
+    );
+    sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("orig"), "before");
+    assert_eq!(
+        sb.read("other"),
+        "before",
+        "the other name kept the run's content"
+    );
+}
+
+#[test]
+fn setuid_and_sticky_bits_survive_rollback() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.write("suid", "s");
+    fs::set_permissions(sb.path().join("suid"), fs::Permissions::from_mode(0o4755)).unwrap();
+    fs::create_dir(sb.path().join("sticky")).unwrap();
+    fs::set_permissions(sb.path().join("sticky"), fs::Permissions::from_mode(0o1777)).unwrap();
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.rm(\"suid\")\n  fs.rm(\"sticky\")\n  cough \"x\"\n}\n",
+    );
+    sb.run_err(&["run", "s.cig"], 1);
+    let mode = |name: &str| {
+        fs::metadata(sb.path().join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777
+    };
+    assert_eq!(mode("suid"), 0o4755);
+    assert_eq!(mode("sticky"), 0o1777);
+}
+
+#[test]
+fn a_named_pipe_is_refused_not_hung() {
+    use wait_timeout::ChildExt;
+    let sb = Sandbox::new();
+    assert!(Command::new("mkfifo")
+        .arg(sb.path().join("fifo"))
+        .status()
+        .expect("mkfifo")
+        .success());
+    sb.write("s.cig", "burn {\n  fs.rm(\"fifo\")\n}\n");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args(["run", "s.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn cig");
+    let status = child
+        .wait_timeout(std::time::Duration::from_secs(20))
+        .expect("wait");
+    let Some(status) = status else {
+        let _ = child.kill();
+        panic!("cig hung on the named pipe");
+    };
+    assert_eq!(status.code(), Some(1));
+    let mut err = String::new();
+    std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut err).unwrap();
+    assert!(
+        err.contains("error[E702 burn]:") && err.contains("cannot snapshot it"),
+        "{err}"
+    );
+    assert!(sb.path().join("fifo").exists());
+}
+
+#[test]
+fn rollback_failures_are_recorded_on_the_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "pack { \".\" }\nburn {\n  fs.write_text(\"free.txt\", \"1\")\n  fs.mkdir(\"locked\")\n  fs.write_text(\"locked/secret.txt\", \"hidden\")\n  proc.run(\"chmod\", [\"000\", \"locked\"])\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("failed write locked/secret.txt") && err.contains("restored write free.txt"),
+        "{err}"
+    );
+    let rec = &sb.runs()[0];
+    assert_eq!(rec["status"], "rollback_incomplete");
+    assert_eq!(rec["rolled_back"], true);
+    assert_eq!(rec["rollback_failed"].as_array().map(Vec::len), Some(2));
+    let id = rec["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(
+        shown.contains("status    rollback_incomplete") && shown.contains("2 restores failed"),
+        "{shown}"
+    );
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E705 burn]:") && err.contains("2 restores failed the first time"),
+        "{err}"
+    );
+    fs::set_permissions(sb.path().join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+    sb.run_ok(&["unburn", &id, "--force"]);
+    assert!(!sb.exists("locked") && !sb.exists("free.txt"));
+}
+
+#[test]
+fn a_read_only_run_directory_refuses_unburn_until_forced() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.write("s.cig", "burn {\n  fs.write_text(\"ro.txt\", \"1\")\n}\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let dir = sb.home().join("runs").join(&id);
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+    let err = sb.run_err(&["unburn", &id], 3);
+    assert!(
+        err.contains("error[E802 usage]: cannot record the rollback"),
+        "{err}"
+    );
+    assert!(sb.exists("ro.txt"), "a refused unburn touches nothing");
+    let out = sb.cig(&["unburn", &id, "--force"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("--force given") && err.contains("could not record"),
+        "{err}"
+    );
+    assert!(!sb.exists("ro.txt"));
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn a_damaged_or_renamed_run_record_still_lists_and_unburns() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "burn {\n  fs.write_text(\"dm.txt\", \"1\")\n}\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    fs::write(sb.home().join("runs").join(&id).join("run.json"), "garbage").unwrap();
+    let rec = sb
+        .runs()
+        .into_iter()
+        .find(|r| r["id"] == id.as_str())
+        .expect("listed");
+    assert_eq!(rec["status"], "damaged");
+    assert_eq!(rec["burns"], 1, "counted from the journal");
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(shown.contains("damaged"), "{shown}");
+    sb.run_ok(&["unburn", &id]);
+    assert!(!sb.exists("dm.txt"));
+    // A renamed directory: the record remembers where it was read from.
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let renamed = sb.home().join("runs").join("RENAMED-1");
+    fs::rename(sb.home().join("runs").join(&id), &renamed).unwrap();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(shown.contains("RENAMED-1"), "{shown}");
+    sb.run_ok(&["unburn", &id]);
+    assert!(!sb.exists("dm.txt"));
+}
+
+#[test]
+fn a_dead_run_whose_pid_was_reused_is_interrupted_not_running() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "burn {\n  fs.write_text(\"p.txt\", \"1\")\n}\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let path = sb.home().join("runs").join(&id).join("run.json");
+    let mut rec: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    rec["status"] = serde_json::Value::String("running".to_string());
+    rec["pid"] = serde_json::Value::from(1);
+    fs::write(&path, rec.to_string()).unwrap();
+    assert_eq!(sb.runs()[0]["status"], "interrupted");
+}
+
+#[test]
+fn a_burn_block_that_fails_half_way_leaves_its_hops_honestly_irreversible() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn (s) {\n  proc.run(\"sh\", [\"-c\", \"echo before > before.txt\"])\n  cough \"abort\"\n} unburn {\n  exhale \"should never run\"\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(err.contains("cannot undo run sh -c"), "{err}");
+    assert!(!err.contains("compensated"), "{err}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("should never run"));
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(shown.contains("irreversible  run sh -c"), "{shown}");
+    // A block that completes stamps its hop, and a later cough runs the block.
+    sb.write(
+        "s.cig",
+        "burn (s) {\n  proc.run(\"sh\", [\"-c\", \"echo done > done.txt\"])\n  s.n = 1\n} unburn {\n  exhale \"undoing\", s.n\n}\nburn {\n  cough \"later\"\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("compensated run sh -c"), "{err}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("undoing 1"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_compensation_that_reads_args_runs_on_a_deferred_unburn() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn (s) {\n  fs.write_text(\"marker.txt\", \"x\")\n} unburn {\n  exhale \"args:\", args.len(), args[0]\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig", "--", "a", "b", "c"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let out = sb.cig(&["unburn", &id]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("args: 3 a"),
+        "{err}"
+    );
+    assert!(!sb.exists("marker.txt"));
+}
+
+#[test]
+fn the_ghost_resolves_symlinked_directories_and_lists_created_ancestors() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    fs::create_dir(sb.path().join("real")).unwrap();
+    symlink("real", sb.path().join("link")).unwrap();
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"link/x.txt\", \"via-link\")\n  exhale fs.read_text(\"real/x.txt\")\n  fs.write_text(\"a/b/c/file.txt\", \"deep\")\n  exhale fs.list(\"a\"), fs.list(\"a/b\")\n}\n",
+    );
+    let out = sb.run_ok(&["run", "--dry-run", "s.cig"]);
+    assert_eq!(out.trim(), "via-link\n[\"a/b\"] [\"a/b/c\"]", "{out}");
+    assert!(!sb.exists("real/x.txt") && !sb.exists("a"));
+}
+
+#[test]
+fn an_empty_pack_root_is_refused() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "pack { \"\" }\nburn {\n  fs.write_text(\"z.txt\", \"z\")\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 2);
+    assert!(
+        err.contains("error[E755 check]: a pack root is empty"),
+        "{err}"
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"\" + \"\" }\nburn {\n  fs.write_text(\"z.txt\", \"z\")\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("error[E755 burn]: a pack root is empty"),
+        "{err}"
+    );
+    assert!(!sb.exists("z.txt"));
+}
+
+#[test]
+fn i64_min_divided_by_minus_one_is_a_diagnostic() {
+    let sb = Sandbox::new();
+    let err = sb.run_err(&["eval", "--", "-9223372036854775808 / -1"], 1);
+    assert!(
+        err.contains("error[E503 runtime]: integer overflow in `/`"),
+        "{err}"
+    );
+    assert!(!err.contains("E901"), "{err}");
+    let out = sb.run_ok(&["eval", "--", "-9223372036854775808 % -1"]);
+    assert_eq!(out.trim(), "0");
+}
+
+#[test]
+fn a_value_that_contains_itself_is_refused_by_json_and_compared_without_looping() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "roll l = [1]\nl.push(l)\nroll m = [1]\nm.push(m)\nexhale l == m, l == [1, l], l == [2, l]\nroll a = {}\na.me = a\nroll b = {}\nb.me = b\nexhale a == b\nexhale json.stringify(l)\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "true true false\ntrue"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("error[E500 runtime]: json: the value contains itself"),
+        "{err}"
+    );
+}
+
+#[test]
+fn floats_stay_floats_past_sixteen_digits_and_int_refuses_what_does_not_fit() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "exhale 1e16, 1.5e20, 9999999999999998.0, 0.1, 2.0, type_of(1e16)\nexhale int(3.9), int(\"42\"), int(\"1e3\")\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(
+        out.trim(),
+        "1e16 1.5e20 9999999999999998.0 0.1 2.0 float\n3 42 1000"
+    );
+    let err = sb.run_err(&["eval", "--", "int(1e300)"], 1);
+    assert!(
+        err.contains("error[E503 runtime]: int: 1e300 does not fit in an int"),
+        "{err}"
+    );
+    let err = sb.run_err(&["eval", "--", "int(\"9223372036854775808\")"], 1);
+    assert!(err.contains("does not fit in an int"), "{err}");
+    let err = sb.run_err(&["eval", "--", "int(-1e300)"], 1);
+    assert!(err.contains("E503"), "{err}");
+}
+
+#[test]
+fn a_redeclaration_at_run_time_is_a_check_error_and_args_is_shadowable() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "roll y = 1\nroll y = 2\n");
+    let err = sb.run_err(&["run", "--no-check", "s.cig"], 2);
+    assert!(err.contains("error[E306 check]:"), "{err}");
+    sb.write("s.cig", "roll args = [\"mine\"]\nexhale args\n");
+    let out = sb.run_ok(&["check", "s.cig"]);
+    assert!(out.contains("ok") || out.is_empty(), "{out}");
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(out.trim(), "[\"mine\"]");
+    sb.write("s.cig", "exhale args\n");
+    let out = sb.run_ok(&["run", "s.cig", "--", "x"]);
+    assert_eq!(out.trim(), "[\"x\"]");
+}
+
+#[test]
+fn a_string_that_runs_past_its_line_is_e101() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "roll s = \"a\nb\"\nexhale s\n");
+    let err = sb.run_err(&["run", "s.cig"], 2);
+    assert!(
+        err.contains(
+            "error[E101 lex]: unterminated string literal: the line ends before the closing quote"
+        ) && err.contains("--> s.cig:1:10"),
+        "{err}"
+    );
+    sb.write("s.cig", "roll s = \"a\\nb\"\nexhale s.len()\n");
+    assert_eq!(sb.run_ok(&["run", "s.cig"]).trim(), "3");
+}
+
+#[test]
+fn chained_operators_are_capped_and_a_bad_step_budget_is_a_usage_error() {
+    let sb = Sandbox::new();
+    let chain = format!("exhale 1{}\n", " + 1".repeat(12_000));
+    sb.write("chain.cig", &chain);
+    let err = sb.run_err(&["run", "chain.cig"], 2);
+    assert!(
+        err.contains("error[E208 syntax]: more than 10000 operators chained in one expression"),
+        "{err}"
+    );
+    let chain = format!("exhale 1{}\n", " + 1".repeat(8_000));
+    sb.write("chain.cig", &chain);
+    assert_eq!(sb.run_ok(&["run", "chain.cig"]).trim(), "8001");
+    sb.write("s.cig", "exhale 1\n");
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_MAX_STEPS", "abc")]);
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("error[E800 usage]: CIG_MAX_STEPS=`abc` is not a step count"),
+        "{err}"
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_MAX_STEPS", "5")]);
+    assert!(out.status.success());
+}
+
+#[test]
+fn a_device_as_the_script_is_refused_and_a_bad_invocation_exits_3() {
+    let sb = Sandbox::new();
+    if Path::new("/dev/zero").exists() {
+        let err = sb.run_err(&["run", "/dev/zero"], 3);
+        assert!(
+            err.contains("error[E801 usage]: cannot read /dev/zero: larger than 64 MiB"),
+            "{err}"
+        );
+    }
+    let err = sb.run_err(&["run", "does-not-exist.cig"], 3);
+    assert!(err.contains("error[E801 usage]:"), "{err}");
+    assert_eq!(sb.cig(&["frobnicate"]).status.code(), Some(3));
+    assert_eq!(sb.cig(&["run"]).status.code(), Some(3));
+    assert_eq!(
+        sb.cig(&["run", "--max-steps", "abc", "x.cig"])
+            .status
+            .code(),
+        Some(3)
+    );
+    assert_eq!(sb.cig(&["--version"]).status.code(), Some(0));
+    assert_eq!(sb.cig(&["--help"]).status.code(), Some(0));
+}
+
+#[test]
+fn crash_send_honours_never() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "exhale 1\n");
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_PANIC", "1")]);
+    assert_eq!(out.status.code(), Some(70));
+    let listed = sb.run_ok(&["--json", "crash", "list"]);
+    let v: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
+    let id = v[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["config", "crash_reports", "never"]);
+    let err = sb.run_err(&["crash", "send", &id], 3);
+    assert!(
+        err.contains("error[E800 usage]: crash_reports is \"never\""),
+        "{err}"
+    );
+}

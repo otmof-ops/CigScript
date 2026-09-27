@@ -139,6 +139,7 @@ parsing: the tokens do not follow the grammar.
 | [`E205`](#e205-invalid-assignment-target) | invalid assignment target | not one of the four | assign to a name, `list[i]` or `map.key` |
 | [`E206`](#e206-chained-comparison) | chained comparison | not one of the four | write `a < b and b < c` |
 | [`E207`](#e207-empty-chain) | empty chain | not one of the four | list the sticks (steps) to light: chain name { fetch, build } |
+| [`E208`](#e208-nesting-too-deep) | nesting too deep | not one of the four | flatten it; a value this deep is better built in a loop |
 
 ### E200 syntax error
 
@@ -261,6 +262,22 @@ A chain declares no steps.
 **Known causes**, ranked; doctor checks them in this order:
 
 1. `chain name { }` with nothing inside (probe `source-line`). **Remedy:** put the steps inside, one per line or comma-separated
+
+
+### E208 nesting too deep
+
+*syntax · since 1.1.1 · arises in parse*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+Brackets, parentheses or blocks nest deeper than 5,000 levels, or more than 10,000 operators are chained in one expression; the parser refuses rather than run out of stack.
+
+**What to type next:** flatten it; a value this deep is better built in a loop
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. generated or pasted code with thousands of open brackets (probe `source-line`). **Remedy:** build the structure in a loop, or split it across statements
+2. a generated expression with tens of thousands of chained operators (probe `source-line`). **Remedy:** split it across statements, or build the value in a loop
 
 
 ## check (`E300`–`E399`)
@@ -616,6 +633,7 @@ An integer operation left the 64-bit range.
 
 1. a multiplication or a running sum left the 64-bit range (probe `value-types`). **Remedy:** use floats for the large magnitude, or check the bound before the operation
 2. negating -9223372036854775808, which has no positive twin (probe `value-types`). **Remedy:** use a float
+3. int() of a float or a numeric string beyond the 64-bit range (1e300) (probe `value-types`). **Remedy:** keep it a float, or clamp it first
 
 Related: `E104`.
 
@@ -753,6 +771,7 @@ Text that should be JSON or CSV is not.
 **Known causes**, ranked; doctor checks them in this order:
 
 1. the file is not JSON or CSV, or has a BOM, a comment or a trailing comma (no probe; a suggestion, not a finding). **Remedy:** look at the position the message quotes; validate the producer's output
+2. JSON nested deeper than 128 levels, the parser's recursion limit (no probe; a suggestion, not a finding). **Remedy:** flatten the document, or read it in parts
 
 
 ### E512 range too large
@@ -873,7 +892,8 @@ A child process could not be run for a reason none of the more specific hop code
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the operating system refused the spawn for a reason other than a missing or unexecutable program (no probe; a suggestion, not a finding). **Remedy:** the message quotes the reason; a missing cwd is the common one
+1. the working directory given as cwd does not exist, or is not a directory (probe `path-exists`). **Remedy:** create it first (fs.mkdir inside the burn), or drop the cwd option
+2. the operating system refused the spawn for a reason other than a missing or unexecutable program (no probe; a suggestion, not a finding). **Remedy:** the message quotes the reason
 
 Related: `E551`, `E552`.
 
@@ -908,7 +928,8 @@ The program exists but the operating system would not execute it: no execute bit
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the file is not executable (probe `path-permissions`). **Remedy:** chmod +x it; if it is a script, check its first line names an interpreter that exists
+1. the path names a directory, not a program (probe `path-is-dir`). **Remedy:** name the program inside it, or check the path
+2. the file is not executable (probe `path-permissions`). **Remedy:** chmod +x it; if it is a script, check its first line names an interpreter that exists
 
 Related: `E551`.
 
@@ -1089,7 +1110,7 @@ A chain is a step of itself, directly or through other chains; lighting it would
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. chain a lights chain b which lights chain a (probe `chain-report`). **Remedy:** break the loop at the step named; a chain that repeats work belongs in a while loop with a condition
+1. a step of chain a lights chain a again, directly or through another chain (declarations are not hoisted, so `chain a { b }` before `chain b { a }` is an unknown name, E301, first) (probe `chain-report`). **Remedy:** break the loop at the step named; a chain that repeats work belongs in a while loop with a condition
 
 Related: `E602`, `E515`.
 
@@ -1156,6 +1177,7 @@ The kernel could not record a burn before performing it, so it refused it.
 1. the state directory is not writable (probe `state-dir-writable`). **Remedy:** chmod it, or set CIGSCRIPT_HOME to a directory you own
 2. the disk holding the state directory is full (probe `disk-free`). **Remedy:** `cig runs --prune 20` frees old snapshots; or move CIGSCRIPT_HOME
 3. the file vanished between the check and the snapshot (probe `path-exists`). **Remedy:** retry; if it repeats, something else is editing that path during the run
+4. the path is a named pipe, a socket or a device, which the kernel cannot snapshot (probe `path-exists`). **Remedy:** remove or write it through a hop (proc.run) if you mean to; the kernel can restore only files, directories and links
 
 Related: `E508`, `E802`.
 
@@ -1191,6 +1213,7 @@ A rollback was refused because a file the run touched has been changed by someth
 **Known causes**, ranked; doctor checks them in this order:
 
 1. a later run or another program wrote the file (probe `file-hash`). **Remedy:** `cig unburn <id> --dry-run` shows the changed-since column; --force if the old content is what you want
+2. something was added to, or changed inside, a directory the run created; removing the directory would take it too (probe `file-hash`). **Remedy:** move what you added out of that directory, then unburn; or --force to lose it knowingly
 
 Related: `E705`, `E703`.
 
@@ -1240,6 +1263,7 @@ folds and packs: refusals when automation is composed.
 | [`E752`](#e752-hop-wrote-outside-the-pack) | hop wrote outside the pack | these are MY ciggies | point the program at the pack (its cwd, an output flag), or add the root it wrote to |
 | [`E753`](#e753-pack-misplaced) | pack misplaced | not one of the four | move pack { } to the top of the file and keep one |
 | [`E754`](#e754-compensation-reaches-outside-its-state) | compensation reaches outside its state | not one of the four | put the value in the state map inside the burn block (burn (s) { s.sha = ... }) and read s.sha in unburn { } |
+| [`E755`](#e755-bad-pack-root) | bad pack root | not one of the four | name the directory the script may write in, pack { "./build" } |
 | [`E756`](#e756-fold-shape-mismatch) | fold shape mismatch *(planned)* | not one of the four | match the declaration |
 
 ### E750 literal path outside the pack
@@ -1325,6 +1349,23 @@ An unburn { } block refers to a name that is not its state map, a module or a bu
 1. the compensation uses a variable from the surrounding script (probe `source-line`). **Remedy:** copy it into the state map in the burn block; the map is journaled with the compensation
 
 
+### E755 bad pack root
+
+*burn · since 1.1.1 · arises in check, run*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A pack root is empty, which would have meant the whole working directory; the pack is refused before anything runs.
+
+**What to type next:** name the directory the script may write in, pack { "./build" }
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. pack { "" }, or a root computed from an empty string (probe `source-line`). **Remedy:** give the root a name; an empty string is not a directory
+
+Related: `E750`, `E751`.
+
+
 ### E756 fold shape mismatch
 
 *burn · since 1.1.0 · arises in check · planned*
@@ -1367,6 +1408,8 @@ The command line or the environment is wrong.
 **Known causes**, ranked; doctor checks them in this order:
 
 1. an argument or setting is wrong (no probe; a suggestion, not a finding). **Remedy:** `cig <command> --help` shows the flags
+2. CIG_MAX_STEPS is set to something other than a whole number (no probe; a suggestion, not a finding). **Remedy:** give a whole number of steps, or 0 to disable the budget
+3. cig crash send while crash_reports is "never" (no probe; a suggestion, not a finding). **Remedy:** cig config crash_reports ask, then send it again
 
 
 ### E801 cannot read script
@@ -1383,6 +1426,7 @@ The script file could not be opened.
 
 1. the path is wrong, or relative to another directory (probe `path-exists`). **Remedy:** ls the path; run from the directory the script lives in, or give the full path
 2. permission denied (probe `path-permissions`). **Remedy:** chmod +r the file
+3. the path is a device or something larger than 64 MiB, which no script is (probe `path-is-dir`). **Remedy:** give the script file's path
 
 
 ### E802 state directory unavailable

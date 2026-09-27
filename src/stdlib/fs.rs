@@ -42,6 +42,48 @@ fn path_arg(a: &[Value], i: usize, name: &str, s: Span) -> Result<PathBuf, Diagn
     Ok(PathBuf::from(p))
 }
 
+/// Refuse a copy or move whose destination is the source itself (the copy
+/// would truncate the file to nothing) or lies inside it (the copy would
+/// have to copy its own output).
+fn same_or_inside(name: &str, from: &Path, to: &Path, s: Span) -> Result<(), Diagnostic> {
+    let a = crate::burn::scope_path(from);
+    let b = crate::burn::scope_path(to);
+    #[cfg(unix)]
+    let same_inode = {
+        use std::os::unix::fs::MetadataExt;
+        match (fs::metadata(from), fs::metadata(to)) {
+            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
+            _ => false,
+        }
+    };
+    #[cfg(not(unix))]
+    let same_inode = false;
+    if a == b || same_inode {
+        return Err(runtime(format!(
+            "{name}: {} and {} are the same file",
+            from.display(),
+            to.display()
+        ))
+        .code("E508")
+        .at(s)
+        .with_subject(from.display().to_string())
+        .with_hint("give the destination a different name; nothing was changed"));
+    }
+    if b.starts_with(&a) && from.is_dir() {
+        return Err(runtime(format!(
+            "{name}: {} is inside {}, the directory being {}",
+            to.display(),
+            from.display(),
+            if name == "fs.mv" { "moved" } else { "copied" }
+        ))
+        .code("E508")
+        .at(s)
+        .with_subject(to.display().to_string())
+        .with_hint("choose a destination outside the source; nothing was changed"));
+    }
+    Ok(())
+}
+
 fn io_err(name: &str, path: &Path, e: io::Error, s: Span) -> Diagnostic {
     runtime(format!("{name}: {}: {}", path.display(), describe_io(&e)))
         .code("E508")
@@ -432,6 +474,7 @@ fn cp(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let from = path_arg(a, 0, "fs.cp", s)?;
     let to = path_arg(a, 1, "fs.cp", s)?;
     dry_run_source_check(i, "fs.cp", &from, s)?;
+    same_or_inside("fs.cp", &from, &to, s)?;
     let op = Op::Copy {
         from: from.clone(),
         to: to.clone(),
@@ -457,13 +500,17 @@ fn mv(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         fs::symlink_metadata(&from).map_err(|e| io_err("fs.mv", &from, e, s))?;
     }
     dry_run_source_check(i, "fs.mv", &from, s)?;
+    same_or_inside("fs.mv", &from, &to, s)?;
     let op = Op::Move {
         from: from.clone(),
         to: to.clone(),
     };
     if i.effect("fs.mv", op, s)? == Decision::Execute {
         if let Some(parent) = to.parent().filter(|d| !d.as_os_str().is_empty()) {
-            fs::create_dir_all(parent).map_err(|e| io_err("fs.mv", parent, e, s))?;
+            if let Err(e) = fs::create_dir_all(parent) {
+                i.kernel.op_failed();
+                return Err(io_err("fs.mv", parent, e, s));
+            }
         }
         if let Err(e) = fs::rename(&from, &to) {
             // Cross-device: copy then remove.
@@ -476,6 +523,10 @@ fn mv(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
                     fs::remove_file(&from).map_err(|e| io_err("fs.mv", &from, e, s))?;
                 }
             } else {
+                // A rename is all or nothing: it did not happen, so the
+                // journal must not say it did, or rollback would "move
+                // back" a file that never left.
+                i.kernel.op_failed();
                 return Err(io_err("fs.mv", &from, e, s));
             }
         }

@@ -47,30 +47,41 @@ fn repr(_: &mut Interp, args: &[Value], _: Span) -> Result<Value, Diagnostic> {
     Ok(Value::str(args[0].repr()))
 }
 
+/// A float becomes an int only when it fits: a silent saturation turned
+/// 1e300 into 9223372036854775807.
+fn int_from_float(f: f64, span: Span) -> Result<Value, Diagnostic> {
+    let t = f.trunc();
+    if !(-9223372036854775808.0..9223372036854775808.0).contains(&t) {
+        return Err(runtime(format!(
+            "int: {} does not fit in an int",
+            crate::value::format_float(f)
+        ))
+        .code("E503")
+        .at(span)
+        .with_hint("ints run from -9223372036854775808 to 9223372036854775807; keep it a float, or clamp it first"));
+    }
+    Ok(Value::Int(t as i64))
+}
+
 fn to_int(_: &mut Interp, args: &[Value], span: Span) -> Result<Value, Diagnostic> {
     match &args[0] {
         Value::Int(i) => Ok(Value::Int(*i)),
-        Value::Float(f) if f.is_finite() => Ok(Value::Int(f.trunc() as i64)),
+        Value::Float(f) if f.is_finite() => int_from_float(*f, span),
         Value::Float(_) => Err(runtime("int: cannot convert a non-finite float").at(span)),
         Value::Bool(b) => Ok(Value::Int(*b as i64)),
         Value::Str(s) => {
             let t = s.trim();
-            t.parse::<i64>()
-                .ok()
-                .or_else(|| {
-                    t.parse::<f64>()
-                        .ok()
-                        .filter(|f| f.is_finite())
-                        .map(|f| f.trunc() as i64)
-                })
-                .map(Value::Int)
-                .ok_or_else(|| {
-                    runtime(format!(
-                        "int: `{}` is not a number",
-                        crate::value::truncate(t, 30)
-                    ))
-                    .at(span)
-                })
+            if let Ok(i) = t.parse::<i64>() {
+                return Ok(Value::Int(i));
+            }
+            match t.parse::<f64>() {
+                Ok(f) if f.is_finite() => int_from_float(f, span),
+                _ => Err(runtime(format!(
+                    "int: `{}` is not a number",
+                    crate::value::truncate(t, 30)
+                ))
+                .at(span)),
+            }
         }
         other => Err(type_error(format!("int: cannot convert {}", other.type_name())).at(span)),
     }

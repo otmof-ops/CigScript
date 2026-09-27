@@ -66,6 +66,12 @@ pub fn install_hook() {
                 None => "panic with a non-string payload".to_string(),
             },
         };
+        if message.contains("Broken pipe") {
+            // Whoever was reading cig's output went away (`cig ... | head`).
+            // That is not a crash, and a report could not be printed anyway:
+            // leave the way a C program killed by SIGPIPE does.
+            std::process::exit(141);
+        }
         let location = info
             .location()
             .map(|l| format!("{}:{}:{}", crate_relative(l.file()), l.line(), l.column()))
