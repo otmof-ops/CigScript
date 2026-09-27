@@ -2508,3 +2508,75 @@ fn env_changes_are_labelled_irreversible_in_the_plan() {
     assert!(out.status.success(), "{err}");
     assert!(err.contains("(2 irreversible)"), "{err}");
 }
+
+#[test]
+fn a_compensating_block_left_by_snuff_still_records_its_compensation() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "pull deploy() {\n  burn (s) {\n    fs.write_text(\"deployed.txt\", \"1\")\n    s.v = \"1\"\n    snuff \"early\"\n  } unburn {\n    exhale \"compensation ran for v\" + s.v\n  }\n  snuff \"late\"\n}\nexhale deploy()\nburn { cough \"later failure\" }\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("early") && stdout.contains("compensation ran for v1"),
+        "{stdout}"
+    );
+    // Left by break, and undone weeks later by cig unburn.
+    sb.write(
+        "s.cig",
+        "pull deploy() {\n  burn (s) {\n    fs.write_text(\"deployed.txt\", \"1\")\n    s.v = \"2\"\n    snuff \"early\"\n  } unburn {\n    exhale \"compensation ran for v\" + s.v\n  }\n}\nfor i in 0..3 {\n  burn (s) {\n    s.i = i\n    fs.write_text(\"loop.txt\", \"x\")\n    break\n  } unburn {\n    exhale \"loop compensation\", s.i\n  }\n}\ndeploy()\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let out = sb.run_ok(&["unburn", &id]);
+    assert!(
+        out.contains("compensation ran for v2") && out.contains("loop compensation 0"),
+        "{out}"
+    );
+    assert!(!sb.exists("deployed.txt") && !sb.exists("loop.txt"));
+}
+
+#[test]
+fn append_text_creates_the_parent_directory_like_write_text_and_the_dry_run_agrees() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.append_text(\"logs/run.log\", \"one\\n\")\n  fs.append_text(\"logs/run.log\", \"two\\n\")\n  exhale fs.read_text(\"logs/run.log\").lines().len()\n}\n",
+    );
+    let plan = sb.run_ok(&["run", "--dry-run", "s.cig"]);
+    assert_eq!(plan.trim(), "2", "{plan}");
+    assert!(!sb.exists("logs"));
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(out.trim(), "2");
+    assert_eq!(sb.read("logs/run.log"), "one\ntwo\n");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert!(
+        !sb.exists("logs"),
+        "the created parent is removed with the file"
+    );
+}
+
+#[test]
+fn an_ad_hoc_chain_can_name_its_steps() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "stick steps = [\"fetch\", \"build\"].map(pack(n) => pack() => n.upper())\nstick r = light(steps, {names: [\"fetch\", \"build\"], quiet: true})\nexhale r.steps[0].name, r.steps[1].name, r.result\nstick bad = [pack() => 1, pack() { cough \"boom\" }]\ntry {\n  light(bad, {names: [\"one\", \"two\"], quiet: true})\n} ashtray e {\n  exhale e.step, e.index\n}\nlight(bad, {names: [\"one\", \"two\"]})\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "fetch build BUILD\ntwo 1"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("failed at step 2 (two): boom") && err.contains("step 2/2 two"),
+        "{err}"
+    );
+    let err = sb.run_err(&["eval", "--", "light([pack() => 1], {names: \"x\"})"], 1);
+    assert!(err.contains("`names` is a list of strings"), "{err}");
+}
