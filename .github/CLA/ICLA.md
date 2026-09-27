@@ -80,9 +80,7 @@ section 7 for submissions on behalf of others). You represent that Your
 Contribution submissions include complete details of any third-party licence
 or other restriction (including, but not limited to, related patents and
 trademarks) of which You are personally aware and which are associated with
-any part of Your Contributions. Where a substantial part of a Contribution was
-produced with the help of an automated tool, You represent that You have
-reviewed it and that the representations in this section hold for it.
+any part of Your Contributions.
 
 ## 6. No support obligation, no warranty
 

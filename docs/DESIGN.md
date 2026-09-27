@@ -2,9 +2,8 @@
 
 This is the record of the decision to rebuild CigScript from scratch in
 September 2026, what the prototype line had become, what the best version of
-the idea is, and what was cut to get there. Version 1.0.0 is the first
-public release; the prototypes and the two private rebuild rounds that
-preceded it were never published.
+the idea is, and what was cut to get there. Version 1.0.0 was the first
+public release; 1.1.0, the "Hammer" update, followed it (`HAMMER.md`).
 
 ## What the prototypes were
 
@@ -149,15 +148,6 @@ to break it and promises a row on the wall rather than a defence.
 subtraction, never a translation. Same codes, same spans, same hints, same
 evidence; the catchphrases removed and the manual's name put where the
 hallway phrase was.
-
-## Authorship
-
-CigScript was written with AI assistance (Claude, driving the HIVEMIND
-runtime) under Jay Taylor's direction: the language design, the scope
-decisions, what was cut and what was kept are his; the code was generated,
-reviewed and tested under that direction. That is recorded here because the
-licence is honest only if the authorship is, and because contributors are
-asked to make the same disclosure (see `CONTRIBUTING.md`).
 
 ## Roadmap
 
