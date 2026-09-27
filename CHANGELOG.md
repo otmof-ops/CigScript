@@ -3,10 +3,13 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.1.0 — 2026-09-27
 
-Delivered from the "Hammer" update package (`HAMMER.md`), one pull request per
-seam; the package's manifest carries the state of each deliverable.
+The "Hammer" update: built from an external adversarial read of 1.0.0 and
+delivered from its own package (`HAMMER.md`), one pull request per seam
+(#1 to #9); the package's manifest carries the state of each deliverable.
+Sixteen of its eighteen deliverables ship here; foreign scripts and the
+browser playground are the next update, as the package itself frames them.
 
 ### Language
 - **`finally`.** `try { } ashtray e { } finally { }`, or `try { } finally { }`

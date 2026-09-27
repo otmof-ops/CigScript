@@ -88,7 +88,7 @@ assigning to a constant, a `snuff` outside a function, an effect outside a
 burn) in milliseconds, without annotations.
 
 **Tests that check the world, not the exit code.** The 1.x shell scripts
-printed pass rates for tests that never ran. The 2.x suite runs the real binary
+printed pass rates for tests that never ran. The rebuilt suite runs the real binary
 against golden outputs, and its kernel tests assert on the file system after a
 rollback.
 
