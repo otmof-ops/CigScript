@@ -1,6 +1,6 @@
 # The CigScript language
 
-This is the contract for CigScript 2.x. `cig language` prints the short
+This is the contract for CigScript 1.x. `cig language` prints the short
 version.
 
 ## The levels, in one line each

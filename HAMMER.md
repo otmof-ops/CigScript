@@ -1,6 +1,6 @@
 # CigScript Update Package: "Hammer"
 
-**Status: being delivered on `main`, one PR per seam; the manifest below carries the state.** This is the next update, packaged. Built from an
+**Status: delivered in 1.1.0 (pull requests #1 to #9), except items 16 and 18, which are the next update; the manifest below carries the state.** This is the next update, packaged. Built from an
 external adversarial read of v1.0.0 (first push, 8446397); everything marked
 **verified** was reproduced against a release build of that commit on Linux
 x86_64. Everything else is a place worth swinging at, ordered within each
@@ -54,9 +54,9 @@ without a green test is not delivered.
 | 13 | Ghost filesystem for dry-run | 1, 6 | a chain whose step 2 reads what step 1 wrote passes `--dry-run` with the disk untouched | delivered, `hammer/7` (`src/burn/ghost.rs`) |
 | 14 | Hop resilience + `proc.json/lines/csv` | 4 | every rule in the resilience list has a test; the deadlock and zombie cases pass | delivered, `hammer/8` (`docs/HOPS.md`, `tests/hops.rs`) |
 | 15 | Pack + compensations + fold checks | 5, 6 | the four golden plans (inside / outside / cough / unburn) match; folds refuse with codes | delivered, `hammer/9`: the scope, watched hops, compensations, E604/E750-E754, owner tags; parameterised packs, cartons, the version fence, overlayfs and unattended flags stay open |
-| 16 | Foreign scripts, Tier 1 then Python shim | 7 | an unchanged Python script gets plan and rollback; behaviour identical without `cig` | pending |
+| 16 | Foreign scripts, Tier 1 then Python shim | 7 | an unchanged Python script gets plan and rollback; behaviour identical without `cig` | next update (section 7 frames it so; needs the burn protocol first) |
 | 17 | Lexicon rewrite of all repo artifacts | Part C | every artifact reads in the vernacular with the manual's name attached; plain mode strips it cleanly | delivered, `hammer/4` (Parts B and C; `cig report`, templates, the wall) |
-| 18 | Playground | 3 | `fs.rm` and `unburn` clickable in a browser on a fake filesystem | pending |
+| 18 | Playground | 3 | `fs.rm` and `unburn` clickable in a browser on a fake filesystem | next update (a WASM build of the kernel over the ghost filesystem, which now exists) |
 
 ## Delivery order
 

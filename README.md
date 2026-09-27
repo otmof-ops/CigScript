@@ -243,7 +243,7 @@ files beside it; other platforms build from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.0.0/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.1.0/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -253,7 +253,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.0.0 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.1.0 cigscript
 ```
 
 Then:
@@ -430,12 +430,15 @@ usage or environment problem, `70` `cig` itself crashed.
 
 ## Status
 
-1.0.0 is the first public release; the language surface in `docs/LANGUAGE.md`
-and the effect rules in `docs/BURN.md` are the contract. The next update,
-"Hammer" ([HAMMER.md](HAMMER.md)), is landing on `main` one pull request per
-seam: the rollback property test, symlink restore, interrupted runs, a
-durable journal, the error registry, doctor, the wall. Single-file scripts
-for now; imports, a formatter and signed releases are on the roadmap. macOS and Windows binaries arrive with the CI release
+1.1.0 is the "Hammer" update, built from an external adversarial read of
+1.0.0 and delivered seam by seam from its own package ([HAMMER.md](HAMMER.md)):
+the rollback property test, symlinks and interrupted runs, a durable journal,
+the error registry, doctor, the wall, the step budget and `finally`, the
+cross-run check on `unburn`, the ghost filesystem, hops that hold the line,
+the pack and compensations. The language surface in `docs/LANGUAGE.md` and
+the effect rules in `docs/BURN.md` are the contract. Next: foreign scripts
+run inside a pack, a browser playground, parameterised packs and cartons,
+signed releases. macOS and Windows binaries arrive with the CI release
 pipeline; building from source works on all three today.
 
 ## Licensing
