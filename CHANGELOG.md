@@ -3,7 +3,7 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.1.1 — 2026-09-28
 
 The hardening round: 1.1.0 attacked from every side, the failures that
 reproduced fixed, each with a row on the wall and a test named after it.
