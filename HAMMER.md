@@ -49,7 +49,7 @@ without a green test is not delivered.
 | 8 | `unburn` idempotence and pre-check | 1 | second `unburn` is a no-op; missing snapshots refuse before touching anything | delivered, `hammer/1` |
 | 9 | Error-code registry as data | 8 | `ERRORS.md`, `explain`, `--json` schema and doctor's knowledge all generate from one file; CI fails on a code without an explain page | delivered, `hammer/2` (`errors/registry.toml`) |
 | 10 | Doctor auto-fire | 9 | every diagnostic passes one emit hook; doctor prints verdict / why / fix / if-not; probes proven read-only | delivered, `hammer/3` (`docs/DOCTOR.md`; 14 probes) |
-| 11 | Step budget and `finally` | 2, 3 | `while true {}` ends with "your loop never ends" and a line number | pending |
+| 11 | Step budget and `finally` | 2, 3 | `while true {}` ends with "your loop never ends" and a line number | delivered, `hammer/5` |
 | 12 | Cross-run hash check on `unburn` | 1 | rolling back over newer content refuses unless `--force` | pending |
 | 13 | Ghost filesystem for dry-run | 1, 6 | a chain whose step 2 reads what step 1 wrote passes `--dry-run` with the disk untouched | pending |
 | 14 | Hop resilience + `proc.json/lines/csv` | 4 | every rule in the resilience list has a test; the deadlock and zombie cases pass | pending |

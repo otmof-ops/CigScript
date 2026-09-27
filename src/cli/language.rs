@@ -19,7 +19,7 @@ pub const LEGEND: &[(&str, &str)] = &[
         "raise an error (a string or a map with a message)",
     ),
     (
-        "try { } ashtray err { }",
+        "try { } ashtray err { } finally { }",
         "catch an error; err has message, kind, line",
     ),
     ("burn { }", "the only place side effects are allowed"),

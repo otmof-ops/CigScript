@@ -1,0 +1,5 @@
+# A loop that never ends: the budget stops it and names the line.
+roll i = 0
+while true {
+  i += 1
+}

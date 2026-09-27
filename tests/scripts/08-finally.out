@@ -1,0 +1,14 @@
+body
+finally after ok
+ashtray: caught
+finally after ashtray
+finally after snuff
+returned
+loop 1
+finally in loop 1
+finally in loop 2
+finally in loop 3
+finally before the outer ashtray
+outer ashtray: inner
+ashtray: finally wins
+1

@@ -256,6 +256,8 @@ try {
   cough "something broke"      # cough raises
 } ashtray err {                # ashtray catches
   exhale err.message, err.line
+} finally {                    # runs either way
+  exhale "cleanup"
 }
 stick doubled = [1, 2, 3].map(pack(x) => x * 2)   # pack is a lambda
 exhale doubled >> len          # >> pipes the left value into the call
@@ -337,6 +339,7 @@ for.
 | random ops over random trees, modes and links, then rollback | byte-identical every time, 60 seeds | 1.1.0 | `rollback_property_over_random_trees` |
 | `"x".repeat(i64::MAX)` | **aborted the process**; now `E514`, a diagnostic | fixed 1.1.0 | `allocation_ceiling_is_a_diagnostic_not_an_abort` |
 | `-9223372036854775808` as a literal | **lexer rejected it**; now parses | fixed 1.1.0 | `i64_min_is_a_literal_and_the_overflow_next_to_it_is_a_diagnostic` |
+| `while true {}` | **hung until killed**; now `E515` "your loop never ends", with the line, after the step budget | fixed 1.1.0 | `while_true_ends_with_your_loop_never_ends_and_a_line` |
 | `unburn` the same run twice | **restored the old snapshots over newer work**; now refused, `E705` | fixed 1.1.0 | `unburn_refuses_a_second_time_without_force` |
 | delete one snapshot, then `unburn` | **restored half and stopped**; now refused before touching anything, `E703` | fixed 1.1.0 | `unburn_checks_every_snapshot_before_touching_anything` |
 | kill it mid-burn, then look | **invisible: status `running`, 0 burns, doctor silent**; now `interrupted`, counted from the journal, offered for `unburn` | fixed 1.1.0 | `interrupted_run_is_recognised_counted_from_the_journal_and_unburnable` |
@@ -364,6 +367,8 @@ Add a row. The rules for reporting one are in
 | `cig config [key [value]]` | the few settings there are |
 | `cig language` | the legend and the standard library |
 
+`--max-steps N` (or `CIG_MAX_STEPS`) is the step budget: a loop that never
+ends is stopped with `E515` and its line; `0` disables it.
 `--json` on any command gives machine-readable output (diagnostics follow
 [docs/diagnostic.schema.json](docs/diagnostic.schema.json)); `--plain` /
 `CIG_PLAIN=1` keeps every fact and drops the catchphrases; `--no-doctor` /
@@ -393,8 +398,7 @@ and the effect rules in `docs/BURN.md` are the contract. The next update,
 "Hammer" ([HAMMER.md](HAMMER.md)), is landing on `main` one pull request per
 seam: the rollback property test, symlink restore, interrupted runs, a
 durable journal, the error registry, doctor, the wall. Single-file scripts
-for now; imports, `finally`, a step budget, a formatter and signed releases
-are on the roadmap. macOS and Windows binaries arrive with the CI release
+for now; imports, a formatter and signed releases are on the roadmap. macOS and Windows binaries arrive with the CI release
 pipeline; building from source works on all three today.
 
 ## Licensing

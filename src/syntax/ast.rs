@@ -107,7 +107,10 @@ pub enum Stmt {
     Try {
         body: Block,
         catch_var: Option<String>,
-        handler: Block,
+        /// The `ashtray` block; absent for `try { } finally { }`.
+        handler: Option<Block>,
+        /// Runs whatever happened; its own signal wins.
+        finally: Option<Block>,
         span: Span,
     },
     Burn {

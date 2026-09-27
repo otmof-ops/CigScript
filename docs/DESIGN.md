@@ -165,11 +165,9 @@ In rough order of value:
 
 1. Signed releases (minisign or Sigstore) so `cig update` can verify who built
    a binary, not only that it arrived intact.
-2. `finally` on `try`/`ashtray`, for cleanup that must run either way.
-3. A step budget (`--max-steps`) so a runaway loop fails instead of hanging.
-4. `cig fmt`, a formatter, once the grammar has been stable for a while.
-5. Imports of other `.cig` files, restricted to the script's directory tree.
-6. `match` on values and simple patterns.
-7. Chains with declared dependencies between steps, and parallel steps where
+2. `cig fmt`, a formatter, once the grammar has been stable for a while.
+3. Imports of other `.cig` files, restricted to the script's directory tree.
+4. `match` on values and simple patterns.
+5. Chains with declared dependencies between steps, and parallel steps where
    the burns are independent.
-8. A stable Rust embedding API, then a C ABI over it.
+6. A stable Rust embedding API, then a C ABI over it.

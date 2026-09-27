@@ -255,6 +255,7 @@ fn run_probe(
         "path-is-dir" => path_is_dir(d, cx),
         "state-dir-writable" => state_dir_writable(),
         "on-path" => on_path(d),
+        "loop-condition" => loop_condition(d, cx),
         "env-var" => env_var(node),
         "similar-names" => similar_names(d),
         "brace-balance" => brace_balance(cx),
@@ -546,6 +547,38 @@ fn on_path(d: &Diagnostic) -> (Outcome, String) {
         ));
     }
     (Outcome::Confirmed, evidence)
+}
+
+fn loop_condition(d: &Diagnostic, cx: &Context) -> (Outcome, String) {
+    let (Some(src), Some(line)) = (cx.source.as_deref(), d.line) else {
+        return (Outcome::Unavailable, String::new());
+    };
+    let Some(text) = src.lines().nth(line.saturating_sub(1) as usize) else {
+        return (Outcome::Unavailable, String::new());
+    };
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix("while ") else {
+        return (
+            Outcome::Inconclusive,
+            format!(
+                "line {line} is `{trimmed}`; the budget ran out here, not necessarily in a loop"
+            ),
+        );
+    };
+    let cond = rest.trim_end_matches('{').trim();
+    if matches!(cond, "true" | "1" | "(true)") {
+        (
+            Outcome::Confirmed,
+            format!("the condition on line {line} is `{cond}`, so only a break can end the loop"),
+        )
+    } else {
+        (
+            Outcome::Inconclusive,
+            format!(
+                "the condition on line {line} is `{cond}`; check what inside the loop changes it"
+            ),
+        )
+    }
 }
 
 fn env_var(node: &Code) -> (Outcome, String) {

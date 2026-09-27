@@ -16,7 +16,7 @@ Serious meaning on the right. Everything on the left is also true.
 | **snuff** | Put it out and walk off with what you got out of it. | Return from a function. `snuff value` |
 | **exhale** | What leaves you and enters the room. Everyone can see it. | Print to stdout. `exhale "done", count` |
 | **cough** | The body's exception handler. Comes from somewhere deep and interrupts everything. | Raise an error. `cough "no space left"` |
-| **ashtray** | Where the mess is supposed to land, so it does not land on the carpet. | Catch an error. `try { } ashtray err { }` |
+| **ashtray** | Where the mess is supposed to land, so it does not land on the carpet. | Catch an error. `try { } ashtray err { }`; `finally { }` after it empties the ashtray either way. |
 | **burn** | The only moment anything actually happens. Everything before it was preparation. | The only place side effects are allowed. `burn { fs.rm(path) }` |
 | **unlit** | Held in the mouth, never lit. You look like you mean it, and nothing happens. | Record an effect as an intent without executing it. `burn unlit { }` |
 | **chain** | Lighting the next one from the last. Not recommended by physicians. Highly recommended by release managers. | Automation: an ordered list of sticks. `chain release { fetch, build, ship }` |

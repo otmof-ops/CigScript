@@ -172,6 +172,9 @@ pub struct RunArgs {
     /// Skip the static check before running.
     #[arg(long)]
     pub no_check: bool,
+    /// Step budget before "your loop never ends" (E515); 0 disables it (also: CIG_MAX_STEPS).
+    #[arg(long, value_name = "N")]
+    pub max_steps: Option<u64>,
     /// Arguments passed to the script as `args`.
     #[arg(last = true)]
     pub args: Vec<String>,
@@ -192,6 +195,9 @@ pub struct LightArgs {
     /// Skip the static check before running.
     #[arg(long)]
     pub no_check: bool,
+    /// Step budget before "your loop never ends" (E515); 0 disables it (also: CIG_MAX_STEPS).
+    #[arg(long, value_name = "N")]
+    pub max_steps: Option<u64>,
     /// Arguments passed to the script as `args`.
     #[arg(last = true)]
     pub args: Vec<String>,
@@ -215,6 +221,7 @@ pub fn main() -> i32 {
                 dry_run: a.dry_run,
                 no_rollback: a.no_rollback,
                 no_check: a.no_check,
+                max_steps: a.max_steps,
                 args: a.args,
             },
             Some(a.chain),

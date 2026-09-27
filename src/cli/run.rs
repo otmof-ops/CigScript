@@ -287,6 +287,9 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
     let mut interp = Interp::new(kernel);
     interp.script_name = Some(name.clone());
     interp.set_args(&args.args);
+    if let Some(n) = args.max_steps {
+        interp.set_max_steps(n);
+    }
 
     let mut result = interp.run_program(&program);
     if result.is_ok() {

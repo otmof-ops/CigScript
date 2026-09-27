@@ -211,6 +211,10 @@ name = "on-path"
 reads = "each directory on PATH, looking for the program named in the message"
 
 [[probe]]
+name = "loop-condition"
+reads = "the loop's condition on the line the budget ran out"
+
+[[probe]]
 name = "env-var"
 reads = "an environment variable that changes the limit involved"
 
@@ -964,17 +968,17 @@ remedy = "work in pieces (fs.read_lines, chunks), or raise the ceiling with CIG_
 [[code]]
 code = "E515"
 title = "step budget exceeded"
-meaning = "Your loop never ends, or the script needs more steps than the budget allows."
-fix = "check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables)"
+meaning = "Your loop never ends, or the script needs more steps than the budget allows (ten million by default)."
+fix = "check what changes the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it)"
 no = "none"
-arises = ["run"]
-tags = ["resource", "beginner-likely", "planned"]
+arises = ["run", "light"]
+tags = ["resource", "beginner-likely"]
 since = "1.1.0"
 related = ["E514", "E506"]
 [[code.cause]]
 why = "a while loop whose condition never becomes false"
-probe = "source-line"
-remedy = "check what changes the condition inside the loop, at the line shown"
+probe = "loop-condition"
+remedy = "make something inside the loop change the condition, or break out of it"
 [[code.cause]]
 why = "a legitimately long computation"
 probe = "env-var"

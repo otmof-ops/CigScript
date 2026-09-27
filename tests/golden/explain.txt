@@ -52,7 +52,7 @@ E500-E519  runtime: a failure while the script was running, including the resour
   E512  range too large                    runtime
   E513  output closed                      runtime
   E514  allocation ceiling                 runtime
-  E515  step budget exceeded               runtime  (planned)
+  E515  step budget exceeded               runtime
 
 E520-E529  the ghost filesystem: dry-run reads of paths that simulated ops changed
   E520  read of a ghost-deleted path       runtime  (planned)
@@ -845,23 +845,22 @@ E514 allocation ceiling  (runtime, runtime family, since 1.1.0)
 
 ======== E515 ========
 E515 step budget exceeded  (runtime, runtime family, since 1.1.0)
-  planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
-  Your loop never ends, or the script needs more steps than the budget allows.
+  Your loop never ends, or the script needs more steps than the budget allows (ten million by default).
 
-  what to type next: check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables)
+  what to type next: check what changes the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it)
 
   known causes, ranked; doctor checks them in this order
   1. a while loop whose condition never becomes false
-     probe: source-line (the source line under the caret)
-     remedy: check what changes the condition inside the loop, at the line shown
+     probe: loop-condition (the loop's condition on the line the budget ran out)
+     remedy: make something inside the loop change the condition, or break out of it
   2. a legitimately long computation
      probe: env-var (an environment variable that changes the limit involved)
      remedy: raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it)
 
-  arises in: run  ·  related: E514, E506  ·  tags: resource, beginner-likely
+  arises in: run, light  ·  related: E514, E506  ·  tags: resource, beginner-likely
 
 ======== E520 ========
 E520 read of a ghost-deleted path  (runtime, ghost family, since 1.1.0)
