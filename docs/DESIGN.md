@@ -1,4 +1,4 @@
-# Design notes: why version 2 looks like this
+# Design notes: why the rebuild looks like this
 
 This is the record of the decision to rebuild CigScript from scratch in
 September 2026, what the prototype line had become, what the best version of
@@ -73,8 +73,11 @@ functions describe what they are about to do as an `Op`; the kernel decides
 whether to execute or simulate and journals the before-state first. Adding a
 new effectful function is one table entry plus one `Op`.
 
-**Rollback that restores user files**, with the honest limits written down:
-processes are irreversible, and a dry run cannot read what it did not write.
+**Rollback that restores user files**, with the honest limits written down.
+A process is irreversible unless the script says how to undo it (`burn (s) { }
+unburn { }`, 1.1.0) or a declared pack lets the kernel watch what it created;
+the plan says which. Since 1.1.0 a dry run reads its own pretend writes
+through the ghost filesystem, so the plan holds for scripts with data flow.
 
 **Determinism where it is cheap.** Maps keep insertion order, directory
 listings and globs are sorted, there is no random number generator, and the run
@@ -84,7 +87,8 @@ inputs, not effects.
 **A checker, not a type system.** `cig check` resolves names lexically and
 knows which calls burn. It catches the mistakes people actually make (typos,
 assigning to a constant, a `snuff` outside a function, an effect outside a
-burn) in milliseconds, without annotations.
+burn, a literal path outside the pack, a shell smuggled through `proc.run`, a
+compensation reaching outside its state) in milliseconds, without annotations.
 
 **Tests that check the world, not the exit code.** The 1.x shell scripts
 printed pass rates for tests that never ran. The rebuilt suite runs the real binary
@@ -96,13 +100,13 @@ rollback.
 | 1.x feature | decision |
 |---|---|
 | nine transpilers | dropped; they produced code the parser could not read |
-| plugin ABI, C/C++/Unreal bindings | dropped for 2.0; a stable Rust API is the precondition, and that comes first |
+| plugin ABI, C/C++/Unreal bindings | dropped in the rebuild; a stable Rust API is the precondition, and that comes first |
 | Tauri desktop app | dropped; the CLI's `--json` output is the integration surface |
 | CigMini | absorbed: the whole language is now what CigMini was meant to be |
-| packs, cartons, modules, `use pack` | dropped; single-file scripts for 2.0, imports on the roadmap |
+| packs, cartons, modules, `use pack` | dropped, then the pack came back in 1.1.0 as a different noun: a declared scope (`pack { }`), not a bigger folder; cartons and imports stay on the roadmap |
 | creative graph (cgx), tutorials, runtime registry, automation, repair engine | dropped |
 | three lexicon levels | dropped; one syntax |
-| `ashtray` as a defer block | changed to `try`/`ashtray` catch; scoped cleanup can return as `finally` |
+| `ashtray` as a defer block | changed to `try`/`ashtray` catch; `finally` arrived in 1.1.0 for the cleanup that must run either way |
 | kernel session directory with JSONL events | kept as the run record |
 | burn classes: normal, unlit, outside | kept normal and unlit; `outside with <tool>` was never more than a label |
 | dry-run and check as ephemeral sessions | kept: neither leaves state behind |
@@ -119,6 +123,19 @@ a self-updater that verifies before it installs, an installer with a
 dependency preflight, and a licensing set decided from the Codex law store
 rather than from habit. The kernel did not change; every one of those
 features sits beside it.
+
+## The Hammer update
+
+1.1.0 came from an external adversarial read of 1.0.0, delivered as a
+package (`HAMMER.md`) and landed one seam per pull request. This time the
+kernel did change, in the ways the property test demanded: symlinks restored
+as symlinks, a journal synced before the effect, an after-state record so
+`unburn` refuses to restore over newer work, a ghost filesystem so a dry-run
+reads what it pretended to write, hops that run in their own process group
+under an exit-code contract, a declared pack the kernel enforces, and
+compensations for what it cannot see. Around the kernel: the error registry
+as data, doctor on the emit hook, the step budget, `finally`, and the wall.
+The manifest in `HAMMER.md` says what shipped and what is the next update.
 
 ## The tone
 
@@ -155,9 +172,12 @@ In rough order of value:
 
 1. Signed releases (minisign or Sigstore) so `cig update` can verify who built
    a binary, not only that it arrived intact.
-2. `cig fmt`, a formatter, once the grammar has been stable for a while.
-3. Imports of other `.cig` files, restricted to the script's directory tree.
-4. `match` on values and simple patterns.
-5. Chains with declared dependencies between steps, and parallel steps where
+2. The rest of the Hammer package: parameterised packs lit from elsewhere and
+   cartons to ship them, foreign scripts run inside a pack through the burn
+   protocol, and a browser playground on the ghost filesystem.
+3. `cig fmt`, a formatter, once the grammar has been stable for a while.
+4. Imports of other `.cig` files, restricted to the script's directory tree.
+5. `match` on values and simple patterns.
+6. Chains with declared dependencies between steps, and parallel steps where
    the burns are independent.
-6. A stable Rust embedding API, then a C ABI over it.
+7. A stable Rust embedding API, then a C ABI over it.

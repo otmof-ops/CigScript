@@ -76,7 +76,7 @@ exhale report.ok, report.ms, report.steps.len()
 | `failed` | the subset of `steps` that failed |
 | `result` | the last step's result |
 
-Options: `{retries: n, retry_delay_ms: m, continue_on_error: bool, quiet: bool}`.
+Options: `{retries: n, retry_delay_ms: m, retry_irreversible: bool, continue_on_error: bool, quiet: bool}`.
 
 **Values flow forward.** A step that takes one parameter receives the previous
 step's result (`null` for the first step). A step that takes none is simply
@@ -98,7 +98,13 @@ and `steps` (the reports so far). With `{continue_on_error: true}` nothing is
 raised; every step runs and `report.failed` tells you which ones failed.
 
 **Retries** re-run a failing step up to `retries` times with `retry_delay_ms`
-between attempts, which is what you want around flaky network calls.
+between attempts, which is what you want around flaky network calls. A retry
+runs against the state the step started from: what the failed attempt burned
+is rolled back first, and the journal marks those ops undone so `cig unburn`
+skips them. A step whose failed attempt ran a hop (a child process) is not
+retried on its own, because the world may already have changed;
+`{retry_irreversible: true}` says you know. A chain that lights itself,
+directly or through another chain, is `E604` with the loop spelled out.
 
 **Ad-hoc chains** need no declaration: `light([fetch, build])`.
 

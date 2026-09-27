@@ -301,6 +301,8 @@ errors, never silent.
 | `burn { fs.rm(p) }` | snapshots `p`, journals, deletes | records "delete p" in the plan |
 | `burn unlit { fs.rm(p) }` | records the intent; never deletes | records the intent |
 | `burn { proc.run("git", ["gc"]) }` | runs it, journaled as irreversible | records "run git gc" |
+| `burn (s) { proc.run("git", ["push"]) } unburn { … }` | runs it; the compensation is journaled with `s` and runs on rollback | records "run git push" as compensated |
+| `pack { "./build" }` then `burn { fs.rm("../other") }` | refused before the run (`E750`) or at it (`E751`) | refused |
 
 Run records live under `~/.cigscript/runs/<id>/`. `cig runs` lists them,
 `cig runs <id>` shows one with its journal, `cig unburn <id>` restores one.
