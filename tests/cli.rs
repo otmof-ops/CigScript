@@ -1339,7 +1339,7 @@ fn no_doctor_is_byte_identical_to_the_bare_diagnostic() {
 #[test]
 fn json_diagnostics_carry_the_diagnosis_within_budget() {
     let sb = Sandbox::new();
-    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/e509-not-on-path.cig");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/corpus/e551-not-on-path.cig");
     fs::copy(&src, sb.path().join("p.cig")).unwrap();
     let out = sb.cig_env(&["--json", "run", "p.cig"], &[("PATH", "/usr/bin:/bin")]);
     let first = String::from_utf8_lossy(&out.stdout)
@@ -1348,7 +1348,7 @@ fn json_diagnostics_carry_the_diagnosis_within_budget() {
         .unwrap()
         .to_string();
     let v: serde_json::Value = serde_json::from_str(&first).unwrap();
-    assert_eq!(v["code"], "E509");
+    assert_eq!(v["code"], "E551");
     assert_eq!(v["subject"], "definitely-not-a-program-xyz");
     let dx = &v["diagnosis"];
     assert_eq!(dx["confirmed"], true, "{dx}");
@@ -1506,7 +1506,7 @@ fn plain_mode_drops_the_catchphrases_and_keeps_the_facts() {
 #[test]
 fn report_bundles_a_run_redacted() {
     let sb = Sandbox::new();
-    run_corpus(&sb, "e509-not-on-path.cig", &[]);
+    run_corpus(&sb, "e551-not-on-path.cig", &[]);
     let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
     let base = corpus_env(&sb);
     let envs: Vec<(&str, &str)> = base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
@@ -1531,7 +1531,7 @@ fn report_bundles_a_run_redacted() {
         "cwd under HOME is redacted to ~: {}",
         bundle["run"]
     );
-    assert_eq!(bundle["diagnostic"]["code"], "E509");
+    assert_eq!(bundle["diagnostic"]["code"], "E551");
     assert_eq!(
         bundle["diagnosis"]["confirmed"], true,
         "{}",

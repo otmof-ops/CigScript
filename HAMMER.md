@@ -52,7 +52,7 @@ without a green test is not delivered.
 | 11 | Step budget and `finally` | 2, 3 | `while true {}` ends with "your loop never ends" and a line number | delivered, `hammer/5` |
 | 12 | Cross-run hash check on `unburn` | 1 | rolling back over newer content refuses unless `--force` | delivered, `hammer/6` |
 | 13 | Ghost filesystem for dry-run | 1, 6 | a chain whose step 2 reads what step 1 wrote passes `--dry-run` with the disk untouched | delivered, `hammer/7` (`src/burn/ghost.rs`) |
-| 14 | Hop resilience + `proc.json/lines/csv` | 4 | every rule in the resilience list has a test; the deadlock and zombie cases pass | pending |
+| 14 | Hop resilience + `proc.json/lines/csv` | 4 | every rule in the resilience list has a test; the deadlock and zombie cases pass | delivered, `hammer/8` (`docs/HOPS.md`, `tests/hops.rs`) |
 | 15 | Pack + compensations + fold checks | 5, 6 | the four golden plans (inside / outside / cough / unburn) match; folds refuse with codes | pending |
 | 16 | Foreign scripts, Tier 1 then Python shim | 7 | an unchanged Python script gets plan and rollback; behaviour identical without `cig` | pending |
 | 17 | Lexicon rewrite of all repo artifacts | Part C | every artifact reads in the vernacular with the manual's name attached; plain mode strips it cleanly | delivered, `hammer/4` (Parts B and C; `cig report`, templates, the wall) |

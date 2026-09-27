@@ -31,6 +31,31 @@ seam; the package's manifest carries the state of each deliverable.
   `fs.mv` or `fs.rm` of a path that exists nowhere fails in the plan as it
   would for real. `burn unlit` never enters the ghost.
 
+### Hops
+- **The boundary holds.** `proc.run` keeps one call shape and gains the
+  rules: exit codes are a contract (`ok: [0, 1]`, `check` is `[0]`) and a
+  code outside it is `E553` naming the command, the code, the contract and
+  stderr's last line; every child runs in its own process group and a
+  timeout kills the group, SIGTERM then SIGKILL after `grace_ms` (`E554`,
+  with how much it had written); a child killed by a signal is `E555`, not
+  a `-1` result; output is decoded explicitly (`encoding`: strict UTF-8,
+  `lossy`, `latin1`, `utf-16`) and bad bytes are `E557`; a program that is
+  not there is `E551`, one that may not be executed `E552`. Children get
+  `NO_COLOR=1` and `CIG_RUN_ID`; `clean_env` starts from a documented
+  minimum.
+- **Parsing verbs.** `proc.text`, `proc.lines`, `proc.json`, `proc.csv` and
+  `proc.kv` read stdout only under the contract `[0]` and fail at the hop
+  with `E556`, quoting the first 200 bytes of a bad shape.
+- **`proc.pipe`** connects stages without a shell, one group, one timeout,
+  every stage checked and the failing stage named. **`proc.shell`** is the
+  shell, by name; `cig check` warns (`E308`) when one is smuggled through
+  `proc.run("sh", ["-c", built])`.
+- **Retries are idempotence-aware.** A chain retry rolls back what the
+  failed attempt burned first (the journal marks those ops undone and
+  `unburn` skips them), and a step whose attempt ran a hop is not retried
+  unless `retry_irreversible: true`.
+- `E603` is retired in favour of `E553`; the ashtray value is unchanged.
+
 ### Fixed
 - A deleted or overwritten symlink now rolls back as a symlink with its
   original target, dangling or not, including links inside a restored

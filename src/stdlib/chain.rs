@@ -23,6 +23,8 @@ pub struct Options {
     pub continue_on_error: bool,
     pub retries: i64,
     pub retry_delay_ms: i64,
+    /// Retry a step even when its failed attempt ran an irreversible hop.
+    pub retry_irreversible: bool,
     pub quiet: bool,
 }
 
@@ -32,6 +34,7 @@ impl Options {
             continue_on_error: false,
             retries: 0,
             retry_delay_ms: 0,
+            retry_irreversible: false,
             quiet: false,
         };
         if let Some(m) = opt_map(args, 1, "light", span)? {
@@ -43,6 +46,7 @@ impl Options {
                     ("retry_delay_ms", Value::Int(n)) => {
                         o.retry_delay_ms = (*n).clamp(0, 3_600_000)
                     }
+                    ("retry_irreversible", v) => o.retry_irreversible = v.truthy(),
                     ("retries" | "retry_delay_ms", other) => {
                         return Err(type_error(format!(
                             "light: option `{k}` must be an int, got {}",
@@ -54,7 +58,7 @@ impl Options {
                         return Err(runtime(format!("light: unknown option `{other}`"))
                             .at(span)
                             .with_hint(
-                                "use one of continue_on_error, retries, retry_delay_ms, quiet",
+                                "use one of continue_on_error, retries, retry_delay_ms, retry_irreversible, quiet",
                             ))
                     }
                 }
@@ -146,6 +150,7 @@ fn run_chain(
         let step_started = Instant::now();
         let mut attempt = 0;
         let outcome = loop {
+            let mark = i.kernel.mark();
             let result = match &step.value {
                 Value::Chain(inner) => run_chain(i, inner, opts, span, depth + 1),
                 Value::Func(f) => {
@@ -176,6 +181,37 @@ fn run_chain(
             match result {
                 Ok(v) => break Ok(v),
                 Err(e) if attempt < opts.retries && i.exit_requested.is_none() => {
+                    // A hop the kernel cannot undo is never retried on its own:
+                    // the retry would run against a world the first attempt
+                    // already changed.
+                    if i.kernel.irreversible_since(mark) > 0 && !opts.retry_irreversible {
+                        if !opts.quiet {
+                            let _ = writeln!(
+                                i.err,
+                                "{indent}chain {}: step {} {} failed ({}); not retried: it ran a hop the kernel cannot undo",
+                                chain.name,
+                                index + 1,
+                                step.label,
+                                e.message
+                            );
+                        }
+                        break Err(e.with_hint(
+                            "this step ran a hop (a child process) the kernel cannot undo, so it was not retried; light with {retry_irreversible: true} to retry anyway",
+                        ));
+                    }
+                    // The retry runs against the rolled-back state.
+                    let undone = i.kernel.rollback_since(mark);
+                    if !opts.quiet && !undone.restored.is_empty() {
+                        let _ = writeln!(
+                            i.err,
+                            "{indent}chain {}: step {} {} rolled back {} op{} before the retry",
+                            chain.name,
+                            index + 1,
+                            step.label,
+                            undone.restored.len(),
+                            if undone.restored.len() == 1 { "" } else { "s" }
+                        );
+                    }
                     attempt += 1;
                     if !opts.quiet {
                         let _ = writeln!(

@@ -277,6 +277,7 @@ static check (`cig check`): a mistake found before anything runs.
 | [`E305`](#e305-break-outside-a-loop) | break outside a loop | not one of the four | move it inside the loop, or restructure with `if` |
 | [`E306`](#e306-already-declared) | already declared | not one of the four | assign with `name = ...` the second time, or choose another name |
 | [`E307`](#e307-unknown-module-member) | unknown module member | can't see any ciggies bro | use the member the hint suggests; `cig language` lists every one |
+| [`E308`](#e308-shell-through-proc.run) | shell through proc.run | not one of the four | call the program directly with its arguments as a list; proc.pipe for a pipeline; proc.shell if you mean the shell and the string is yours |
 
 ### E300 check error
 
@@ -410,6 +411,21 @@ A module such as `fs` has no function by that name.
 Related: `E301`.
 
 
+### E308 shell through proc.run
+
+*check · since 1.1.0 · arises in check*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+proc.run is handed a shell (`sh -c`, `bash -c`, `cmd /C`) with a command string built at run time; that is where every injection bug in every glue script has lived.
+
+**What to type next:** call the program directly with its arguments as a list; proc.pipe for a pipeline; proc.shell if you mean the shell and the string is yours
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a value that came from outside the script is spliced into a shell command (probe `source-line`). **Remedy:** pass the value as its own argument to the program; the shell never sees it
+
+
 ## type (`E400`–`E499`)
 
 types and arity: a value of the wrong shape reached an operation.
@@ -531,7 +547,7 @@ runtime: a failure while the script was running, including the resource ceilings
 | [`E506`](#e506-call-depth-exceeded) | call depth exceeded | not one of the four | add the base case first; rewrite as a loop if depth may legitimately exceed 4,000 |
 | [`E507`](#e507-stick-reassigned-at-run-time) | stick reassigned at run time | these are MY ciggies | run `cig check`, then declare the binding with `roll` if it must change |
 | [`E508`](#e508-file-system-failure) | file system failure | one of the four; the message says which | check the path with fs.exists first; relative paths resolve against the working directory `cig runs <id>` shows |
-| [`E509`](#e509-process-failure) | process failure | one of the four; the message says which | check it is installed with proc.which("name"), or raise {timeout_ms} |
+| [`E509`](#e509-process-failure-(retired)) | process failure (retired) | one of the four; the message says which | read E551, E552 and E554; the hop rules are in docs/HOPS.md |
 | [`E510`](#e510-invalid-regular-expression) | invalid regular expression | not one of the four | write the pattern as a raw 'single-quoted' string and check it against the message |
 | [`E511`](#e511-parse-failure) | parse failure | not one of the four | check the first bytes with fs.read_text(p).slice(0, 80); the message quotes the position |
 | [`E512`](#e512-range-too-large) | range too large | not one of the four | iterate in pieces, or check the bounds that produced the range |
@@ -689,15 +705,15 @@ A file or directory operation failed; the message shows the path and the operati
 Related: `E702`.
 
 
-### E509 process failure
+### E509 process failure (retired)
 
-*runtime · since 1.0.0 · arises in run, light*
+*runtime · since 1.0.0 · arises in run, light · retired*
 
 **Kind of no:** one of the four; the message says which (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below).
 
-A program could not be started, or exceeded its timeout and was killed.
+Retired in 1.1.0: a hop that could not start is E551 or E552 and one that timed out is E554. Kept so old run records still decode.
 
-**What to type next:** check it is installed with proc.which("name"), or raise {timeout_ms}
+**What to type next:** read E551, E552 and E554; the hop rules are in docs/HOPS.md
 
 **Known causes**, ranked; doctor checks them in this order:
 
@@ -705,7 +721,7 @@ A program could not be started, or exceeded its timeout and was killed.
 2. it ran longer than {timeout_ms} and was killed (no probe; a suggestion, not a finding). **Remedy:** raise {timeout_ms: N} on the proc.run, or split the work into smaller calls
 3. the file exists but is not executable (probe `path-permissions`). **Remedy:** chmod +x it
 
-Related: `E603`, `E602`.
+Related: `E551`, `E552`, `E554`.
 
 
 ### E510 invalid regular expression
@@ -834,7 +850,155 @@ In a dry-run, a step read a path that an earlier simulated op would have deleted
 
 hops (process boundaries): child processes and foreign scripts.
 
-*Reserved; nothing emitted yet.*
+| code | title | kind of no | what to type next |
+|---|---|---|---|
+| [`E550`](#e550-hop-failed) | hop failed | one of the four; the message says which | read the message; proc.which(name) and the cwd option are the usual suspects |
+| [`E551`](#e551-command-not-found) | command not found | can't see any ciggies bro | proc.which(name) to check; install it, give the full path, or fix PATH in the environment the run inherits |
+| [`E552`](#e552-refused-to-start) | refused to start | these are MY ciggies | chmod +x it, or run as a user that may execute it |
+| [`E553`](#e553-exit-outside-the-contract) | exit outside the contract | one of the four; the message says which | if that code is an answer, not a failure, say so: {ok: [0, 1]}; otherwise read err in the ashtray value |
+| [`E554`](#e554-hop-timed-out) | hop timed out | not one of the four | raise {timeout_ms: N} on this hop, or split the work |
+| [`E555`](#e555-hop-killed-by-a-signal) | hop killed by a signal | not one of the four | run the program by hand to see it crash; the signal number and name are in the message |
+| [`E556`](#e556-bad-shape-on-stdout) | bad shape on stdout | not one of the four | send progress and logs to stderr, or use proc.run and parse what you can |
+| [`E557`](#e557-bad-encoding-on-stdout) | bad encoding on stdout | not one of the four | add {encoding: "lossy"} to replace bad bytes, "latin1" for single-byte text, or "utf-16" for a Windows tool |
+
+### E550 hop failed
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** one of the four; the message says which (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below).
+
+A child process could not be run for a reason none of the more specific hop codes covers; the message carries the operating system's words.
+
+**What to type next:** read the message; proc.which(name) and the cwd option are the usual suspects
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the operating system refused the spawn for a reason other than a missing or unexecutable program (no probe; a suggestion, not a finding). **Remedy:** the message quotes the reason; a missing cwd is the common one
+
+Related: `E551`, `E552`.
+
+
+### E551 command not found
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+The program a hop names is not on PATH for this run, and is not a path that exists.
+
+**What to type next:** proc.which(name) to check; install it, give the full path, or fix PATH in the environment the run inherits
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program is not on PATH for this run (probe `on-path`). **Remedy:** proc.which(name) to check; give the full path, or fix PATH in the environment the run inherits
+2. a typo in the program's name (no probe; a suggestion, not a finding). **Remedy:** compare with what `which` prints in a terminal
+
+Related: `E509`, `E552`.
+
+
+### E552 refused to start
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+The program exists but the operating system would not execute it: no execute bit, or a user who may not.
+
+**What to type next:** chmod +x it, or run as a user that may execute it
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the file is not executable (probe `path-permissions`). **Remedy:** chmod +x it; if it is a script, check its first line names an interpreter that exists
+
+Related: `E551`.
+
+
+### E553 exit outside the contract
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** one of the four; the message says which (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below).
+
+A hop exited with a code outside its contract (the `ok` list; `[0]` for the parsing verbs and under `check`). The stderr's last line is in the message; the whole result is the ashtray value.
+
+**What to type next:** if that code is an answer, not a failure, say so: {ok: [0, 1]}; otherwise read err in the ashtray value
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program reported a failure; its stderr says what (no probe; a suggestion, not a finding). **Remedy:** read err in the ashtray value, or run the command by hand
+2. the code is an answer for this tool (grep, diff, cmp) (no probe; a suggestion, not a finding). **Remedy:** widen the contract: {ok: [0, 1]}
+
+Related: `E603`, `E556`.
+
+
+### E554 hop timed out
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A hop ran longer than its timeout and was killed with its whole process group. Whatever it had written was not passed on; the message says how much and quotes the start of it.
+
+**What to type next:** raise {timeout_ms: N} on this hop, or split the work
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program waits for input or a network that never answers (no probe; a suggestion, not a finding). **Remedy:** give it stdin with {stdin: ...}, or a flag that makes it non-interactive
+2. the work is legitimately longer than the timeout (ten minutes by default) (no probe; a suggestion, not a finding). **Remedy:** raise {timeout_ms: N} on this hop
+
+Related: `E555`.
+
+
+### E555 hop killed by a signal
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The child died of a signal (a crash, an out-of-memory kill, a kill from outside) instead of exiting. Its partial output was not passed on.
+
+**What to type next:** run the program by hand to see it crash; the signal number and name are in the message
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program crashed (SIGSEGV, SIGABRT) or was killed (SIGKILL, often the out-of-memory killer) (no probe; a suggestion, not a finding). **Remedy:** run it by hand with the same arguments; check dmesg for an out-of-memory kill
+
+Related: `E554`.
+
+
+### E556 bad shape on stdout
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A parsing verb (proc.json, proc.csv, proc.kv) got something on stdout that is not the shape it expects; the first 200 bytes are in the message. Nothing was passed on.
+
+**What to type next:** send progress and logs to stderr, or use proc.run and parse what you can
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program prints progress or a banner on stdout before the data (no probe; a suggestion, not a finding). **Remedy:** a --quiet or --json flag usually silences it; otherwise proc.run and cut the prefix yourself
+2. the program wrote the data in another format than the verb expects (no probe; a suggestion, not a finding). **Remedy:** match the verb to the output: proc.json, proc.csv, proc.kv, proc.lines
+
+Related: `E553`, `E511`.
+
+
+### E557 bad encoding on stdout
+
+*runtime · since 1.1.0 · arises in run, light*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A hop's output is not valid in the encoding expected (UTF-8 unless told otherwise); the byte offset is in the message. Nothing was silently replaced.
+
+**What to type next:** add {encoding: "lossy"} to replace bad bytes, "latin1" for single-byte text, or "utf-16" for a Windows tool
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a Windows tool writing UTF-16, or a legacy tool writing CP-1252 / Latin-1 (no probe; a suggestion, not a finding). **Remedy:** {encoding: "utf-16"} or {encoding: "latin1"}
+2. binary data on stdout (no probe; a suggestion, not a finding). **Remedy:** redirect it to a file with the tool's own flag, then read the file
+
 
 ## cough (`E600`–`E699`)
 
@@ -845,7 +1009,7 @@ raised by the script: cough, assert, chains, process checks.
 | [`E600`](#e600-raised-by-the-script) | raised by the script | not one of the four | catch it with try/ashtray where you can recover; burns are rolled back when nothing catches it |
 | [`E601`](#e601-assertion-failed) | assertion failed | not one of the four | print the values it compares; the optional second argument becomes the message |
 | [`E602`](#e602-chain-failed) | chain failed | not one of the four | fix the step at the line shown, or light with {continue_on_error: true} and read failed[] from the report |
-| [`E603`](#e603-process-check-failed) | process check failed | one of the four; the message says which | read err from the ashtray value, or drop check and inspect .code yourself |
+| [`E603`](#e603-process-check-failed-(retired)) | process check failed (retired) | one of the four; the message says which | read E553; the ashtray value is the same shape it always was |
 
 ### E600 raised by the script
 
@@ -895,21 +1059,21 @@ A step of a chain raised an error and the chain stopped.
 Related: `E603`, `E509`.
 
 
-### E603 process check failed
+### E603 process check failed (retired)
 
-*cough · since 1.0.0 · arises in run, light*
+*cough · since 1.0.0 · arises in run, light · retired*
 
 **Kind of no:** one of the four; the message says which (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below).
 
-proc.run with {check: true} saw a non-zero exit code.
+Retired in 1.1.0: a non-zero exit under {check: true} is now E553, exit outside the contract. Kept so old run records still decode.
 
-**What to type next:** read err from the ashtray value, or drop check and inspect .code yourself
+**What to type next:** read E553; the ashtray value is the same shape it always was
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the program exited non-zero (no probe; a suggestion, not a finding). **Remedy:** read err from the ashtray value; the program's own message is there
+1. the program exited non-zero (no probe; a suggestion, not a finding). **Remedy:** read E553, which replaced this code; the ashtray value has the same shape
 
-Related: `E509`.
+Related: `E553`.
 
 
 ## kernel (`E700`–`E749`)

@@ -88,11 +88,18 @@ Reads are free; anything that changes a file is a **burn**, snapshotted before a
 
 ## proc
 
-**Hops.** `proc.run` crosses a process boundary (a *hop*, in the lexicon). The kernel cannot see inside a hop, so it is journaled as **irreversible** and the plan says so out loud; never a shell, both streams captured without deadlocking, a timeout by default. The exit-code contract (`ok: [0, 1]`) and the four kinds of no mapped to exit codes land with hop resilience (`HAMMER.md`, section 4).
+**Hops.** Every `proc.*` call crosses a process boundary (a *hop*, in the lexicon): the kernel cannot see inside, so a hop is journaled as **irreversible** and the plan says so out loud. `proc.run` is the one call shape; `proc.text`, `proc.lines`, `proc.json`, `proc.csv` and `proc.kv` parse stdout into a real value under the contract `ok: [0]`; `proc.pipe` connects stages without a shell; `proc.shell` is the shell, by name. Never a shell otherwise, both streams read concurrently and never merged, a timeout on every hop, the whole process group killed on timeout, explicit encoding, and a distinct code (E550-E557) for every way a hop can fail. The rules, each with a test, are in [HOPS.md](HOPS.md).
 
 | function | args | effect |
 |---|---|---|
 | `proc.run` | 1-3 | **burn** |
+| `proc.text` | 1-3 | **burn** |
+| `proc.lines` | 1-3 | **burn** |
+| `proc.json` | 1-3 | **burn** |
+| `proc.csv` | 1-3 | **burn** |
+| `proc.kv` | 1-3 | **burn** |
+| `proc.pipe` | 1-2 | **burn** |
+| `proc.shell` | 1-2 | **burn** |
 | `proc.which` | 1 | read |
 
 ## time

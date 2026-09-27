@@ -143,6 +143,7 @@ dependencies = [
  "globset",
  "hex",
  "indexmap",
+ "libc",
  "regex",
  "serde",
  "serde_json",

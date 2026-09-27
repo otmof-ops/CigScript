@@ -1,12 +1,12 @@
 Don't see any cigarettes.
-error[E509 runtime]: proc.run: could not start `definitely-not-a-program-xyz`: no such file or directory
-  --> e509-not-on-path.cig:3:3
+error[E551 runtime]: proc.run: could not start `definitely-not-a-program-xyz`: no such file or directory
+  --> e551-not-on-path.cig:3:3
   |
 3 |   proc.run("definitely-not-a-program-xyz", [])
   |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   = hint: check with proc.which(name); install it, or give the full path
-  = explain: cig explain E509
+  = explain: cig explain E551
   = doctor: I think the program is not on PATH for this run (can't see any ciggies bro), because I checked each directory on PATH, looking for the program named in the message and found no `definitely-not-a-program-xyz` in the 2 directories on PATH.
-  = fix: proc.which("name") to check; give the full path, or fix PATH in the environment the run inherits
+  = fix: proc.which(name) to check; give the full path, or fix PATH in the environment the run inherits
 unburn: rolling back this run's burns
   cannot undo run definitely-not-a-program-xyz

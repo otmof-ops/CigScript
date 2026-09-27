@@ -52,6 +52,9 @@ pub struct Entry {
     pub reversible: bool,
     pub op: Op,
     pub before: Vec<BeforeState>,
+    /// Rolled back already, by a retry inside the run; skipped by `unburn`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub undone: bool,
 }
 
 pub struct Journal {
@@ -97,9 +100,21 @@ impl Journal {
     /// Load a finished run's journal for `cig unburn`.
     pub fn load(run_dir: &Path) -> Result<Self, io::Error> {
         let text = fs::read_to_string(run_dir.join("journal.jsonl"))?;
-        let mut entries = Vec::new();
+        let mut entries: Vec<Entry> = Vec::new();
         for line in text.lines().filter(|l| !l.trim().is_empty()) {
-            let e: Entry = serde_json::from_str(line)
+            let v: serde_json::Value = serde_json::from_str(line)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            // `{"seq": N, "undone": true}` marks an earlier entry as rolled
+            // back by a retry inside the run.
+            if v.get("undone").and_then(|u| u.as_bool()) == Some(true) && v.get("op").is_none() {
+                if let Some(seq) = v.get("seq").and_then(|n| n.as_u64()) {
+                    if let Some(e) = entries.iter_mut().find(|e| e.seq == seq) {
+                        e.undone = true;
+                    }
+                }
+                continue;
+            }
+            let e: Entry = serde_json::from_value(v)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             entries.push(e);
         }
@@ -118,12 +133,47 @@ impl Journal {
         &self.entries
     }
 
+    /// Entries still standing (not undone by a retry).
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.entries.iter().filter(|e| !e.undone).count()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.len() == 0
+    }
+
+    /// Every entry, undone ones included: a position for `rollback_since`.
+    pub fn mark(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Irreversible entries recorded since `mark`.
+    pub fn irreversible_since(&self, mark: usize) -> usize {
+        self.entries
+            .iter()
+            .skip(mark)
+            .filter(|e| !e.reversible && !e.undone)
+            .count()
+    }
+
+    /// Roll back the entries recorded since `mark`, newest first, and mark
+    /// them undone in the journal so a later `unburn` skips them. The op
+    /// numbers stay; the retry's own entries follow.
+    pub fn rollback_since(&mut self, mark: usize) -> RollbackReport {
+        let report = self.rollback_from(mark);
+        let mut markers = String::new();
+        for e in self.entries.iter_mut().skip(mark) {
+            if !e.undone {
+                e.undone = true;
+                markers.push_str(&format!("{{\"seq\":{},\"undone\":true}}\n", e.seq));
+            }
+        }
+        if let Some(f) = &mut self.file {
+            let _ = f.write_all(markers.as_bytes());
+            let _ = f.flush();
+            let _ = f.sync_data();
+        }
+        report
     }
 
     /// Snapshot everything `op` will change, sync it, then append and sync
@@ -136,6 +186,7 @@ impl Journal {
             reversible: op.reversible(),
             op,
             before,
+            undone: false,
         };
         if let Some(f) = &mut self.file {
             let mut line = serde_json::to_string(&entry)
@@ -271,7 +322,7 @@ impl Journal {
     pub fn verify(&self) -> Vec<String> {
         let mut problems = Vec::new();
         for (idx, entry) in self.entries.iter().enumerate() {
-            if !entry.reversible {
+            if !entry.reversible || entry.undone {
                 continue;
             }
             // Rollback runs newest-first, so a later entry's before-state
@@ -279,7 +330,7 @@ impl Journal {
             let later_restores = |path: &Path| {
                 self.entries[idx + 1..]
                     .iter()
-                    .any(|e| e.reversible && e.before.iter().any(|b| b.path == *path))
+                    .any(|e| e.reversible && !e.undone && e.before.iter().any(|b| b.path == *path))
             };
             for state in &entry.before {
                 match &state.before {
@@ -346,8 +397,15 @@ impl Journal {
     /// Restore every before-state, newest entry first. Call `verify` first;
     /// this does what it can and reports what it could not.
     pub fn rollback(&mut self) -> RollbackReport {
+        self.rollback_from(0)
+    }
+
+    fn rollback_from(&mut self, from: usize) -> RollbackReport {
         let mut report = RollbackReport::default();
-        for entry in self.entries.iter().rev() {
+        for entry in self.entries.iter().skip(from).rev() {
+            if entry.undone {
+                continue;
+            }
             if !entry.reversible {
                 report.irreversible.push(entry.op.describe());
                 continue;
@@ -491,7 +549,7 @@ impl Journal {
     pub fn touched_paths(&self) -> Vec<(PathBuf, u64)> {
         let mut seen: Vec<(PathBuf, u64)> = Vec::new();
         for e in &self.entries {
-            if !e.reversible {
+            if !e.reversible || e.undone {
                 continue;
             }
             for b in &e.before {

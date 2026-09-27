@@ -125,7 +125,16 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
             } else {
                 "irreversible"
             };
-            outln!("    {:>4}  {tag}  {}", e.seq, e.op.describe());
+            outln!(
+                "    {:>4}  {tag}  {}{}",
+                e.seq,
+                e.op.describe(),
+                if e.undone {
+                    ctx.dim("  (undone by a retry)")
+                } else {
+                    String::new()
+                }
+            );
         }
     }
     exit::OK

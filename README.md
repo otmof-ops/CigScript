@@ -145,10 +145,23 @@ the same facts without the jokes. The whole model is in
 
 **Batteries that match the job.** `fs`, `path`, `json`, `csv`, `text`
 (regex), `proc`, `env`, `time`, `hash`, `math`, `log`, plus 64 methods on
-strings, lists and maps. `proc.run` is a *hop* (a process boundary): it never
-touches a shell, captures both streams without deadlocking, has a timeout by
-default, and is journaled as irreversible because the kernel cannot see
-inside it.
+strings, lists and maps.
+
+**Hops that hold the line.** Calling another program is a *hop* (a process
+boundary), and the boundary is where the logic is hardest. One call shape,
+`proc.run(cmd, args, opts)`, with `proc.json`, `proc.lines`, `proc.csv`,
+`proc.kv` and `proc.text` parsing stdout into real values and failing at the
+hop that produced a bad shape. Exit codes are a contract (`{ok: [0, 1]}` for
+`grep`), never a boolean. No shell unless you say `proc.shell`; `proc.pipe`
+for pipelines without one. Both streams read concurrently and never merged,
+a timeout on every hop, the whole process group killed when it fires,
+explicit encoding, and a distinct code for every way a hop can fail. Every
+rule has a test; they are in [docs/HOPS.md](docs/HOPS.md).
+
+```cig
+stick prs = proc.json("gh", ["pr", "list", "--json", "number,title"])
+exhale prs.filter(pack(p) => p.title.contains("fix")).len()
+```
 
 **A runtime that looks after itself.** `cig doctor` reports on the install and
 offers to fix what it can, asking first. `cig update` fetches the newest
@@ -293,7 +306,7 @@ and `--plain` swaps in the manual's name.
 
 | what you hear | whose problem | the manual's name | in CigScript, for example |
 |---|---|---|---|
-| "can't see any ciggies bro" | yours: you're pointed at the wrong place | wrong address; DNS, path, PATH; `ENOENT` | `E301` unknown name, `E504` index out of range, a missing file under `E508`, a program not on PATH under `E509` |
+| "can't see any ciggies bro" | yours: you're pointed at the wrong place | wrong address; DNS, path, PATH; `ENOENT` | `E301` unknown name, `E504` index out of range, a missing file under `E508`, a program not on PATH, `E551` |
 | "never heard of you" | the door: it doesn't know you | `401` | reserved for hops that authenticate |
 | "these are MY ciggies" | the door: it knows you and said no | `403`; a lock; permission denied | `E303` and `E701` effect outside burn, `E302` stick reassigned, `E705` already rolled back, permission denied under `E508` |
 | "don't have any over here" | nobody's: right place, right you, nothing there | `404` from the server's side; empty | `E505` missing key, `E703` snapshot missing, `E805` no `gh` or `curl` |
@@ -348,6 +361,11 @@ for.
 | kill it mid-burn, then look | **invisible: status `running`, 0 burns, doctor silent**; now `interrupted`, counted from the journal, offered for `unburn` | fixed 1.1.0 | `interrupted_run_is_recognised_counted_from_the_journal_and_unburnable` |
 | a chain error, from `cig light` | **pointed at `file:0:0`**; now the step's own line | fixed 1.1.0 | `chain_failures_point_at_the_step_not_the_light_call` |
 | chain dry-run where step 2 reads step 1's write | **FAILED at step 2**; now the pretend writes live in the ghost filesystem and every read consults it first | fixed 1.1.0 | `chain_dry_run_reads_ghost_write` |
+| `yes` piped into `head -c 20M` on stderr while stdout is awaited | no deadlock, both streams read concurrently | 1.0.0 | `large_output_on_either_stream_does_not_deadlock` |
+| a child that ignores SIGTERM, with a grandchild in the background, under a timeout | **the grandchild outlived it**; now the whole process group is killed, SIGKILL after the grace period | fixed 1.1.0 | `a_timed_out_child_is_killed_with_its_whole_process_group` |
+| a tool that prints progress on stdout, through `proc.json` | **would have been a confusing parse error three steps later**; now `E556` at the hop, quoting the first bytes, no partial value | 1.1.0 | `stdout_and_stderr_are_never_merged_and_shape_is_checked_at_the_hop` |
+| a child killed by a signal | **came back as `code: -1` with half its output**; now `E555`, nothing passed on | fixed 1.1.0 | `timeouts_always_exist_and_partial_output_is_never_mistaken_for_output` |
+| retry a chain step that already pushed | **would have pushed twice**; now not retried unless `retry_irreversible`, and file-only attempts are rolled back before the retry | 1.1.0 | `retries_are_per_hop_and_idempotence_aware` |
 | dry-run reads a file a step just pretended to delete | **a misleading not-found**; now `E520`, naming the op that removed it | fixed 1.1.0 | `dry_run_reports_reads_of_ghost_removed_paths_as_e520_and_missing_sources_as_e508` |
 
 Add a row. The rules for reporting one are in
@@ -387,6 +405,7 @@ usage or environment problem, `70` `cig` itself crashed.
 - [docs/DOCTOR.md](docs/DOCTOR.md): automatic diagnosis on every error, and why it never fixes.
 - [docs/SMOKE.md](docs/SMOKE.md): the lexicon, explained by a smoker.
 - [docs/CHAINS.md](docs/CHAINS.md): chains, the automation layer.
+- [docs/HOPS.md](docs/HOPS.md): running other programs, and the rules that hold at the boundary.
 - [docs/BURN.md](docs/BURN.md): effects, modes, the journal, rollback, and what it can't undo and says so.
 - [docs/SCIENCE.md](docs/SCIENCE.md): CigScript in the lab.
 - [docs/STDLIB.md](docs/STDLIB.md): every function with its arity and effect (generated).

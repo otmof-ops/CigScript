@@ -343,7 +343,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
     }
 
     if !args.dry_run {
-        record.burns = interp.kernel.executed;
+        record.burns = interp.kernel.journal().len();
         record.irreversible = interp.kernel.irreversible;
         record.rolled_back = rolled_back.as_ref().is_some_and(|r| !r.restored.is_empty());
         let (status, error) = match &result {
@@ -385,13 +385,17 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
                 "intents": interp.kernel.intents().collect::<Vec<_>>(),
             });
             outln!("{}", serde_json::to_string(&obj).unwrap_or_default());
-        } else if result.is_ok() && interp.kernel.executed > 0 {
+        } else if result.is_ok() && !interp.kernel.journal().is_empty() {
             eprintln!(
                 "{}",
                 ctx.dim(&format!(
                     "burned {} op{} ({} irreversible), run {}",
-                    interp.kernel.executed,
-                    if interp.kernel.executed == 1 { "" } else { "s" },
+                    interp.kernel.journal().len(),
+                    if interp.kernel.journal().len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
                     interp.kernel.irreversible,
                     record.id
                 ))
