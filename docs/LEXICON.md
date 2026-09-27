@@ -75,7 +75,7 @@ word yet: tell me what you'd call them and they get promoted.
 | **the irreversible label** | The honesty guarantee. The one thing that must never be wrong, because the whole model is trusted through it. | provenance flag; effect classification |
 | **run record** | Everything about one run, with an id like `20260925T203602-baa170`. | transaction log; run manifest |
 | **interrupted run** | A run whose process died mid-burn. The journal is intact; the fix is `cig unburn`; doctor should point at it. | crashed transaction; dirty shutdown |
-| **ghost filesystem** *(planned)* | During a dry-run, the pretend writes live in memory so later steps can read what earlier steps only pretended to write. | overlay; in-memory shadow FS; copy-on-write layer |
+| **ghost filesystem** | During a dry-run, the pretend writes live in memory so later steps can read what earlier steps only pretended to write. | overlay; in-memory shadow FS; copy-on-write layer |
 
 ---
 
@@ -108,7 +108,7 @@ word yet: tell me what you'd call them and they get promoted.
 | **the spiderweb** | The planned shape of the error system: a code isn't a number, it's a node with ranked causes, a read-only probe for each, a remedy for each, and links to the codes that usually come before and after it. | diagnostic knowledge graph; error registry with causal links |
 | **probe** | A read-only check doctor runs to confirm or rule out a cause. Never writes, never re-runs the failing command. | diagnostic check; health probe |
 | **"I think… because I checked X and found Y"** | The only sentence doctor is allowed to say. Guesses are labelled guesses. | evidence-based diagnosis |
-| **plain mode** *(planned)* | Same codes, same hints, no catchphrases, for logs, classrooms and the procurement person. | `--plain`; machine-friendly output |
+| **plain mode** | Same codes, same hints, no catchphrases, for logs, classrooms and the procurement person. | `--plain`; machine-friendly output |
 
 ---
 

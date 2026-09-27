@@ -66,45 +66,132 @@ pub(crate) fn check_read_size(name: &str, p: &std::path::Path, s: Span) -> Resul
     Ok(())
 }
 
-fn read_text(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+// ----- the ghost filesystem: dry-run reads consult it before the disk ---------
+
+/// A read of a path that a simulated op removed earlier in this dry-run.
+pub(crate) fn ghost_removed(name: &str, p: &Path, seq: u64, by: &str, s: Span) -> Diagnostic {
+    runtime(format!(
+        "{name}: {}: removed earlier in this dry-run by op {seq} ({by})",
+        p.display()
+    ))
+    .code("E520")
+    .at(s)
+    .with_subject(p.display().to_string())
+    .with_hint("read it before that op, or do not remove it; the plan shows the order")
+}
+
+/// The bytes of `p` as the dry-run sees them: `Some` from the ghost, `None`
+/// to read the disk. A ghost-removed path is E520; a ghost directory E508.
+pub(crate) fn ghost_read(
+    i: &Interp,
+    name: &str,
+    p: &Path,
+    s: Span,
+) -> Result<Option<Vec<u8>>, Diagnostic> {
+    use crate::burn::ghost::Read;
+    let Some(g) = i.ghost() else {
+        return Ok(None);
+    };
+    match g.read(p) {
+        Read::Content(b) => Ok(Some(b)),
+        Read::Absent { seq, by } => Err(ghost_removed(name, p, seq, &by, s)),
+        Read::IsDir => Err(runtime(format!("{name}: {}: is a directory", p.display()))
+            .code("E508")
+            .at(s)
+            .with_subject(p.display().to_string())),
+        Read::Passthrough => Ok(None),
+    }
+}
+
+pub(crate) fn ghost_text(
+    i: &Interp,
+    name: &str,
+    p: &Path,
+    s: Span,
+) -> Result<Option<String>, Diagnostic> {
+    Ok(ghost_read(i, name, p, s)?.map(|b| String::from_utf8_lossy(&b).to_string()))
+}
+
+/// `Some(kind)` when the ghost decides; `None` to ask the disk. The kind is
+/// `Some(true)` for a directory, `Some(false)` for a file, `None` for absent.
+pub(crate) fn ghost_kind(i: &Interp, p: &Path) -> Option<Option<bool>> {
+    use crate::burn::ghost::Stat;
+    match i.ghost()?.stat(p) {
+        Stat::Absent { .. } => Some(None),
+        Stat::File { .. } => Some(Some(false)),
+        Stat::Dir => Some(Some(true)),
+        Stat::Passthrough => None,
+    }
+}
+
+fn read_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.read_text", s)?;
+    if let Some(t) = ghost_text(i, "fs.read_text", &p, s)? {
+        return Ok(Value::str(t));
+    }
     check_read_size("fs.read_text", &p, s)?;
     fs::read_to_string(&p)
         .map(Value::str)
         .map_err(|e| io_err("fs.read_text", &p, e, s))
 }
 
-fn read_lines(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn read_lines(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.read_lines", s)?;
-    check_read_size("fs.read_lines", &p, s)?;
-    let text = fs::read_to_string(&p).map_err(|e| io_err("fs.read_lines", &p, e, s))?;
+    let text = match ghost_text(i, "fs.read_lines", &p, s)? {
+        Some(t) => t,
+        None => {
+            check_read_size("fs.read_lines", &p, s)?;
+            fs::read_to_string(&p).map_err(|e| io_err("fs.read_lines", &p, e, s))?
+        }
+    };
     Ok(Value::list(text.lines().map(Value::str).collect()))
 }
 
-fn exists(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn exists(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let p = path_arg(a, 0, "fs.exists", s)?;
+    if let Some(kind) = ghost_kind(i, &p) {
+        return Ok(Value::Bool(kind.is_some()));
+    }
     // A dangling symlink exists as far as `fs.rm` and `fs.mv` are concerned.
-    Ok(Value::Bool(
-        fs::symlink_metadata(path_arg(a, 0, "fs.exists", s)?).is_ok(),
-    ))
+    Ok(Value::Bool(fs::symlink_metadata(&p).is_ok()))
 }
 
-fn is_file(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
-    Ok(Value::Bool(path_arg(a, 0, "fs.is_file", s)?.is_file()))
+fn is_file(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let p = path_arg(a, 0, "fs.is_file", s)?;
+    if let Some(kind) = ghost_kind(i, &p) {
+        return Ok(Value::Bool(kind == Some(false)));
+    }
+    Ok(Value::Bool(p.is_file()))
 }
 
-fn is_dir(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
-    Ok(Value::Bool(path_arg(a, 0, "fs.is_dir", s)?.is_dir()))
+fn is_dir(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let p = path_arg(a, 0, "fs.is_dir", s)?;
+    if let Some(kind) = ghost_kind(i, &p) {
+        return Ok(Value::Bool(kind == Some(true)));
+    }
+    Ok(Value::Bool(p.is_dir()))
 }
 
-fn size(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn size(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.size", s)?;
+    if let Some(b) = ghost_read(i, "fs.size", &p, s)? {
+        return Ok(Value::Int(b.len() as i64));
+    }
     fs::metadata(&p)
         .map(|m| Value::Int(m.len() as i64))
         .map_err(|e| io_err("fs.size", &p, e, s))
 }
 
-fn modified_ms(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn modified_ms(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.modified_ms", s)?;
+    if ghost_read(i, "fs.modified_ms", &p, s)?.is_some() {
+        // A pretend write happened just now.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        return Ok(Value::Int(now));
+    }
     let m = fs::metadata(&p).map_err(|e| io_err("fs.modified_ms", &p, e, s))?;
     let t = m
         .modified()
@@ -117,8 +204,30 @@ fn modified_ms(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic
 }
 
 /// Entries of a directory as full paths, sorted by name.
-fn list(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn list(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.list", s)?;
+    if let Some(g) = i.ghost() {
+        if let crate::burn::ghost::Stat::Absent { seq, by } = g.stat(&p) {
+            return Err(ghost_removed("fs.list", &p, seq, &by, s));
+        }
+        if let Some(names) = g.list(&p) {
+            // Keep the caller's spelling: relative in, relative out.
+            let shown: Vec<Value> = names
+                .iter()
+                .map(|n| {
+                    let rel = if p.is_absolute() {
+                        n.clone()
+                    } else {
+                        n.strip_prefix(g.cwd())
+                            .map(Path::to_path_buf)
+                            .unwrap_or_else(|_| n.clone())
+                    };
+                    Value::str(rel.to_string_lossy())
+                })
+                .collect();
+            return Ok(Value::list(shown));
+        }
+    }
     let mut names: Vec<PathBuf> = fs::read_dir(&p)
         .map_err(|e| io_err("fs.list", &p, e, s))?
         .filter_map(|e| e.ok().map(|e| e.path()))
@@ -134,10 +243,35 @@ fn list(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
 
 /// Recursive glob (`**` supported) relative to the current directory or an
 /// absolute root, sorted.
-fn glob(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn glob(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let pattern = expect_str(a, 0, "fs.glob", s)?;
-    let paths =
+    let mut paths =
         glob_paths(pattern).map_err(|e| runtime(format!("fs.glob: {e}")).code("E508").at(s))?;
+    if let Some(g) = i.ghost() {
+        if !g.is_empty() {
+            let matcher = globset::GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .build()
+                .map_err(|e| runtime(format!("fs.glob: {e}")).code("E508").at(s))?
+                .compile_matcher();
+            let absolute = Path::new(pattern).is_absolute();
+            paths.retain(|p| !g.is_removed(p));
+            for live in g.live_paths() {
+                let candidate = if absolute {
+                    live.clone()
+                } else {
+                    match live.strip_prefix(g.cwd()) {
+                        Ok(rel) => rel.to_path_buf(),
+                        Err(_) => continue,
+                    }
+                };
+                if matcher.is_match(&candidate) && !paths.contains(&candidate) {
+                    paths.push(candidate);
+                }
+            }
+            paths.sort();
+        }
+    }
     Ok(Value::list(
         paths
             .into_iter()
@@ -211,6 +345,27 @@ fn home(_: &mut Interp, _: &[Value], _: Span) -> Result<Value, Diagnostic> {
 
 // ----- effects --------------------------------------------------------------------
 
+/// In a dry-run, an op whose source does not exist (on the ghost or the
+/// disk) would fail for real, so the plan says so instead of lying.
+fn dry_run_source_check(i: &Interp, name: &str, p: &Path, s: Span) -> Result<(), Diagnostic> {
+    let Some(g) = i.ghost() else {
+        return Ok(());
+    };
+    if i.in_unlit() {
+        return Ok(());
+    }
+    match g.stat(p) {
+        crate::burn::ghost::Stat::Absent { seq, by } => Err(ghost_removed(name, p, seq, &by, s)),
+        crate::burn::ghost::Stat::Passthrough if fs::symlink_metadata(p).is_err() => Err(io_err(
+            name,
+            p,
+            io::Error::new(io::ErrorKind::NotFound, "no such file or directory"),
+            s,
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn write_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.write_text", s)?;
     let text = expect_str(a, 1, "fs.write_text", s)?;
@@ -219,6 +374,8 @@ fn write_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic>
             fs::create_dir_all(parent).map_err(|e| io_err("fs.write_text", parent, e, s))?;
         }
         fs::write(&p, text).map_err(|e| io_err("fs.write_text", &p, e, s))?;
+    } else {
+        i.ghost_put(&p, text.as_bytes(), false);
     }
     Ok(Value::Int(text.len() as i64))
 }
@@ -235,13 +392,19 @@ fn append_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic
             .map_err(|e| io_err("fs.append_text", &p, e, s))?;
         f.write_all(text.as_bytes())
             .map_err(|e| io_err("fs.append_text", &p, e, s))?;
+    } else {
+        i.ghost_put(&p, text.as_bytes(), true);
     }
     Ok(Value::Int(text.len() as i64))
 }
 
 fn mkdir(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.mkdir", s)?;
-    if p.is_dir() {
+    let already = match ghost_kind(i, &p) {
+        Some(kind) => kind == Some(true),
+        None => p.is_dir(),
+    };
+    if already {
         return Ok(Value::Bool(false));
     }
     if i.effect("fs.mkdir", Op::Mkdir { path: p.clone() }, s)? == Decision::Execute {
@@ -252,6 +415,7 @@ fn mkdir(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
 
 fn rm(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.rm", s)?;
+    dry_run_source_check(i, "fs.rm", &p, s)?;
     if i.effect("fs.rm", Op::Delete { path: p.clone() }, s)? == Decision::Execute {
         let meta = fs::symlink_metadata(&p).map_err(|e| io_err("fs.rm", &p, e, s))?;
         let r = if meta.is_dir() {
@@ -267,6 +431,7 @@ fn rm(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
 fn cp(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let from = path_arg(a, 0, "fs.cp", s)?;
     let to = path_arg(a, 1, "fs.cp", s)?;
+    dry_run_source_check(i, "fs.cp", &from, s)?;
     let op = Op::Copy {
         from: from.clone(),
         to: to.clone(),
@@ -291,6 +456,7 @@ fn mv(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     if i.in_burn() && !i.in_unlit() && i.kernel.mode == crate::burn::Mode::Run {
         fs::symlink_metadata(&from).map_err(|e| io_err("fs.mv", &from, e, s))?;
     }
+    dry_run_source_check(i, "fs.mv", &from, s)?;
     let op = Op::Move {
         from: from.clone(),
         to: to.clone(),

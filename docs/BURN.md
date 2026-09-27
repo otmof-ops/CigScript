@@ -50,10 +50,22 @@ printed after the run and saved to `intents.jsonl` in the run directory.
 
 A simulated call returns a plausible value so the script can continue:
 `fs.write_text` returns the byte count, `proc.run` returns
-`{code: 0, out: "", err: "", simulated: true, ...}`. What a dry run cannot do is
-read back what a simulated burn would have produced: a script that writes a
-file and then reads it will find no file in dry-run mode. Structure scripts to
-compute their plan first and burn last, as the examples do.
+`{code: 0, out: "", err: "", simulated: true, ...}`.
+
+**The ghost filesystem.** In a dry-run the pretend writes live in memory (an
+overlay; a shadow filesystem), and every read consults it before the disk:
+`fs.read_text`, `fs.read_lines`, `fs.exists`, `fs.is_file`, `fs.is_dir`,
+`fs.size`, `fs.modified_ms`, `fs.list`, `fs.glob`, `json.load`, `csv.read`
+and `hash.sha256_file`. A step that reads what an earlier step wrote works in
+the dry-run exactly as it will for real; a simulated `fs.rm` or `fs.mv`
+leaves a tombstone, so a later read of that path is `E520` ("removed earlier
+in this dry-run by op 3 (delete notes.txt)") rather than a misleading
+not-found, and a simulated `fs.cp`, `fs.mv` or `fs.rm` of a path that exists
+nowhere fails in the plan the way it would fail for real. What the ghost
+cannot see is what a hop would have produced: `proc.run` is simulated as an
+empty success, so a step that reads a program's output file will not find it
+in a dry-run. `burn unlit` never enters the ghost, in any mode: rehearsal
+changes nothing, not even a pretend disk.
 
 ## The journal
 

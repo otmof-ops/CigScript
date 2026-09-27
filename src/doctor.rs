@@ -256,6 +256,7 @@ fn run_probe(
         "state-dir-writable" => state_dir_writable(),
         "on-path" => on_path(d),
         "loop-condition" => loop_condition(d, cx),
+        "plan-order" => plan_order(d),
         "env-var" => env_var(node),
         "similar-names" => similar_names(d),
         "brace-balance" => brace_balance(cx),
@@ -547,6 +548,22 @@ fn on_path(d: &Diagnostic) -> (Outcome, String) {
         ));
     }
     (Outcome::Confirmed, evidence)
+}
+
+fn plan_order(d: &Diagnostic) -> (Outcome, String) {
+    match d.message.find("removed earlier in this dry-run by ") {
+        Some(i) => (
+            Outcome::Confirmed,
+            format!(
+                "the plan shows {} before this read",
+                d.message[i + "removed earlier in this dry-run by ".len()..]
+                    .trim_end_matches(')')
+                    .to_string()
+                    + ")"
+            ),
+        ),
+        None => (Outcome::Unavailable, String::new()),
+    }
 }
 
 fn loop_condition(d: &Diagnostic, cx: &Context) -> (Outcome, String) {

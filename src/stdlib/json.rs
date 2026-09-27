@@ -90,11 +90,20 @@ fn stringify(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> 
     Ok(Value::str(text))
 }
 
-fn load(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn load(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = expect_str(a, 0, "json.load", s)?;
-    super::fs::check_read_size("json.load", std::path::Path::new(p), s)?;
-    let text = std::fs::read_to_string(p)
-        .map_err(|e| runtime(format!("json.load: {p}: {}", super::fs::describe_io(&e))).at(s))?;
+    let text = match super::fs::ghost_text(i, "json.load", std::path::Path::new(p), s)? {
+        Some(t) => t,
+        None => {
+            super::fs::check_read_size("json.load", std::path::Path::new(p), s)?;
+            std::fs::read_to_string(p).map_err(|e| {
+                runtime(format!("json.load: {p}: {}", super::fs::describe_io(&e)))
+                    .code("E508")
+                    .at(s)
+                    .with_subject(p.to_string())
+            })?
+        }
+    };
     serde_json::from_str::<serde_json::Value>(&text)
         .map(to_value)
         .map_err(|e| runtime(format!("json.load: {p}: {e}")).code("E511").at(s))
@@ -130,6 +139,8 @@ fn save(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
             ))
             .at(s)
         })?;
+    } else {
+        i.ghost_put(&p, text.as_bytes(), false);
     }
     Ok(Value::Int(text.len() as i64))
 }

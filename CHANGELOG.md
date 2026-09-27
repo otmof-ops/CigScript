@@ -20,6 +20,17 @@ seam; the package's manifest carries the state of each deliverable.
   ends*, pointing at the `while`, and doctor reads the condition (`true`, so
   only a break can end it). Burns before the budget ran out are rolled back.
 
+### Kernel
+- **The ghost filesystem.** In a dry-run the pretend writes live in an
+  in-memory overlay and every read consults it before the disk (`fs.read_*`,
+  `fs.exists`, `fs.is_*`, `fs.size`, `fs.modified_ms`, `fs.list`, `fs.glob`,
+  `json.load`, `csv.read`, `hash.sha256_file`). A chain whose step 2 reads
+  step 1's write now passes `--dry-run` with the disk untouched. A simulated
+  delete or move leaves a tombstone: a later read is `E520`, naming the op
+  that removed it, and doctor points at the plan. A simulated `fs.cp`,
+  `fs.mv` or `fs.rm` of a path that exists nowhere fails in the plan as it
+  would for real. `burn unlit` never enters the ghost.
+
 ### Fixed
 - A deleted or overwritten symlink now rolls back as a symlink with its
   original target, dangling or not, including links inside a restored

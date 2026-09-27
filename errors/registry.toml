@@ -993,7 +993,7 @@ meaning = "In a dry-run, a step read a path that an earlier simulated op would h
 fix = "read the file before the step that removes it, or do not remove it; the plan shows the order"
 no = "cant-see-any"
 arises = ["dry-run"]
-tags = ["kernel", "planned"]
+tags = ["kernel"]
 since = "1.1.0"
 [[code.cause]]
 why = "an earlier step's simulated delete or move took the path away"

@@ -813,11 +813,11 @@ the ghost filesystem: dry-run reads of paths that simulated ops changed.
 
 | code | title | kind of no | what to type next |
 |---|---|---|---|
-| [`E520`](#e520-read-of-a-ghost-deleted-path) | read of a ghost-deleted path *(planned)* | can't see any ciggies bro | read the file before the step that removes it, or do not remove it; the plan shows the order |
+| [`E520`](#e520-read-of-a-ghost-deleted-path) | read of a ghost-deleted path | can't see any ciggies bro | read the file before the step that removes it, or do not remove it; the plan shows the order |
 
 ### E520 read of a ghost-deleted path
 
-*runtime · since 1.1.0 · arises in dry-run · planned*
+*runtime · since 1.1.0 · arises in dry-run*
 
 **Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
 
