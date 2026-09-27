@@ -20,7 +20,7 @@ block, so a function can be called above the line that defines it.
 |---|---|---|
 | `null` | `null` | absence; `??` and `?.` are built for it |
 | `bool` | `true`, `false` | |
-| `int` | `42`, `1_000`, `-7` | 64-bit; overflow is an error |
+| `int` | `42`, `1_000`, `-7` | 64-bit, `-9223372036854775808` to `9223372036854775807`; overflow is an error (`E5xx`), a literal that does not fit is `E104` |
 | `float` | `2.5`, `1e9` | 64-bit; prints as `2.0`, never `2` |
 | `string` | `"text ${expr}"`, `'raw'` | UTF-8; indexing and `len` count characters |
 | `list` | `[1, "two", [3]]` | ordered, mutable, shared by reference |

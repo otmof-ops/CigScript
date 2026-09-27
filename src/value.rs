@@ -43,6 +43,8 @@ pub struct Chain {
 pub struct ChainStep {
     pub label: String,
     pub value: Value,
+    /// Where the step was written, for diagnostics.
+    pub span: Span,
 }
 
 /// A script-defined function (`pull` or `pack`).
@@ -307,6 +309,37 @@ fn write_quoted(out: &mut String, s: &str) {
         }
     }
     out.push('"');
+}
+
+// ----- resource ceilings -----------------------------------------------------------
+
+/// Largest value the runtime will build in one go, in bytes. `CIG_MAX_ALLOC`
+/// overrides the default of 256 MiB. A request above it is a diagnostic
+/// (E514), never an allocation failure that aborts the process.
+pub fn max_alloc() -> usize {
+    use std::sync::OnceLock;
+    static LIMIT: OnceLock<usize> = OnceLock::new();
+    *LIMIT.get_or_init(|| {
+        std::env::var("CIG_MAX_ALLOC")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(256 * 1024 * 1024)
+    })
+}
+
+/// Refuse to build `bytes` bytes for `what` when it is over the ceiling.
+pub fn check_alloc(bytes: u128, what: &str, span: Span) -> Result<(), Diagnostic> {
+    let limit = max_alloc() as u128;
+    if bytes > limit {
+        return Err(crate::diagnostics::runtime(format!(
+            "{what} would need {bytes} bytes, over the ceiling of {limit}"
+        ))
+        .code("E514")
+        .at(span)
+        .with_hint("work in smaller pieces, or raise the ceiling with CIG_MAX_ALLOC=<bytes>"));
+    }
+    Ok(())
 }
 
 // ----- argument helpers for builtins ------------------------------------------

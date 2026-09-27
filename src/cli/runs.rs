@@ -44,6 +44,7 @@ pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>) -> i32 {
                 let status = match r.status.as_str() {
                     "ok" => ctx.green(&r.status),
                     "rolled_back" | "unburned" => ctx.yellow(&r.status),
+                    "interrupted" => ctx.red(&r.status),
                     "running" => ctx.dim(&r.status),
                     _ => ctx.red(&r.status),
                 };
@@ -156,7 +157,7 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
     exit::OK
 }
 
-pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool) -> i32 {
+pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     let mut rec = match runs::find(id) {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -183,10 +184,56 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool) -> i32 {
         eprintln!("{} burned nothing; there is nothing to unburn", rec.id);
         return exit::OK;
     }
-    if rec.status == "unburned" || rec.rolled_back {
-        eprintln!("{} {} was already rolled back", ctx.yellow("note:"), rec.id);
+    if (rec.status == "unburned" || rec.rolled_back) && !dry_run {
+        if !force {
+            eprintln!(
+                "{} {} was already rolled back; doing it again would overwrite whatever happened since",
+                ctx.red("error[E705 burn]:"),
+                rec.id
+            );
+            eprintln!("  = hint: pass --force only if you mean to restore the old snapshots again");
+            eprintln!("  = explain: cig explain E705");
+            return exit::SCRIPT_ERROR;
+        }
+        eprintln!(
+            "{} {} was already rolled back; --force given",
+            ctx.yellow("note:"),
+            rec.id
+        );
+    }
+    let problems = journal.verify();
+    if !problems.is_empty() && !dry_run {
+        if !force {
+            eprintln!(
+                "{} cannot roll back {}: {} problem{} found before touching anything",
+                ctx.red("error[E703 burn]:"),
+                rec.id,
+                problems.len(),
+                if problems.len() == 1 { "" } else { "s" }
+            );
+            for p in &problems {
+                eprintln!("  - {p}");
+            }
+            eprintln!("  = hint: nothing was restored; pass --force to restore what can be and list what cannot");
+            eprintln!("  = explain: cig explain E703");
+            return exit::SCRIPT_ERROR;
+        }
+        eprintln!(
+            "{} {} problem(s) with the journal; --force given, restoring what can be",
+            ctx.yellow("note:"),
+            problems.len()
+        );
     }
     if dry_run {
+        for p in &problems {
+            outln!("  {} {p}", ctx.yellow("problem:"));
+        }
+        if !problems.is_empty() {
+            outln!(
+                "  {} a real unburn would refuse [E703]; --force restores what it can",
+                ctx.yellow("note:")
+            );
+        }
         outln!(
             "{}",
             ctx.bold(&format!(
@@ -204,7 +251,11 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool) -> i32 {
             };
             outln!("  {:>4}  {tag}  {}", e.seq, e.op.describe());
         }
-        return exit::OK;
+        return if problems.is_empty() {
+            exit::OK
+        } else {
+            exit::SCRIPT_ERROR
+        };
     }
     let report = journal.rollback();
     if ctx.json {

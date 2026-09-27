@@ -57,8 +57,17 @@ pub(crate) fn describe_io(e: &io::Error) -> String {
     }
 }
 
+/// Refuse to slurp a file larger than the allocation ceiling (E514).
+pub(crate) fn check_read_size(name: &str, p: &std::path::Path, s: Span) -> Result<(), Diagnostic> {
+    if let Ok(m) = fs::metadata(p) {
+        crate::value::check_alloc(m.len() as u128, &format!("{name} of {}", p.display()), s)?;
+    }
+    Ok(())
+}
+
 fn read_text(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.read_text", s)?;
+    check_read_size("fs.read_text", &p, s)?;
     fs::read_to_string(&p)
         .map(Value::str)
         .map_err(|e| io_err("fs.read_text", &p, e, s))
@@ -66,12 +75,16 @@ fn read_text(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> 
 
 fn read_lines(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.read_lines", s)?;
+    check_read_size("fs.read_lines", &p, s)?;
     let text = fs::read_to_string(&p).map_err(|e| io_err("fs.read_lines", &p, e, s))?;
     Ok(Value::list(text.lines().map(Value::str).collect()))
 }
 
 fn exists(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
-    Ok(Value::Bool(path_arg(a, 0, "fs.exists", s)?.exists()))
+    // A dangling symlink exists as far as `fs.rm` and `fs.mv` are concerned.
+    Ok(Value::Bool(
+        fs::symlink_metadata(path_arg(a, 0, "fs.exists", s)?).is_ok(),
+    ))
 }
 
 fn is_file(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {

@@ -78,6 +78,7 @@ pub fn light(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> 
                 .map(|(n, v)| ChainStep {
                     label: label_for(v, n),
                     value: v.clone(),
+                    span: s,
                 })
                 .collect();
             Rc::new(Chain {
@@ -248,10 +249,17 @@ fn run_chain(
                     payload.insert("cause".to_string(), crate::interp::error_value(&e, cause));
                     payload.insert("steps".to_string(), Value::list(reports));
                     i.cough_payload = Some(Value::map(payload));
+                    // Point at the step as written, not at the light() call;
+                    // an ad-hoc step (a list of packs) falls back to the call.
+                    let at = if step.span.line == 0 { span } else { step.span };
+                    let raised = match e.line {
+                        Some(l) if l > 0 && l != at.line => format!(" (raised at line {l})"),
+                        _ => String::new(),
+                    };
                     return Err(Diagnostic::new(
                         Kind::Cough,
                         format!(
-                            "chain `{}` failed at step {} ({}): {}",
+                            "chain `{}` failed at step {} ({}): {}{raised}",
                             chain.name,
                             index + 1,
                             step.label,
@@ -259,7 +267,7 @@ fn run_chain(
                         ),
                     )
                     .code("E602")
-                    .at(span)
+                    .at(at)
                     .with_hint(
                         "catch it with try/ashtray, or light with {continue_on_error: true}",
                     ));

@@ -54,14 +54,28 @@ the state of every path the op will change:
 
 | op | recorded before-state |
 |---|---|
-| write, append, delete, mkdir | the path: absent, a file (copied to a snapshot with its SHA-256), or a directory (copied as a tree) |
-| copy | the destination |
+| write, append | the path: absent, a file (copied to a snapshot with its SHA-256), or a symlink (its target); if the path is a symlink, also the place the bytes land |
+| delete, mkdir | the path: absent, a file, a directory (copied as a tree, links kept as links), or a symlink |
+| copy | the destination, as for a write |
 | move | the source as "moved to", and the destination |
 | proc, env | nothing; these are marked irreversible |
 
-The journal is `journal.jsonl`, one entry per line, flushed before the op runs.
-Snapshots live in `snapshots/` next to it. If the kernel cannot journal an op
-(disk full, permissions), the op is refused and nothing is changed.
+A symlink is always recorded as a link, whatever it points at and whether or
+not the target exists, and it is restored as a link. Writing through a link
+changes the file it points at, so both the link and that file are recorded.
+
+The journal is `journal.jsonl`, one entry per line. Snapshots live in
+`snapshots/` next to it. If the kernel cannot journal an op (disk full,
+permissions), the op is refused and nothing is changed.
+
+**Durability.** The journal is write-ahead: the snapshot is copied and synced
+to disk, the snapshot directory is synced, then the entry is appended and
+synced, and only then does the effect happen. A process killed at any point,
+or a machine that loses power, leaves a journal that `cig unburn` can replay.
+The cost is measured, not guessed: 500 small `fs.write_text` burns in one run
+on an ext4 NVMe laptop take about 0.48 s (roughly 1 ms per op), against
+0.02 s in 1.0.0, which flushed but never synced. Reads, dry runs and pure
+code pay nothing.
 
 Directory deletes snapshot the whole tree, so deleting a large directory costs
 a copy of it. Moves cost nothing: rollback moves the file back.
@@ -71,8 +85,10 @@ a copy of it. Moves cost nothing: rollback moves the file back.
 Rollback replays the journal newest entry first. For each recorded before-state:
 
 - *absent* → the path is removed if it now exists;
-- *file* → the snapshot is copied back;
-- *directory* → the current tree is removed and the snapshot tree restored;
+- *file* → the snapshot is copied to a staging file beside the path and swapped
+  in, so a failure half-way leaves what is there untouched;
+- *directory* → the snapshot tree is staged beside the path and swapped in;
+- *symlink* → a link to the recorded target is recreated;
 - *moved to X* → X is renamed back to the original path.
 
 Irreversible ops (processes, environment changes) are listed under "cannot
@@ -80,6 +96,23 @@ undo" so nothing is hidden. Rollback happens automatically when a `cig run`
 fails with an uncaught error (disable with `--no-rollback`), and on demand with
 `cig unburn <id>`, which works on a run that finished successfully too. The run
 record's status becomes `rolled_back` or `unburned`.
+
+`cig unburn` checks before it touches anything. Every snapshot the journal
+needs must exist and match its recorded SHA-256, and every moved file must
+still be where the run put it (or be put back by a later entry's own
+rollback). If anything is missing, the whole rollback is refused with `E703`
+and nothing is restored; `--dry-run` lists each problem, and `--force`
+restores what can be restored and reports the rest.
+
+`cig unburn` is idempotent: a run that was rolled back already is refused with
+`E705`, because restoring the old snapshots a second time would overwrite
+whatever happened since. `--force` overrides that too, deliberately.
+
+**Interrupted runs.** A run whose process died mid-burn is left with the
+status `running` and no totals. `cig runs` recognises it (the pid is gone,
+the journal is intact), shows it as `interrupted` with its burn count taken
+from the journal, and `cig doctor` reports it with `E706` and, under `--fix`,
+offers `cig unburn <id>`.
 
 ## Chains
 
@@ -98,6 +131,11 @@ per step; the journal records the effects.
   snapshots/      copies of files and trees as they were before each op
   intents.jsonl   unlit burns (only when there were any)
 ```
+
+A run's status is one of `running`, `ok`, `failed`, `rolled_back`,
+`unburned`, `unburn_failed`, or `interrupted` (derived when a `running`
+record's process no longer exists). Burn counts shown by `cig runs` come from
+the journal, which is authoritative even when the run never wrote its totals.
 
 Run ids sort chronologically (UTC). `cig runs` lists them, `cig runs <id>`
 shows one with its journal, `cig runs --prune N` keeps the newest N, and

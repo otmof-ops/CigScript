@@ -143,7 +143,11 @@ impl Interp {
                             .into())
                         }
                     }
-                    steps.push(crate::value::ChainStep { label, value });
+                    steps.push(crate::value::ChainStep {
+                        label,
+                        value,
+                        span: expr.span,
+                    });
                 }
                 let chain = Value::Chain(Rc::new(crate::value::Chain {
                     name: decl.name.clone(),
@@ -629,6 +633,11 @@ impl Interp {
                             runtime("cannot repeat a string a negative number of times").at(span)
                         );
                     }
+                    crate::value::check_alloc(
+                        s.len() as u128 * *n as u128,
+                        "repeating this string",
+                        span,
+                    )?;
                     Ok(Value::str(s.repeat(*n as usize)))
                 }
                 _ => match (l.as_f64(), r.as_f64()) {

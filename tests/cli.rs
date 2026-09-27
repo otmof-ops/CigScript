@@ -81,6 +81,17 @@ impl Sandbox {
         String::from_utf8_lossy(&out.stderr).to_string()
     }
 
+    fn cig_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_cig"))
+            .args(args)
+            .current_dir(self.path())
+            .env("CIGSCRIPT_HOME", self.home())
+            .env("NO_COLOR", "1")
+            .envs(envs.iter().copied())
+            .output()
+            .expect("run cig")
+    }
+
     fn runs(&self) -> Vec<serde_json::Value> {
         let out = self.run_ok(&["--json", "runs"]);
         serde_json::from_str(&out).expect("runs json")
@@ -695,4 +706,298 @@ fn lab_examples_run_end_to_end() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("dry-run plan: 5 ops"), "{stderr}");
     assert!(!sb.exists("work"));
+}
+
+// ----- the Hammer update: verified bugs and the rollback contract -----------
+
+#[test]
+fn interrupted_run_is_recognised_counted_from_the_journal_and_unburnable() {
+    let sb = Sandbox::new();
+    sb.write("a.txt", "one");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"a.txt\", \"two\")\n  fs.write_text(\"b.txt\", \"new\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let runs = sb.runs();
+    let id = runs[0]["id"].as_str().unwrap().to_string();
+    // Forge what a process killed mid-burn leaves behind: status still
+    // `running`, totals never written, a pid that is gone.
+    let rec_path = sb.home().join("runs").join(&id).join("run.json");
+    let mut rec: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&rec_path).unwrap()).unwrap();
+    rec["status"] = serde_json::json!("running");
+    rec["burns"] = serde_json::json!(0);
+    rec["finished"] = serde_json::Value::Null;
+    rec["pid"] = serde_json::json!(2_147_483_647u32);
+    fs::write(&rec_path, serde_json::to_string(&rec).unwrap()).unwrap();
+
+    let runs = sb.runs();
+    assert_eq!(runs[0]["status"], "interrupted", "{runs:?}");
+    assert_eq!(runs[0]["burns"], 2, "counted from the journal: {runs:?}");
+
+    let doctor: serde_json::Value =
+        serde_json::from_slice(&sb.cig(&["--json", "doctor"]).stdout).unwrap();
+    assert_eq!(doctor["interrupted_runs"][0], id, "{doctor}");
+    let text = String::from_utf8_lossy(&sb.cig(&["doctor"]).stdout).to_string();
+    assert!(
+        text.contains("interrupted mid-burn") && text.contains("E706"),
+        "{text}"
+    );
+
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("a.txt"), "one");
+    assert!(!sb.exists("b.txt"));
+    assert_eq!(sb.runs()[0]["status"], "unburned");
+}
+
+#[test]
+fn unburn_refuses_a_second_time_without_force() {
+    let sb = Sandbox::new();
+    sb.write("a.txt", "one");
+    sb.write("s.cig", "burn {\n  fs.write_text(\"a.txt\", \"two\")\n}\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("a.txt"), "one");
+    sb.write("a.txt", "three");
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E705 burn]:") && err.contains("already rolled back"),
+        "{err}"
+    );
+    assert_eq!(
+        sb.read("a.txt"),
+        "three",
+        "a refused unburn touches nothing"
+    );
+    // --dry-run is always allowed.
+    sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert_eq!(sb.read("a.txt"), "three");
+    sb.run_ok(&["unburn", &id, "--force"]);
+    assert_eq!(sb.read("a.txt"), "one");
+}
+
+#[test]
+fn unburn_checks_every_snapshot_before_touching_anything() {
+    let sb = Sandbox::new();
+    sb.write("m1.txt", "old1");
+    sb.write("m2.txt", "old2");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"m1.txt\", \"new1\")\n  fs.write_text(\"m2.txt\", \"new2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let snaps = sb.home().join("runs").join(&id).join("snapshots");
+    let mut removed = 0;
+    for e in fs::read_dir(&snaps).unwrap().flatten() {
+        if e.file_name().to_string_lossy().contains("m2.txt") {
+            fs::remove_file(e.path()).unwrap();
+            removed += 1;
+        }
+    }
+    assert_eq!(removed, 1, "one snapshot for m2.txt");
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E703 burn]:") && err.contains("snapshot missing for"),
+        "{err}"
+    );
+    assert_eq!(
+        sb.read("m1.txt"),
+        "new1",
+        "nothing restored before the check passes"
+    );
+    assert_eq!(sb.read("m2.txt"), "new2");
+    let plan = String::from_utf8_lossy(&sb.cig(&["unburn", &id, "--dry-run"]).stdout).to_string();
+    assert!(plan.contains("problem:") && plan.contains("E703"), "{plan}");
+    // --force restores what it can and reports the rest.
+    let out = sb.cig(&["unburn", &id, "--force"]);
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        text.contains("restored") && text.contains("failed"),
+        "{text}"
+    );
+    assert_eq!(sb.read("m1.txt"), "old1");
+    assert_eq!(sb.read("m2.txt"), "new2");
+}
+
+#[test]
+fn i64_min_is_a_literal_and_the_overflow_next_to_it_is_a_diagnostic() {
+    let sb = Sandbox::new();
+    let out = sb.run_ok(&["eval", "--", "-9223372036854775808"]);
+    assert_eq!(out.trim(), "-9223372036854775808");
+    let out = sb.run_ok(&[
+        "eval",
+        "--",
+        "-9223372036854775808 == -9223372036854775807 - 1",
+    ]);
+    assert_eq!(out.trim(), "true");
+    let err = sb.run_err(&["eval", "--", "9223372036854775808"], 2);
+    assert!(
+        err.contains("E104") && err.contains("does not fit"),
+        "{err}"
+    );
+    let err = sb.run_err(&["eval", "--", "9223372036854775809"], 2);
+    assert!(err.contains("E104"), "{err}");
+    let err = sb.run_err(&["eval", "--", "-9223372036854775808 - 1"], 1);
+    assert!(err.contains("overflow"), "{err}");
+    let err = sb.run_err(&["eval", "--", "0 - -9223372036854775808"], 1);
+    assert!(err.contains("overflow"), "{err}");
+}
+
+#[test]
+fn chain_failures_point_at_the_step_not_the_light_call() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        concat!(
+            "roll boom = pack(x) {\n",
+            "  cough \"kaboom\"\n",
+            "}\n",
+            "chain deploy {\n",
+            "  pack() => 1\n",
+            "  boom\n",
+            "}\n",
+            "\n",
+            "light(deploy)\n"
+        ),
+    );
+    // From inside the script: the step's line, plus where the cough was raised.
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains(
+            "error[E602 cough]: chain `deploy` failed at step 2 (boom): kaboom (raised at line 2)"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("s.cig:6:"),
+        "points at the step, not line 9: {err}"
+    );
+    assert!(!err.contains(":9:"), "{err}");
+    // From the CLI: there is no light() call at all, and still no 0:0.
+    let err = sb.run_err(&["light", "s.cig", "deploy"], 1);
+    assert!(err.contains("failed at step 2 (boom)"), "{err}");
+    assert!(err.contains("s.cig:6:"), "{err}");
+    assert!(!err.contains(":0:0"), "{err}");
+}
+
+#[test]
+fn allocation_ceiling_is_a_diagnostic_not_an_abort() {
+    let sb = Sandbox::new();
+    let err = sb.run_err(&["eval", "\"x\".repeat(9223372036854775807)"], 1);
+    assert!(
+        err.contains("error[E514 runtime]:") && err.contains("over the ceiling"),
+        "{err}"
+    );
+    let err = sb.run_err(&["eval", "\"ab\" * 9223372036854775807"], 1);
+    assert!(err.contains("E514"), "{err}");
+    let err = sb.run_err(&["eval", "\"x\".pad_left(9223372036854775807)"], 1);
+    assert!(err.contains("E514"), "{err}");
+    // The ceiling is configurable, and a value under it is built normally.
+    let out = sb.cig_env(
+        &["eval", "\"x\".repeat(2000).len()"],
+        &[("CIG_MAX_ALLOC", "1024")],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("E514"));
+    let out = sb.cig_env(
+        &["eval", "\"x\".repeat(10).len()"],
+        &[("CIG_MAX_ALLOC", "1024")],
+    );
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "10");
+    // Reading a file over the ceiling is refused before it is read.
+    sb.write("big.txt", &"y".repeat(4096));
+    let out = sb.cig_env(
+        &["eval", "fs.read_text(\"big.txt\").len()"],
+        &[("CIG_MAX_ALLOC", "1024")],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("E514"));
+    sb.run_ok(&["explain", "E514"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinks_roll_back_as_symlinks() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    sb.write("target.txt", "t");
+    symlink("target.txt", sb.path().join("live.lnk")).unwrap();
+    symlink("nowhere/at/all", sb.path().join("dangling.lnk")).unwrap();
+    fs::create_dir_all(sb.path().join("tree")).unwrap();
+    symlink("../target.txt", sb.path().join("tree/inner.lnk")).unwrap();
+    sb.write(
+        "s.cig",
+        concat!(
+            "burn {\n",
+            "  fs.rm(\"live.lnk\")\n",
+            "  fs.rm(\"dangling.lnk\")\n",
+            "  fs.rm(\"tree\")\n",
+            "  fs.write_text(\"target.txt\", \"changed\")\n",
+            "}\n",
+            "cough \"abort\"\n"
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("unburn: rolling back") && !err.contains("failed"),
+        "{err}"
+    );
+    let is_link = |p: &str| {
+        fs::symlink_metadata(sb.path().join(p))
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    };
+    assert!(
+        is_link("live.lnk"),
+        "live.lnk came back as a real file or not at all"
+    );
+    assert_eq!(
+        fs::read_link(sb.path().join("live.lnk")).unwrap(),
+        Path::new("target.txt")
+    );
+    assert!(is_link("dangling.lnk"));
+    assert_eq!(
+        fs::read_link(sb.path().join("dangling.lnk")).unwrap(),
+        Path::new("nowhere/at/all")
+    );
+    assert!(
+        is_link("tree/inner.lnk"),
+        "links inside a restored directory stay links"
+    );
+    assert_eq!(sb.read("target.txt"), "t");
+
+    // Writing through a link changes the target; rollback restores the
+    // target's bytes and leaves the link a link.
+    sb.write(
+        "s2.cig",
+        "burn {\n  fs.write_text(\"live.lnk\", \"through\")\n}\ncough \"abort\"\n",
+    );
+    sb.run_err(&["run", "s2.cig"], 1);
+    assert!(is_link("live.lnk"));
+    assert_eq!(sb.read("target.txt"), "t");
+    // ... and a write through a dangling link that would create its target
+    // removes that target again.
+    symlink("ghost.txt", sb.path().join("ghost.lnk")).unwrap();
+    sb.write(
+        "s3.cig",
+        "burn {\n  fs.write_text(\"ghost.lnk\", \"boo\")\n}\ncough \"abort\"\n",
+    );
+    sb.run_err(&["run", "s3.cig"], 1);
+    assert!(is_link("ghost.lnk"));
+    assert!(!sb.exists("ghost.txt"));
+    // fs.exists sees a dangling link, so `if fs.exists(p) { fs.rm(p) }` works.
+    assert_eq!(
+        sb.run_ok(&["eval", "fs.exists(\"dangling.lnk\")"]).trim(),
+        "true"
+    );
 }

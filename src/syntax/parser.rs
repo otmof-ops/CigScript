@@ -710,6 +710,13 @@ impl Parser {
         if self.at(&TokenKind::Minus) {
             let start = self.span();
             self.advance();
+            // `-9223372036854775808` is the one literal whose magnitude does
+            // not fit before the sign is applied: fold the sign in here.
+            if self.at(&TokenKind::IntMinMagnitude) {
+                let end = self.span();
+                self.advance();
+                return Ok(Expr::new(ExprKind::Int(i64::MIN), start.to(end)));
+            }
             let expr = self.unary()?;
             let span = start.to(expr.span);
             return Ok(Expr::new(
@@ -816,6 +823,16 @@ impl Parser {
             TokenKind::True => ExprKind::Bool(true),
             TokenKind::False => ExprKind::Bool(false),
             TokenKind::Int(v) => ExprKind::Int(v),
+            TokenKind::IntMinMagnitude => {
+                return Err(syntax(
+                    "integer literal `9223372036854775808` does not fit in 64 bits".to_string(),
+                    span,
+                )
+                .code("E104")
+                .with_hint(
+                    "the largest int is 9223372036854775807; -9223372036854775808 is valid with the minus sign directly in front",
+                ))
+            }
             TokenKind::Float(v) => ExprKind::Float(v),
             TokenKind::Str(parts) => ExprKind::Str(self.string_pieces(parts)?),
             TokenKind::Ident(name) => ExprKind::Ident(name),

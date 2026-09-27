@@ -90,6 +90,9 @@ pub enum Command {
         /// Show what would be restored without touching anything.
         #[arg(long)]
         dry_run: bool,
+        /// Restore even if this run was rolled back already or a snapshot is missing.
+        #[arg(long)]
+        force: bool,
     },
     /// Report on the installation, tools, updates and crash reports.
     Doctor {
@@ -196,7 +199,7 @@ pub fn main() -> i32 {
         Command::Eval { code } => run::eval(&ctx, &code),
         Command::Repl => repl::repl(&ctx),
         Command::Runs { id, prune } => runs::runs(&ctx, id, prune),
-        Command::Unburn { id, dry_run } => runs::unburn(&ctx, &id, dry_run),
+        Command::Unburn { id, dry_run, force } => runs::unburn(&ctx, &id, dry_run, force),
         Command::Doctor { fix } => doctor::doctor(&ctx, fix),
         Command::Language => language::language(&ctx),
         Command::Explain { code } => explain::explain(&ctx, code),

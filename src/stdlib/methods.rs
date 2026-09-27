@@ -185,13 +185,14 @@ fn s_repeat(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     if n < 0 {
         return Err(runtime("repeat: count cannot be negative").at(s));
     }
-    Ok(Value::str(
-        expect_str(a, 0, "repeat", s)?.repeat(n as usize),
-    ))
+    let text = expect_str(a, 0, "repeat", s)?;
+    crate::value::check_alloc(text.len() as u128 * n as u128, "repeat", s)?;
+    Ok(Value::str(text.repeat(n as usize)))
 }
 fn pad(a: &[Value], name: &str, s: Span, left: bool) -> Result<Value, Diagnostic> {
     let text = expect_str(a, 0, name, s)?;
     let width = expect_int(a, 1, name, s)?.max(0) as usize;
+    crate::value::check_alloc(width as u128 * 4, name, s)?;
     let fill = match a.get(2) {
         Some(_) => expect_str(a, 2, name, s)?.chars().next().unwrap_or(' '),
         None => ' ',
