@@ -307,17 +307,16 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
     if let Err(d) = &result {
         report(ctx, d, Some(&name), Some(&source));
         if !args.dry_run && !args.no_rollback && !interp.kernel.journal().is_empty() {
-            let rep = interp.kernel.rollback();
+            // Compensations run in place, newest first, in this interpreter
+            // with an ephemeral kernel standing in for the real one.
+            let mut real = std::mem::replace(&mut interp.kernel, Kernel::ephemeral(Mode::Run));
+            let rep =
+                real.rollback_with(&mut |c| interp.run_compensation(c).map_err(|e| e.message));
+            interp.kernel = real;
             if !ctx.json {
                 eprintln!("{}", ctx.bold("unburn: rolling back this run's burns"));
-                for r in &rep.restored {
-                    eprintln!("  {} {r}", ctx.green("restored"));
-                }
-                for r in &rep.irreversible {
-                    eprintln!("  {} {r}", ctx.yellow("cannot undo"));
-                }
-                for r in &rep.failed {
-                    eprintln!("  {} {r}", ctx.red("failed"));
+                for (label, text) in &rep.actions {
+                    eprintln!("  {} {text}", super::runs::paint_action(ctx, label));
                 }
             }
             rolled_back = Some(rep);
@@ -325,11 +324,12 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
     }
 
     if args.dry_run {
-        print_plan(
+        print_plan_with_pack(
             ctx,
             interp.kernel.dry_run_plan().collect(),
             "dry-run plan",
             "would burn",
+            interp.kernel.pack(),
         );
     }
     let intents: Vec<&PlannedOp> = interp.kernel.intents().collect();
@@ -432,6 +432,16 @@ fn save_intents(record: &RunRecord, interp: &Interp) -> Option<()> {
 }
 
 fn print_plan(ctx: &Ctx, ops: Vec<&PlannedOp>, title: &str, verb: &str) {
+    print_plan_with_pack(ctx, ops, title, verb, None)
+}
+
+fn print_plan_with_pack(
+    ctx: &Ctx,
+    ops: Vec<&PlannedOp>,
+    title: &str,
+    verb: &str,
+    pack: Option<&[std::path::PathBuf]>,
+) {
     if ctx.json {
         return;
     }
@@ -443,13 +453,31 @@ fn print_plan(ctx: &Ctx, ops: Vec<&PlannedOp>, title: &str, verb: &str) {
             if ops.len() == 1 { "" } else { "s" }
         ))
     );
+    if let Some(roots) = pack {
+        eprintln!(
+            "  {} {}",
+            ctx.dim("pack:"),
+            roots
+                .iter()
+                .map(|r| cigscript::crash::tilde(r))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     for op in ops {
         let tag = if op.reversible {
             ctx.dim("reversible  ")
+        } else if op.compensated {
+            ctx.green("compensated ")
         } else {
             ctx.yellow("irreversible")
         };
-        eprintln!("  {:>4}  {tag}  {}", op.seq, op.summary);
+        let owner = op
+            .owner
+            .as_ref()
+            .map(|o| ctx.dim(&format!("  [{o}]")))
+            .unwrap_or_default();
+        eprintln!("  {:>4}  {tag}  {}{owner}", op.seq, op.summary);
     }
     if verb == "would burn" {
         eprintln!("{}", ctx.dim("nothing was changed"));

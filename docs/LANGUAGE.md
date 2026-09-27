@@ -171,6 +171,39 @@ on stderr, keeping stdout for the program's real output.
 { }` is rehearsal: every motion, no burn, even in a real run; the intent is
 recorded instead.
 
+**Compensations.** `burn (state) { ... } unburn { ... }` attaches the undo
+for what the kernel cannot see (a push, an API call, a database write). The
+burn block declares `state`, a fresh map it fills; when the block completes,
+the compensation's source and the state map are journaled together. On
+rollback, in this run or by `cig unburn` weeks later in another process, the
+compensation runs with that state, newest first. Because it runs from the
+journal alone, an `unburn { }` block may use only its state map, the prelude
+modules and its own names; anything else is `E754`, before the run. The plan
+shows hops inside such a block as `compensated` instead of `irreversible`.
+
+```cig
+burn (s) {
+  s.before = proc.text("git", ["rev-parse", "origin/main"]).trim()
+  proc.run("git", ["push", "origin", "main"], {check: true})
+} unburn {
+  proc.run("git", ["push", "--force-with-lease", "origin", "${s.before}:main"], {check: true})
+}
+```
+
+## The pack
+
+`pack { "./build", "~/Downloads" }`, first statement of the script, declares
+the scope every native write must stay inside: the checker refuses a literal
+path outside it before the run (`E750`), the kernel refuses a computed one at
+run time (`E751`), and the plan prints the pack beside the ops. `~` expands;
+relative roots resolve against the working directory. Hops are watched
+rather than fenced: the kernel compares the pack before and after a child
+process, journals the files it created as reversible (rollback removes them)
+and the files it modified or deleted as irreversible with the detail, and
+reports anything the child wrote outside the pack as `E752`, so nothing is
+hidden and nothing is laundered. One pack per script (`E753`); parameters and
+cartons are the next seam of `HAMMER.md`.
+
 ```cig
 burn { ... }         # side effects allowed here, journaled, rolled back on failure
 burn unlit { ... }   # side effects recorded as intent and never executed

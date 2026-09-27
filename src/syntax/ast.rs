@@ -57,6 +57,13 @@ pub struct ChainDecl {
     pub span: Span,
 }
 
+/// `pack { "./build", "~/Downloads" }`: the scope every write must stay in.
+#[derive(Clone, Debug)]
+pub struct PackDecl {
+    pub roots: Vec<Expr>,
+    pub span: Span,
+}
+
 #[derive(Clone, Debug)]
 pub enum Stmt {
     /// `roll x = e` (mutable) or `stick x = e` (immutable).
@@ -74,6 +81,7 @@ pub enum Stmt {
     },
     Pull(FnDecl),
     Chain(ChainDecl),
+    Pack(PackDecl),
     Snuff {
         value: Option<Expr>,
         span: Span,
@@ -115,7 +123,15 @@ pub enum Stmt {
     },
     Burn {
         class: BurnClass,
+        /// `burn (state) { }`: a fresh map, visible in the body and the
+        /// compensation, journaled with it.
+        state: Option<String>,
         body: Block,
+        /// `unburn { }`: the compensation, run on rollback.
+        unburn: Option<Block>,
+        /// The compensation's source text, journaled so `cig unburn` can run
+        /// it later without the script.
+        unburn_src: Option<String>,
         span: Span,
     },
     Expr(Expr),
@@ -133,6 +149,7 @@ impl Stmt {
             | Stmt::While { span, .. }
             | Stmt::For { span, .. }
             | Stmt::Try { span, .. }
+            | Stmt::Pack(PackDecl { span, .. })
             | Stmt::Burn { span, .. } => *span,
             Stmt::Pull(f) => f.span,
             Stmt::Chain(c) => c.span,

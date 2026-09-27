@@ -117,6 +117,7 @@ fn the_wall_names_only_tests_that_exist() {
         "tests/cli.rs",
         "tests/wall.rs",
         "tests/hops.rs",
+        "tests/pack.rs",
         "tests/registry.rs",
         "src/burn/journal.rs",
     ] {

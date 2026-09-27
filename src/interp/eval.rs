@@ -312,17 +312,69 @@ impl Interp {
                     result
                 }
             }
-            Stmt::Burn { class, body, .. } => {
+            Stmt::Pack(decl) => {
+                let mut roots = Vec::new();
+                for r in &decl.roots {
+                    let v = self.eval(r, env)?;
+                    let Value::Str(text) = &v else {
+                        return Err(type_error(format!(
+                            "pack roots are paths (strings), got {}",
+                            v.type_name()
+                        ))
+                        .at(r.span)
+                        .into());
+                    };
+                    roots.push(crate::burn::normalize_root(text));
+                }
+                self.kernel.set_pack(roots);
+                Ok(())
+            }
+            Stmt::Burn {
+                class,
+                state,
+                body,
+                unburn,
+                unburn_src,
+                span,
+            } => {
+                let scope = Scope::child(env);
+                let state_value = state.as_ref().map(|name| {
+                    let m = Value::map(IndexMap::new());
+                    scope.declare(name, m.clone(), false);
+                    m
+                });
+                let compensating = unburn.is_some() && *class != BurnClass::Unlit;
                 self.burn_depth += 1;
                 if *class == BurnClass::Unlit {
                     self.unlit_depth += 1;
                 }
-                let result = self.exec_block(body, env);
+                if compensating {
+                    self.kernel.enter_compensating();
+                }
+                let result = self.exec_block_in(&body.stmts, &scope);
+                if compensating {
+                    self.kernel.leave_compensating();
+                }
                 self.burn_depth -= 1;
                 if *class == BurnClass::Unlit {
                     self.unlit_depth -= 1;
                 }
-                result
+                result?;
+                if compensating {
+                    let state_json = match &state_value {
+                        Some(v) => crate::stdlib::json::from_value(v, *span)?,
+                        None => serde_json::Value::Null,
+                    };
+                    self.kernel
+                        .record_compensation(crate::burn::journal::Compensation {
+                            source: unburn_src.clone().unwrap_or_default(),
+                            state_name: state.clone(),
+                            state: state_json,
+                            line: unburn.as_ref().map(|b| b.span.line).unwrap_or(span.line),
+                        })
+                        .map_err(|d| d.or_at(*span))?;
+                }
+                Ok(())
             }
             Stmt::Expr(e) => {
                 self.eval(e, env)?;

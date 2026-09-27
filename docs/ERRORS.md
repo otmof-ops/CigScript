@@ -1010,6 +1010,7 @@ raised by the script: cough, assert, chains, process checks.
 | [`E601`](#e601-assertion-failed) | assertion failed | not one of the four | print the values it compares; the optional second argument becomes the message |
 | [`E602`](#e602-chain-failed) | chain failed | not one of the four | fix the step at the line shown, or light with {continue_on_error: true} and read failed[] from the report |
 | [`E603`](#e603-process-check-failed-(retired)) | process check failed (retired) | one of the four; the message says which | read E553; the ashtray value is the same shape it always was |
+| [`E604`](#e604-chain-lights-itself) | chain lights itself | not one of the four | take the chain out of its own steps; the message shows the loop |
 
 ### E600 raised by the script
 
@@ -1074,6 +1075,23 @@ Retired in 1.1.0: a non-zero exit under {check: true} is now E553, exit outside 
 1. the program exited non-zero (no probe; a suggestion, not a finding). **Remedy:** read E553, which replaced this code; the ashtray value has the same shape
 
 Related: `E553`.
+
+
+### E604 chain lights itself
+
+*cough · since 1.1.0 · arises in run, light*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A chain is a step of itself, directly or through other chains; lighting it would never end.
+
+**What to type next:** take the chain out of its own steps; the message shows the loop
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. chain a lights chain b which lights chain a (probe `chain-report`). **Remedy:** break the loop at the step named; a chain that repeats work belongs in a while loop with a condition
+
+Related: `E602`, `E515`.
 
 
 ## kernel (`E700`–`E749`)
@@ -1215,7 +1233,112 @@ Related: `E703`.
 
 folds and packs: refusals when automation is composed.
 
-*Reserved; nothing emitted yet.*
+| code | title | kind of no | what to type next |
+|---|---|---|---|
+| [`E750`](#e750-literal-path-outside-the-pack) | literal path outside the pack | these are MY ciggies | move the path inside a declared root, or add the root to pack { } |
+| [`E751`](#e751-path-outside-the-pack) | path outside the pack | these are MY ciggies | the plan shows the pack beside the ops; widen the pack or fix the computed path |
+| [`E752`](#e752-hop-wrote-outside-the-pack) | hop wrote outside the pack | these are MY ciggies | point the program at the pack (its cwd, an output flag), or add the root it wrote to |
+| [`E753`](#e753-pack-misplaced) | pack misplaced | not one of the four | move pack { } to the top of the file and keep one |
+| [`E754`](#e754-compensation-reaches-outside-its-state) | compensation reaches outside its state | not one of the four | put the value in the state map inside the burn block (burn (s) { s.sha = ... }) and read s.sha in unburn { } |
+| [`E756`](#e756-fold-shape-mismatch) | fold shape mismatch *(planned)* | not one of the four | match the declaration |
+
+### E750 literal path outside the pack
+
+*burn · since 1.1.0 · arises in check*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+A write names a literal path that sits outside the script's declared pack (its scope), so the checker refuses it before anything runs.
+
+**What to type next:** move the path inside a declared root, or add the root to pack { }
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the pack declares a narrower scope than the script writes to (probe `source-line`). **Remedy:** add the root to pack { } if the write is intended; otherwise fix the path
+
+Related: `E751`, `E753`.
+
+
+### E751 path outside the pack
+
+*burn · since 1.1.0 · arises in run, dry-run, light*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+At run time a burn tried to touch a path outside the declared pack; the kernel refused it and nothing was changed.
+
+**What to type next:** the plan shows the pack beside the ops; widen the pack or fix the computed path
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a computed path (joined, globbed, from args) resolved outside the pack's roots (probe `path-exists`). **Remedy:** exhale the path before the burn; the pack's roots are in the plan header
+
+Related: `E750`, `E752`.
+
+
+### E752 hop wrote outside the pack
+
+*burn · since 1.1.0 · arises in run, light*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+A child process changed files outside the declared pack. The kernel cannot undo them and did not watch them; they are listed so nothing is hidden.
+
+**What to type next:** point the program at the pack (its cwd, an output flag), or add the root it wrote to
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program writes to its working directory, which is not in the pack (no probe; a suggestion, not a finding). **Remedy:** run it with {cwd: <a pack root>}, or add that directory to pack { }
+
+Related: `E751`.
+
+
+### E753 pack misplaced
+
+*burn · since 1.1.0 · arises in check*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+pack { } must be the first statement of a script and appear once: the scope is declared before anything can burn.
+
+**What to type next:** move pack { } to the top of the file and keep one
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a second pack { }, or one below other statements (probe `source-line`). **Remedy:** one pack { }, first line after the comments
+
+Related: `E750`.
+
+
+### E754 compensation reaches outside its state
+
+*burn · since 1.1.0 · arises in check*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+An unburn { } block refers to a name that is not its state map, a module or a builtin. Compensations run later, in another process, from the journal alone, so they may use only what was put in the state.
+
+**What to type next:** put the value in the state map inside the burn block (burn (s) { s.sha = ... }) and read s.sha in unburn { }
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the compensation uses a variable from the surrounding script (probe `source-line`). **Remedy:** copy it into the state map in the burn block; the map is journaled with the compensation
+
+
+### E756 fold shape mismatch
+
+*burn · since 1.1.0 · arises in check · planned*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A folded unit is lit with the wrong number or names of arguments; the error names the unit, the caller and the mismatch.
+
+**What to type next:** match the declaration
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the caller and the folded unit disagree on parameters (probe `source-line`). **Remedy:** match the declaration
+
 
 ## usage (`E800`–`E849`)
 

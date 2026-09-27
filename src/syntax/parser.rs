@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 pub fn parse(src: &str) -> Result<Program, Diagnostic> {
     let tokens = tokenize(src)?;
-    Parser::new(tokens).program()
+    Parser::with_source(tokens, src).program()
 }
 
 /// Parse a single expression (used by `cig eval` and string interpolation).
@@ -38,14 +38,39 @@ pub fn parse_expr_src(src: &str, origin: Span) -> Result<Expr, Diagnostic> {
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// The source, for slicing a compensation's text into the AST.
+    src: Option<std::rc::Rc<str>>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            src: None,
+        }
+    }
+
+    pub fn with_source(tokens: Vec<Token>, src: &str) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            src: Some(std::rc::Rc::from(src)),
+        }
+    }
+
+    fn slice(&self, span: Span) -> Option<String> {
+        self.src
+            .as_ref()
+            .and_then(|s| s.get(span.start..span.end).map(str::to_string))
     }
 
     // ----- token helpers -------------------------------------------------
+
+    fn peek_at(&self, ahead: usize) -> &TokenKind {
+        let idx = (self.pos + ahead).min(self.tokens.len() - 1);
+        &self.tokens[idx].kind
+    }
 
     fn peek(&self) -> &TokenKind {
         &self.tokens[self.pos].kind
@@ -404,12 +429,59 @@ impl Parser {
                     span: start.to(self.prev_span()),
                 })
             }
+            TokenKind::Pack if matches!(self.peek_at(1), TokenKind::LBrace) => {
+                self.advance();
+                let open = self.expect(TokenKind::LBrace, "`{`")?;
+                let mut roots = Vec::new();
+                self.skip_newlines();
+                while !self.at(&TokenKind::RBrace) {
+                    if self.at(&TokenKind::Eof) {
+                        return Err(syntax("this `{` is never closed", open.span)
+                            .code("E202")
+                            .with_hint("add a matching `}`"));
+                    }
+                    roots.push(self.expr()?);
+                    match self.peek() {
+                        TokenKind::Comma | TokenKind::Newline | TokenKind::Semicolon => {
+                            self.advance();
+                            self.skip_newlines();
+                        }
+                        TokenKind::RBrace => {}
+                        other => {
+                            return Err(syntax(
+                                format!(
+                                    "expected a comma or a new line between pack roots, found {}",
+                                    other.describe()
+                                ),
+                                self.span(),
+                            ))
+                        }
+                    }
+                }
+                self.advance();
+                if roots.is_empty() {
+                    return Err(syntax("a pack declares at least one root", start)
+                        .with_hint("pack { \"./build\" }"));
+                }
+                Ok(Stmt::Pack(PackDecl {
+                    roots,
+                    span: start.to(self.prev_span()),
+                }))
+            }
             TokenKind::Burn => {
                 self.advance();
                 let class = if self.eat(&TokenKind::Unlit) {
                     BurnClass::Unlit
                 } else {
                     BurnClass::Normal
+                };
+                // `burn (state) { }`: a named state map for the compensation.
+                let state = if self.eat(&TokenKind::LParen) {
+                    let (name, _) = self.ident("a state name inside `burn (...)`")?;
+                    self.expect(TokenKind::RParen, "`)`")?;
+                    Some(name)
+                } else {
+                    None
                 };
                 if !self.at(&TokenKind::LBrace) {
                     return Err(syntax(
@@ -422,9 +494,28 @@ impl Parser {
                     .with_hint("burn { ... } or burn unlit { ... }"));
                 }
                 let body = self.block()?;
+                self.skip_newlines();
+                let (unburn, unburn_src) = if self.at(&TokenKind::Ident("unburn".to_string())) {
+                    self.advance();
+                    let open = self.span();
+                    let block = self.block()?;
+                    let close = self.prev_span();
+                    let inner = Span {
+                        start: open.end,
+                        end: close.start.max(open.end),
+                        line: open.line,
+                        col: open.col,
+                    };
+                    (Some(block), self.slice(inner))
+                } else {
+                    (None, None)
+                };
                 Ok(Stmt::Burn {
                     class,
+                    state,
                     body,
+                    unburn,
+                    unburn_src,
                     span: start.to(self.prev_span()),
                 })
             }
