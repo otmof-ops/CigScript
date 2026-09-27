@@ -243,7 +243,7 @@ files beside it; other platforms build from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.1.0/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.1.1/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -253,7 +253,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.1.0 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.1.1 cigscript
 ```
 
 Then:

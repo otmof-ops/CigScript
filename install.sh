@@ -4,7 +4,7 @@
 # CigScript installer. POSIX sh, no sudo, asks before installing anything.
 #
 #   Review first (recommended):
-#     curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.1.0/install.sh -o install.sh
+#     curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.1.1/install.sh -o install.sh
 #     less install.sh && sh install.sh
 #
 #   Options:
