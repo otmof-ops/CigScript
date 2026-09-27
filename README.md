@@ -418,6 +418,8 @@ for.
 | `snuff` out of a `burn (s) { } unburn { }` block | **the compensation was never recorded; a later rollback or `cig unburn` skipped the undo** | fixed 1.1.1 | `a_compensating_block_left_by_snuff_still_records_its_compensation` |
 | `fs.append_text` to a log in a directory that does not exist yet | **`E508` no such file, after a dry run that saw no problem**; now the parent is created, as `fs.write_text` always did | fixed 1.1.1 | `append_text_creates_the_parent_directory_like_write_text_and_the_dry_run_agrees` |
 | `env.set` in a dry-run plan | **labelled reversible**, against the docs; now irreversible, which is what the kernel can do about it | fixed 1.1.1 | `env_changes_are_labelled_irreversible_in_the_plan` |
+| a script that makes `build/out/` inside the pack, then a rollback | **the files went, the directories stayed, empty**; now hop watching journals the directories a script creates and rollback removes them | fixed 1.1.2 | `directories_a_hop_creates_are_removed_by_rollback_and_unburn` |
+| `fs.glob("*")`, `fs.glob("./scripts/*")` | **an empty string among the matches; nothing at all**; now neither, and a pattern without `**` walks no deeper than it can match | fixed 1.1.2 | `glob_star_lists_no_empty_entry_and_dot_slash_patterns_match` |
 | `cig run /dev/zero`; `cig frobnicate` | **read forever; exit 2 (a script error's code)**; now `E801`, and exit 3 | fixed 1.1.1 | `a_device_as_the_script_is_refused_and_a_bad_invocation_exits_3` |
 
 Add a row. The rules for reporting one are in

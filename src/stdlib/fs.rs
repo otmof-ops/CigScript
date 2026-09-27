@@ -285,8 +285,29 @@ fn list(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
 
 /// Recursive glob (`**` supported) relative to the current directory or an
 /// absolute root, sorted.
+/// A leading `./` means the same directory: matched without it, and put
+/// back on every result so the caller gets the form they wrote.
+fn split_dot(pattern: &str) -> (bool, &str) {
+    let mut rest = pattern;
+    let mut dot = false;
+    while let Some(r) = rest.strip_prefix("./") {
+        rest = r;
+        dot = true;
+    }
+    (dot, rest)
+}
+
+fn with_dot(dot: bool, p: PathBuf) -> PathBuf {
+    if dot {
+        Path::new(".").join(p)
+    } else {
+        p
+    }
+}
+
 fn glob(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
-    let pattern = expect_str(a, 0, "fs.glob", s)?;
+    let written = expect_str(a, 0, "fs.glob", s)?;
+    let (dot, pattern) = split_dot(written);
     let mut paths =
         glob_paths(pattern).map_err(|e| runtime(format!("fs.glob: {e}")).code("E508").at(s))?;
     if let Some(g) = i.ghost() {
@@ -307,7 +328,10 @@ fn glob(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
                         Err(_) => continue,
                     }
                 };
-                if matcher.is_match(&candidate) && !paths.contains(&candidate) {
+                if !candidate.as_os_str().is_empty()
+                    && matcher.is_match(&candidate)
+                    && !paths.contains(&candidate)
+                {
                     paths.push(candidate);
                 }
             }
@@ -317,7 +341,7 @@ fn glob(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     Ok(Value::list(
         paths
             .into_iter()
-            .map(|p| Value::str(p.to_string_lossy()))
+            .map(|p| Value::str(with_dot(dot, p).to_string_lossy()))
             .collect(),
     ))
 }
@@ -331,6 +355,17 @@ pub(crate) fn glob_paths(pattern: &str) -> Result<Vec<PathBuf>, String> {
     // Walk from the longest literal prefix so `src/**/*.rs` does not scan the
     // whole tree.
     let root = literal_prefix(pattern);
+    // Without `**` (or braces, which may hide a `/`), a pattern cannot match
+    // deeper than its own components: `*` at the top of a project must not
+    // walk node_modules to find out.
+    let depth = if pattern.contains("**") || pattern.contains('{') {
+        usize::MAX
+    } else {
+        Path::new(pattern)
+            .components()
+            .count()
+            .saturating_sub(root.components().count())
+    };
     let walk_root = if root.as_os_str().is_empty() {
         PathBuf::from(".")
     } else {
@@ -339,6 +374,7 @@ pub(crate) fn glob_paths(pattern: &str) -> Result<Vec<PathBuf>, String> {
     let mut out = Vec::new();
     for entry in walkdir::WalkDir::new(&walk_root)
         .min_depth(0)
+        .max_depth(depth)
         .follow_links(false)
         .sort_by_file_name()
     {
@@ -348,6 +384,10 @@ pub(crate) fn glob_paths(pattern: &str) -> Result<Vec<PathBuf>, String> {
         };
         let path = entry.path();
         let candidate = path.strip_prefix(".").unwrap_or(path);
+        // The walk's own root is not a match for `*`.
+        if candidate.as_os_str().is_empty() {
+            continue;
+        }
         if matcher.is_match(candidate) {
             out.push(candidate.to_path_buf());
         }

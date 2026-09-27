@@ -212,15 +212,23 @@ impl Parser {
 
     pub fn program(&mut self) -> Result<Program, Diagnostic> {
         let mut body = Vec::new();
-        self.skip_newlines();
+        self.skip_separators();
         while !self.at(&TokenKind::Eof) {
             if self.at(&TokenKind::RBrace) {
                 return Err(syntax("unexpected `}` with no open block", self.span()));
             }
             body.push(self.stmt()?);
-            self.skip_newlines();
+            self.skip_separators();
         }
         Ok(Program { body })
+    }
+
+    /// Between statements: newlines, and the `;` that may follow any
+    /// statement, a block statement included (`if c { }; x`).
+    fn skip_separators(&mut self) {
+        while matches!(self.peek(), TokenKind::Newline | TokenKind::Semicolon) {
+            self.advance();
+        }
     }
 
     fn enter(&mut self) -> Result<(), Diagnostic> {
@@ -254,7 +262,7 @@ impl Parser {
                     .with_hint("add a matching `}`"));
             }
             stmts.push(self.stmt()?);
-            self.skip_newlines();
+            self.skip_separators();
         }
         let close = self.advance();
         Ok(Block {

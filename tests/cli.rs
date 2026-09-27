@@ -2580,3 +2580,43 @@ fn an_ad_hoc_chain_can_name_its_steps() {
     let err = sb.run_err(&["eval", "--", "light([pack() => 1], {names: \"x\"})"], 1);
     assert!(err.contains("`names` is a list of strings"), "{err}");
 }
+
+#[test]
+fn a_semicolon_may_follow_a_block_statement() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "if true { exhale 1 }; exhale 2\nburn { exhale 3 }; exhale 4\npull f() { snuff 5 }; exhale f()\nfor i in [6] { exhale i };\n;; exhale 7\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(out.trim(), "1\n2\n3\n4\n5\n6\n7");
+}
+
+#[test]
+fn glob_star_lists_no_empty_entry_and_dot_slash_patterns_match() {
+    let sb = Sandbox::new();
+    sb.write("scripts/a.sh", "");
+    sb.write("scripts/deep/b.sh", "");
+    sb.write("top.txt", "");
+    sb.write(
+        "s.cig",
+        "exhale fs.glob(\"*\")\nexhale fs.glob(\"./scripts/*\")\nexhale fs.glob(\"scripts/*\")\nexhale fs.glob(\"scripts/**/*.sh\")\nexhale fs.glob(\"./top.txt\")\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(!lines[0].contains("\"\""), "an empty entry: {}", lines[0]);
+    assert!(
+        lines[0].contains("\"scripts\"") && lines[0].contains("\"top.txt\""),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        !lines[0].contains("scripts/a.sh"),
+        "`*` walked below the top: {}",
+        lines[0]
+    );
+    assert_eq!(lines[1], "[\"./scripts/a.sh\", \"./scripts/deep\"]");
+    assert_eq!(lines[2], "[\"scripts/a.sh\", \"scripts/deep\"]");
+    assert_eq!(lines[3], "[\"scripts/a.sh\", \"scripts/deep/b.sh\"]");
+    assert_eq!(lines[4], "[\"./top.txt\"]");
+}

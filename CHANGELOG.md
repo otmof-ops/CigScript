@@ -3,6 +3,21 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+Found by building [cig-orchestrator](https://github.com/otmof-ops/cig-orchestrator),
+a tool written in CigScript that runs a project's existing scripts.
+
+- Hop watching journals the directories a script creates inside the pack,
+  not only the files, so a rollback or `cig unburn` removes `build/out/`
+  instead of leaving it empty.
+- `fs.glob("*")` no longer lists an empty string (the directory itself);
+  `fs.glob("./scripts/*")` matches what `fs.glob("scripts/*")` does and keeps
+  the `./` on its results; a pattern without `**` walks no deeper than its
+  own components, so `*` at the top of a project no longer reads all of
+  `node_modules`.
+- A `;` may follow a block statement: `if c { }; x`, `burn { }; x`.
+
 ## 1.1.1 — 2026-09-28
 
 The hardening round: 1.1.0 attacked from every side, the failures that
