@@ -1,0 +1,1316 @@
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-License-Identifier: Apache-2.0
+#
+# The CigScript error-code registry: the one place a code is defined.
+#
+# Everything that talks about codes reads this file. The binary embeds it
+# (`cig explain`, `--json` output, doctor's knowledge, the JSON schema);
+# `docs/ERRORS.md` and `docs/diagnostic.schema.json` are generated from it by
+# `scripts/gen-errors-doc.py`; `tests/registry.rs` fails the build when a code
+# is emitted that is not here, when a code here is never emitted (unless it is
+# tagged `planned`), or when an entry is missing any part of its page.
+#
+# Rules: a code never changes meaning; a retired code is never reused (mark it
+# `retired = true` and keep it). Every code has a `fix` in the shape "what to
+# type next", at least one ranked cause with a named read-only probe (or
+# `none`), and a `no`: which of the four kinds of no it is, from the lexicon.
+#
+# A code is a node, not a number.
+
+version = 1
+
+# ----- ranges: a code's first digits decide its family and its kind ----------
+
+[[range]]
+from = "E100"
+to = "E199"
+family = "lex"
+kind = "lex"
+meaning = "lexing: the source cannot be turned into tokens"
+
+[[range]]
+from = "E200"
+to = "E299"
+family = "syntax"
+kind = "syntax"
+meaning = "parsing: the tokens do not follow the grammar"
+
+[[range]]
+from = "E300"
+to = "E399"
+family = "check"
+kind = "check"
+meaning = "static check (`cig check`): a mistake found before anything runs"
+
+[[range]]
+from = "E400"
+to = "E499"
+family = "type"
+kind = "type"
+meaning = "types and arity: a value of the wrong shape reached an operation"
+
+[[range]]
+from = "E500"
+to = "E519"
+family = "runtime"
+kind = "runtime"
+meaning = "runtime: a failure while the script was running, including the resource ceilings"
+
+[[range]]
+from = "E520"
+to = "E529"
+family = "ghost"
+kind = "runtime"
+meaning = "the ghost filesystem: dry-run reads of paths that simulated ops changed"
+
+[[range]]
+from = "E550"
+to = "E569"
+family = "hop"
+kind = "runtime"
+meaning = "hops (process boundaries): child processes and foreign scripts"
+
+[[range]]
+from = "E600"
+to = "E699"
+family = "cough"
+kind = "cough"
+meaning = "raised by the script: cough, assert, chains, process checks"
+
+[[range]]
+from = "E700"
+to = "E749"
+family = "kernel"
+kind = "burn"
+meaning = "the burn kernel and its journal (write-ahead log)"
+
+[[range]]
+from = "E750"
+to = "E769"
+family = "fold"
+kind = "burn"
+meaning = "folds and packs: refusals when automation is composed"
+
+[[range]]
+from = "E800"
+to = "E849"
+family = "usage"
+kind = "usage"
+meaning = "the command line and the environment"
+
+[[range]]
+from = "E850"
+to = "E869"
+family = "update"
+kind = "usage"
+meaning = "the updater and doctor"
+
+[[range]]
+from = "E900"
+to = "E999"
+family = "internal"
+kind = "internal"
+meaning = "internal: a bug in CigScript itself"
+
+# ----- the four kinds of no (docs/LEXICON.md, "Scrounging a ciggy") ---------
+
+[[no]]
+id = "none"
+hear = "not one of the four"
+whose = "a mistake in the text, in the arithmetic, or in CigScript"
+manual = "syntax, type or logic error; an internal error"
+
+[[no]]
+id = "cant-see-any"
+hear = "can't see any ciggies bro"
+whose = "yours: you're pointed at the wrong place"
+manual = "wrong address: a path, a name, a directory not on PATH; ENOENT"
+
+[[no]]
+id = "never-heard-of-you"
+hear = "never heard of you"
+whose = "the door: it doesn't know you"
+manual = "401 Unauthorized; authentication failure"
+
+[[no]]
+id = "these-are-mine"
+hear = "these are MY ciggies"
+whose = "the door: it knows you and said no"
+manual = "403 Forbidden; permission denied; a lock; a refusal by policy"
+
+[[no]]
+id = "dont-have-any"
+hear = "don't have any over here"
+whose = "nobody's: right place, right you, nothing there"
+manual = "404 from the server's side; an empty result"
+
+[[no]]
+id = "depends"
+hear = "one of the four; the message says which"
+whose = "read the operating-system reason in the message"
+manual = "ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below"
+
+# ----- probes: the read-only checks doctor may run to confirm a cause --------
+# A probe reads; it never writes, never re-runs the failing command and never
+# touches the network. `none` means no probe can confirm the cause.
+
+[[probe]]
+name = "none"
+reads = "nothing: the cause cannot be confirmed by looking, only suggested"
+
+[[probe]]
+name = "source-line"
+reads = "the source line under the caret"
+
+[[probe]]
+name = "string-literal-scan"
+reads = "the line the string opened on, looking for where the quote should close"
+
+[[probe]]
+name = "brace-balance"
+reads = "the count of { and } per line, to find the block that never closed"
+
+[[probe]]
+name = "similar-names"
+reads = "the names in scope, ranked by edit distance from the one used"
+
+[[probe]]
+name = "int-magnitude"
+reads = "the literal's magnitude against the 64-bit range"
+
+[[probe]]
+name = "value-types"
+reads = "the types of the operands, as the message reports them"
+
+[[probe]]
+name = "path-exists"
+reads = "stat of the path named in the message"
+
+[[probe]]
+name = "path-permissions"
+reads = "mode bits and owner of the path, or of its nearest existing ancestor"
+
+[[probe]]
+name = "parent-exists"
+reads = "stat of the parent directory of the path"
+
+[[probe]]
+name = "path-is-dir"
+reads = "whether the path is a directory, a file or a link"
+
+[[probe]]
+name = "disk-free"
+reads = "free space on the filesystem holding the path or the state directory"
+
+[[probe]]
+name = "state-dir-writable"
+reads = "whether the state directory (CIGSCRIPT_HOME or ~/.cigscript) can be written"
+
+[[probe]]
+name = "on-path"
+reads = "each directory on PATH, looking for the program named in the message"
+
+[[probe]]
+name = "env-var"
+reads = "an environment variable that changes the limit involved"
+
+[[probe]]
+name = "plan-order"
+reads = "the dry-run plan, for the earlier op that took the path away"
+
+[[probe]]
+name = "chain-report"
+reads = "the chain report: which step, its label, and the inner error"
+
+[[probe]]
+name = "snapshot-integrity"
+reads = "every snapshot the run's journal needs, its presence and its hash"
+
+[[probe]]
+name = "file-hash"
+reads = "the current hash of a file against the hash the journal recorded"
+
+[[probe]]
+name = "run-record"
+reads = "run.json for the run: status, pid, totals"
+
+[[probe]]
+name = "pid-alive"
+reads = "whether the run's process still exists"
+
+[[probe]]
+name = "run-list"
+reads = "the run records under the state directory"
+
+[[probe]]
+name = "chain-list"
+reads = "the chains the script declares"
+
+[[probe]]
+name = "network-tools"
+reads = "whether gh and curl are on PATH"
+
+[[probe]]
+name = "release-manifest"
+reads = "the cached release manifest and the checksum file for the asset"
+
+[[probe]]
+name = "crash-reports"
+reads = "the crash reports saved under the state directory"
+
+# ----- codes ------------------------------------------------------------------
+# Per code: title, meaning, fix (what to type next), no, arises (where it can
+# appear: parse, check, dry-run, run, light, unburn, runs, doctor, update,
+# crash, any), tags, since (first version shipped), related, and ranked causes.
+# Cause fields: why, probe, remedy, fixable (doctor can apply it with consent),
+# needs_burn, reversible.
+
+# --- lex (E1xx) ---
+
+[[code]]
+code = "E100"
+title = "lexing error"
+meaning = "The source contains something the lexer cannot turn into tokens."
+fix = "fix the character or literal the message names; `cig language` shows the forms"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "a character or literal the lexer does not know; the message names it"
+probe = "source-line"
+remedy = "fix it at the caret"
+
+[[code]]
+code = "E101"
+title = "unterminated string"
+meaning = "A string literal has no closing quote on its line."
+fix = "close the string on the same line, or write \\n for a newline inside it"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "the closing quote is missing, or sits on the next line"
+probe = "string-literal-scan"
+remedy = "close the string on the line it opened; use \\n for a line break inside it"
+[[code.cause]]
+why = 'an escaped quote \" swallowed the closing quote'
+probe = "source-line"
+remedy = "count the backslashes before the last quote; a raw 'single-quoted' string has no escapes"
+
+[[code]]
+code = "E102"
+title = "unknown escape"
+meaning = "A backslash sequence in a double-quoted string is not one CigScript knows."
+fix = "use \\n \\t \\r \\0 \\\\ \\\" \\$ \\u{hex}; for a regex or a Windows path use a raw 'single-quoted' string"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "a Windows path or a regex inside a double-quoted string"
+probe = "source-line"
+remedy = "write it as a raw 'single-quoted' string, which has no escapes at all"
+[[code.cause]]
+why = "a typo in an escape"
+probe = "none"
+remedy = 'the escapes are \n \t \r \0 \\ \" \$ and \u{hex}'
+
+[[code]]
+code = "E103"
+title = "unexpected character"
+meaning = "A character cannot start any token, often a C-style operator."
+fix = "spell logic as `and`, `or`, `not`; comparisons are == != < <= > >="
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "a C-style operator: && || !"
+probe = "source-line"
+remedy = "spell them `and`, `or`, `not`"
+[[code.cause]]
+why = "a smart quote or a non-breaking space pasted from a document; the message shows the character"
+probe = "source-line"
+remedy = "retype the character with a plain quote or space"
+
+[[code]]
+code = "E104"
+title = "malformed number"
+meaning = "A numeric literal does not fit in 64 bits or is not well formed."
+fix = "use a float (add .0) for magnitudes beyond 9223372036854775807; -9223372036854775808 is valid with the minus directly in front"
+no = "none"
+arises = ["parse"]
+since = "1.0.0"
+related = ["E503"]
+[[code.cause]]
+why = "the literal is larger than 9223372036854775807"
+probe = "int-magnitude"
+remedy = "add .0 to make it a float, or check whether the number is right"
+[[code.cause]]
+why = "a stray character inside the number"
+probe = "source-line"
+remedy = "digits and single underscores only: 1_000_000"
+
+# --- syntax (E2xx) ---
+
+[[code]]
+code = "E200"
+title = "syntax error"
+meaning = "The source does not follow the grammar."
+fix = "look at the caret; the message says what was expected; `cig language` shows the forms"
+no = "none"
+arises = ["parse"]
+since = "1.0.0"
+[[code.cause]]
+why = "the caret marks where parsing stopped; the message names what was expected there"
+probe = "source-line"
+remedy = "supply what was expected, or remove what was not"
+
+[[code]]
+code = "E201"
+title = "expected an expression"
+meaning = "A value was expected here and something else was found."
+fix = "complete the expression; look for a trailing operator or comma"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "a trailing operator or comma with nothing after it"
+probe = "source-line"
+remedy = "finish the expression, or delete the operator"
+[[code.cause]]
+why = "a keyword used where a value should be"
+probe = "source-line"
+remedy = "keywords are fine as map keys and member names, not as values"
+
+[[code]]
+code = "E202"
+title = "unclosed block"
+meaning = "A `{` has no matching `}`."
+fix = "add the closing brace where the block ends"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "a block opened and never closed; the message names the line it opened on"
+probe = "brace-balance"
+remedy = "add `}` at the end of that block"
+
+[[code]]
+code = "E203"
+title = "expected end of statement"
+meaning = "Two statements share a line without a separator."
+fix = "put each statement on its own line, or separate them with `;`"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "two statements on one line"
+probe = "source-line"
+remedy = "put each statement on its own line, or separate them with `;`"
+
+[[code]]
+code = "E204"
+title = "not a statement"
+meaning = "A word that is not a keyword starts the line, usually a typo."
+fix = "use the spelling the hint suggests; `cig language` lists the keywords"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "a typo in a keyword"
+probe = "similar-names"
+remedy = "use the suggestion in the hint"
+[[code.cause]]
+why = "a word from another language: let, var, const, def, function"
+probe = "none"
+remedy = "`roll` for a variable, `stick` for a constant, `pull` for a function, `pack` for a lambda"
+
+[[code]]
+code = "E205"
+title = "invalid assignment target"
+meaning = "The left side of `=` is not something that can hold a value."
+fix = "assign to a name, `list[i]` or `map.key`"
+no = "none"
+arises = ["parse"]
+since = "1.0.0"
+[[code.cause]]
+why = "assigning to a call result or a literal"
+probe = "source-line"
+remedy = "assign to a name, `list[i]` or `map.key`"
+[[code.cause]]
+why = "`=` where `==` was meant, inside a condition"
+probe = "source-line"
+remedy = "write `==` to compare"
+
+[[code]]
+code = "E206"
+title = "chained comparison"
+meaning = "Comparisons cannot be chained like `a < b < c`."
+fix = "write `a < b and b < c`"
+no = "none"
+arises = ["parse"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "`a < b < c` read as one expression"
+probe = "source-line"
+remedy = "write `a < b and b < c`"
+
+[[code]]
+code = "E207"
+title = "empty chain"
+meaning = "A chain declares no steps."
+fix = "list the sticks (steps) to light: chain name { fetch, build }"
+no = "none"
+arises = ["parse"]
+since = "1.0.0"
+[[code.cause]]
+why = "`chain name { }` with nothing inside"
+probe = "source-line"
+remedy = "put the steps inside, one per line or comma-separated"
+
+# --- check (E3xx) ---
+
+[[code]]
+code = "E300"
+title = "check error"
+meaning = "The static checker found a mistake before running anything."
+fix = "read the message; `cig check` shows all of them at once"
+no = "none"
+arises = ["check"]
+since = "1.0.0"
+[[code.cause]]
+why = "the message names the mistake and the line"
+probe = "source-line"
+remedy = "fix it there; `cig check <file>` lists every one"
+
+[[code]]
+code = "E301"
+title = "unknown name"
+meaning = "A name is used that was never declared in a visible scope."
+fix = "use the name the hint suggests, or declare it with `roll` or `stick` above this line"
+no = "cant-see-any"
+arises = ["check"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+related = ["E307", "E501"]
+[[code.cause]]
+why = "a typo; the hint names the closest declared name"
+probe = "similar-names"
+remedy = "use the suggested name"
+[[code.cause]]
+why = "the name is declared later in the file, or inside another block"
+probe = "none"
+remedy = "move the declaration above the first use, or out of the inner block"
+[[code.cause]]
+why = "a module function called without its module: read_text instead of fs.read_text"
+probe = "similar-names"
+remedy = "prefix it with the module; `cig language` lists them"
+
+[[code]]
+code = "E302"
+title = "stick reassigned"
+meaning = "A `stick` is a constant and cannot be assigned again."
+fix = "declare it with `roll` if it needs to change"
+no = "these-are-mine"
+arises = ["check"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+related = ["E507"]
+[[code.cause]]
+why = "a stick (constant binding) assigned a second time"
+probe = "source-line"
+remedy = "declare it with `roll`; a stick is a promise that it will not change"
+
+[[code]]
+code = "E303"
+title = "effect outside burn"
+meaning = "A function that changes the world is called where no `burn` block encloses it."
+fix = "wrap the call in burn { ... }; inside a pull this is a warning, since the caller may burn"
+no = "these-are-mine"
+arises = ["check"]
+tags = ["beginner-likely", "kernel"]
+since = "1.0.0"
+related = ["E701"]
+[[code.cause]]
+why = "a world-changing call at the top level with no burn { } around it"
+probe = "source-line"
+remedy = "wrap the call in burn { ... }, or the call to the function that makes it"
+[[code.cause]]
+why = "inside a pull or pack: a warning, because the caller may burn"
+probe = "none"
+remedy = "nothing, if every caller burns; wrap it if the function should work from anywhere"
+
+[[code]]
+code = "E304"
+title = "snuff outside a function"
+meaning = "`snuff` returns from a pull or pack and was used at the top level."
+fix = "use exit(code) to stop the script"
+no = "none"
+arises = ["check"]
+since = "1.0.0"
+[[code.cause]]
+why = "`snuff` (return) at the top level of the script"
+probe = "source-line"
+remedy = "use exit(code), or move the code into a pull"
+
+[[code]]
+code = "E305"
+title = "break outside a loop"
+meaning = "`break` or `continue` appears outside `while` or `for`."
+fix = "move it inside the loop, or restructure with `if`"
+no = "none"
+arises = ["check"]
+since = "1.0.0"
+[[code.cause]]
+why = "`break` or `continue` outside `while` or `for`"
+probe = "source-line"
+remedy = "move it inside the loop, or restructure with `if`"
+
+[[code]]
+code = "E306"
+title = "already declared"
+meaning = "A name is declared twice in the same scope."
+fix = "assign with `name = ...` the second time, or choose another name"
+no = "none"
+arises = ["check"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "`roll x` twice in one scope"
+probe = "source-line"
+remedy = "write `x = ...` the second time"
+
+[[code]]
+code = "E307"
+title = "unknown module member"
+meaning = "A module such as `fs` has no function by that name."
+fix = "use the member the hint suggests; `cig language` lists every one"
+no = "cant-see-any"
+arises = ["check"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+related = ["E301"]
+[[code.cause]]
+why = "a typo in the member: fs.read_txt"
+probe = "similar-names"
+remedy = "use the suggestion in the hint"
+[[code.cause]]
+why = "a function from another language's library"
+probe = "none"
+remedy = "`cig language` shows what exists; text.*, fs.* and path.* cover most needs"
+
+# --- types (E4xx) ---
+
+[[code]]
+code = "E400"
+title = "type error"
+meaning = "A value of the wrong type reached an operation."
+fix = "convert with str(), int() or float(), or test with type_of()"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+[[code.cause]]
+why = "the message names the type it got"
+probe = "value-types"
+remedy = "convert the value first, or branch on type_of()"
+
+[[code]]
+code = "E401"
+title = "wrong number of arguments"
+meaning = "A call passes more or fewer arguments than the function takes."
+fix = "match the signature; packs have no optional parameters, pass null explicitly"
+no = "none"
+arises = ["run"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "the call passes more or fewer arguments than the pack or pull declares"
+probe = "source-line"
+remedy = "match the declaration; pass null for an argument you do not have"
+[[code.cause]]
+why = "a method called on the wrong receiver, so the receiver counted as an argument"
+probe = "none"
+remedy = "check what the dot is applied to"
+
+[[code]]
+code = "E402"
+title = "wrong argument type"
+meaning = "A library function received an argument of the wrong type."
+fix = "convert the value first: str(n), int(s), or path.join for paths"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+[[code.cause]]
+why = "the message names the argument position and the expected type"
+probe = "value-types"
+remedy = "convert the value first: str(n), int(s), float(s)"
+
+[[code]]
+code = "E403"
+title = "operator not applicable"
+meaning = "An operator was applied to types it does not support."
+fix = "strings join with +, numbers add; convert first with str() or int()"
+no = "none"
+arises = ["run"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "a string plus a number"
+probe = "value-types"
+remedy = 'interpolate: "count: ${n}", or str(n) + "..."'
+[[code.cause]]
+why = "arithmetic on null from a missing key or a ?. chain"
+probe = "value-types"
+remedy = "give it a default: x ?? 0"
+
+[[code]]
+code = "E404"
+title = "not callable"
+meaning = "Something that is not a function was called."
+fix = "only packs, pulls and library functions can be called"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+[[code.cause]]
+why = "a name that holds a value, not a function, followed by ()"
+probe = "value-types"
+remedy = "drop the parentheses, or call the function you meant"
+[[code.cause]]
+why = "a module called as a function: fs()"
+probe = "source-line"
+remedy = "call a member: fs.read_text(...)"
+
+[[code]]
+code = "E405"
+title = "not indexable or iterable"
+meaning = "Indexing or iteration was attempted on an unsupported type."
+fix = "lists, strings and maps support [] and for; check type_of()"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+[[code.cause]]
+why = "indexing or looping over null, a number or a bool"
+probe = "value-types"
+remedy = "check type_of(x); a missing key or an empty glob is the usual source of the null"
+
+# --- runtime (E50x, E51x) ---
+
+[[code]]
+code = "E500"
+title = "runtime error"
+meaning = "Something failed while the script was running."
+fix = "read the message; wrap risky code in try/ashtray to handle it"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+[[code.cause]]
+why = "the message says what failed"
+probe = "none"
+remedy = "wrap the risky code in try/ashtray to handle it"
+
+[[code]]
+code = "E501"
+title = "unknown name at run time"
+meaning = "A name was looked up that is not in scope."
+fix = "run `cig check`; it finds this before anything runs"
+no = "cant-see-any"
+arises = ["run"]
+since = "1.0.0"
+related = ["E301"]
+[[code.cause]]
+why = "the check was skipped with --no-check"
+probe = "none"
+remedy = "run `cig check <file>`"
+
+[[code]]
+code = "E502"
+title = "division by zero"
+meaning = "An integer or float was divided by zero, or the modulus was zero."
+fix = "guard the divisor: if d != 0 { ... }"
+no = "none"
+arises = ["run"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "the divisor came from data that was zero or empty"
+probe = "value-types"
+remedy = "guard it: if d != 0 { ... }, or give it a default with ??"
+
+[[code]]
+code = "E503"
+title = "integer overflow"
+meaning = "An integer operation left the 64-bit range."
+fix = "use floats (1.0 * n) for very large magnitudes, or check bounds first"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+related = ["E104"]
+[[code.cause]]
+why = "a multiplication or a running sum left the 64-bit range"
+probe = "value-types"
+remedy = "use floats for the large magnitude, or check the bound before the operation"
+[[code.cause]]
+why = "negating -9223372036854775808, which has no positive twin"
+probe = "value-types"
+remedy = "use a float"
+
+[[code]]
+code = "E504"
+title = "index out of range"
+meaning = "A list or string index is outside its length."
+fix = "check .len() first, or use .get(i, default); [-1] is the last item"
+no = "cant-see-any"
+arises = ["run"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "an index equal to len(); the last item is len() - 1"
+probe = "value-types"
+remedy = "use [-1] for the last item, or check .len() first"
+[[code.cause]]
+why = "an empty list from a filter or glob that matched nothing"
+probe = "none"
+remedy = "test .len() == 0 first, or use .get(i, default)"
+
+[[code]]
+code = "E505"
+title = "missing key"
+meaning = "A map has no entry for the key that was read."
+fix = "use m?.key for null, or m.get(\"key\", default)"
+no = "dont-have-any"
+arises = ["run"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "the key is spelled differently in the data (case, underscore, hyphen)"
+probe = "similar-names"
+remedy = "exhale m.keys() to see the exact names"
+[[code.cause]]
+why = "the map came from JSON where the field is optional"
+probe = "none"
+remedy = "use m?.key for null, or m.get(\"key\", default)"
+
+[[code]]
+code = "E506"
+title = "call depth exceeded"
+meaning = "Recursion went deeper than 4,000 calls."
+fix = "add the base case first; rewrite as a loop if depth may legitimately exceed 4,000"
+no = "none"
+arises = ["run"]
+tags = ["resource"]
+since = "1.0.0"
+[[code.cause]]
+why = "recursion with no base case, or one that is never reached"
+probe = "source-line"
+remedy = "add or fix the base case; rewrite as a loop if the depth is real"
+
+[[code]]
+code = "E507"
+title = "stick reassigned at run time"
+meaning = "A constant was assigned through a path the checker could not see."
+fix = "run `cig check`, then declare the binding with `roll` if it must change"
+no = "these-are-mine"
+arises = ["run"]
+since = "1.0.0"
+related = ["E302"]
+[[code.cause]]
+why = "an assignment the checker could not see (an unchecked run)"
+probe = "none"
+remedy = "run `cig check`; declare the binding with `roll` if it must change"
+
+[[code]]
+code = "E508"
+title = "file system failure"
+meaning = "A file or directory operation failed; the message shows the path and the operating-system reason."
+fix = "check the path with fs.exists first; relative paths resolve against the working directory `cig runs <id>` shows"
+no = "depends"
+arises = ["run", "dry-run", "unburn"]
+tags = ["beginner-likely"]
+since = "1.0.0"
+related = ["E702"]
+[[code.cause]]
+why = "the path does not exist (No such file or directory): can't see any ciggies"
+probe = "path-exists"
+remedy = "check it with fs.exists or fs.glob first; relative paths resolve against the working directory"
+[[code.cause]]
+why = "permission denied: these are MY ciggies"
+probe = "path-permissions"
+remedy = "`ls -l` the path and its parent to see who may write; chmod, or run as the owner"
+[[code.cause]]
+why = "the parent directory is missing"
+probe = "parent-exists"
+remedy = "fs.mkdir(path.dir(p)) first, inside the burn"
+[[code.cause]]
+why = "the disk is full, or the mount is read-only"
+probe = "disk-free"
+remedy = "free space, or write somewhere else"
+[[code.cause]]
+why = "it is a directory where a file was expected, or the reverse"
+probe = "path-is-dir"
+remedy = "branch on fs.is_dir / fs.is_file"
+
+[[code]]
+code = "E509"
+title = "process failure"
+meaning = "A program could not be started, or exceeded its timeout and was killed."
+fix = "check it is installed with proc.which(\"name\"), or raise {timeout_ms}"
+no = "depends"
+arises = ["run", "light"]
+since = "1.0.0"
+related = ["E603", "E602"]
+[[code.cause]]
+why = "the program is not on PATH for this run: can't see any ciggies"
+probe = "on-path"
+remedy = "proc.which(\"name\") to check; give the full path, or fix PATH in the environment the run inherits"
+[[code.cause]]
+why = "it ran longer than {timeout_ms} and was killed"
+probe = "none"
+remedy = "raise {timeout_ms: N} on the proc.run, or split the work into smaller calls"
+[[code.cause]]
+why = "the file exists but is not executable: these are MY ciggies"
+probe = "path-permissions"
+remedy = "chmod +x it"
+
+[[code]]
+code = "E510"
+title = "invalid regular expression"
+meaning = "A pattern passed to the text module does not compile."
+fix = "write the pattern as a raw 'single-quoted' string and check it against the message"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+[[code.cause]]
+why = "escapes eaten by a double-quoted string"
+probe = "source-line"
+remedy = "write the pattern as a raw 'single-quoted' string"
+[[code.cause]]
+why = "a construct the engine does not support: lookbehind, backreferences"
+probe = "none"
+remedy = "rewrite without it; the message quotes the engine's reason"
+
+[[code]]
+code = "E511"
+title = "parse failure"
+meaning = "Text that should be JSON or CSV is not."
+fix = "check the first bytes with fs.read_text(p).slice(0, 80); the message quotes the position"
+no = "none"
+arises = ["run"]
+since = "1.0.0"
+[[code.cause]]
+why = "the file is not JSON or CSV, or has a BOM, a comment or a trailing comma"
+probe = "none"
+remedy = "look at the position the message quotes; validate the producer's output"
+
+[[code]]
+code = "E512"
+title = "range too large"
+meaning = "A range or list construction would exceed 10,000,000 items."
+fix = "iterate in pieces, or check the bounds that produced the range"
+no = "none"
+arises = ["run"]
+tags = ["resource"]
+since = "1.0.0"
+related = ["E514"]
+[[code.cause]]
+why = "a bound computed from bad arithmetic"
+probe = "value-types"
+remedy = "exhale the bounds before the range; iterate with a while loop if the size is real"
+
+[[code]]
+code = "E513"
+title = "output closed"
+meaning = "The reader of stdout went away (for example `| head`)."
+fix = "nothing to fix; the script stopped when its reader did"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely"]
+since = "1.0.0"
+[[code.cause]]
+why = "the process reading stdout closed the pipe"
+probe = "none"
+remedy = "nothing; this is the pipe working as designed"
+
+[[code]]
+code = "E514"
+title = "allocation ceiling"
+meaning = "An operation would build a value larger than the memory ceiling (256 MiB by default)."
+fix = "work in smaller pieces, or raise the ceiling with CIG_MAX_ALLOC=<bytes>"
+no = "none"
+arises = ["run"]
+tags = ["resource"]
+since = "1.1.0"
+related = ["E512", "E515"]
+[[code.cause]]
+why = "a repeat count, width or size computed from bad arithmetic"
+probe = "value-types"
+remedy = "exhale the count before using it"
+[[code.cause]]
+why = "a legitimately large value: a big file read whole, or a large string built in one go"
+probe = "env-var"
+remedy = "work in pieces (fs.read_lines, chunks), or raise the ceiling with CIG_MAX_ALLOC=<bytes> for this run"
+
+[[code]]
+code = "E515"
+title = "step budget exceeded"
+meaning = "Your loop never ends, or the script needs more steps than the budget allows."
+fix = "check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables)"
+no = "none"
+arises = ["run"]
+tags = ["resource", "beginner-likely", "planned"]
+since = "1.1.0"
+related = ["E514", "E506"]
+[[code.cause]]
+why = "a while loop whose condition never becomes false"
+probe = "source-line"
+remedy = "check what changes the condition inside the loop, at the line shown"
+[[code.cause]]
+why = "a legitimately long computation"
+probe = "env-var"
+remedy = "raise the budget with --max-steps N or CIG_MAX_STEPS=N (0 disables it)"
+
+# --- ghost filesystem (E52x) ---
+
+[[code]]
+code = "E520"
+title = "read of a ghost-deleted path"
+meaning = "In a dry-run, a step read a path that an earlier simulated op would have deleted or moved away."
+fix = "read the file before the step that removes it, or do not remove it; the plan shows the order"
+no = "cant-see-any"
+arises = ["dry-run"]
+tags = ["kernel", "planned"]
+since = "1.1.0"
+[[code.cause]]
+why = "an earlier step's simulated delete or move took the path away"
+probe = "plan-order"
+remedy = "move the read before that step, or drop the delete; the plan shows the op that took it"
+
+# --- cough (E6xx) ---
+
+[[code]]
+code = "E600"
+title = "raised by the script"
+meaning = "The script called `cough` and nothing caught it."
+fix = "catch it with try/ashtray where you can recover; burns are rolled back when nothing catches it"
+no = "none"
+arises = ["run", "light"]
+since = "1.0.0"
+[[code.cause]]
+why = "your own cough; the values in scope at the time are the useful thing"
+probe = "none"
+remedy = "exhale the values before the cough, or catch it with try/ashtray and read the error map"
+
+[[code]]
+code = "E601"
+title = "assertion failed"
+meaning = "assert() was given a false value."
+fix = "print the values it compares; the optional second argument becomes the message"
+no = "none"
+arises = ["run", "light"]
+since = "1.0.0"
+[[code.cause]]
+why = "assert(condition, message) saw false"
+probe = "none"
+remedy = "exhale the values the condition compares"
+
+[[code]]
+code = "E602"
+title = "chain failed"
+meaning = "A step of a chain raised an error and the chain stopped."
+fix = "fix the step at the line shown, or light with {continue_on_error: true} and read failed[] from the report"
+no = "none"
+arises = ["run", "light"]
+since = "1.0.0"
+related = ["E603", "E509"]
+[[code.cause]]
+why = "a step raised; the message names the step and the line the error was raised on"
+probe = "chain-report"
+remedy = "fix the step; or light with {continue_on_error: true} to run the rest and read failed[]"
+[[code.cause]]
+why = "a step expected the previous step's result and got null"
+probe = "chain-report"
+remedy = "a step that takes one parameter receives the previous result; give the earlier step a return value"
+
+[[code]]
+code = "E603"
+title = "process check failed"
+meaning = "proc.run with {check: true} saw a non-zero exit code."
+fix = "read err from the ashtray value, or drop check and inspect .code yourself"
+no = "depends"
+arises = ["run", "light"]
+since = "1.0.0"
+related = ["E509"]
+[[code.cause]]
+why = "the program exited non-zero; the error map holds code, out and err"
+probe = "none"
+remedy = "read err from the ashtray value; the program's own message is there"
+
+# --- kernel (E70x) ---
+
+[[code]]
+code = "E700"
+title = "burn refused"
+meaning = "The kernel refused a side effect."
+fix = "read the message; effects need a burn block"
+no = "these-are-mine"
+arises = ["run", "dry-run"]
+tags = ["kernel"]
+since = "1.0.0"
+[[code.cause]]
+why = "the kernel said no; the message says why"
+probe = "none"
+remedy = "effects need a burn block; the message names the policy otherwise"
+
+[[code]]
+code = "E701"
+title = "effect outside burn"
+meaning = "A world-changing call ran with no burn block active on the call stack."
+fix = "wrap the call, or the call to the function that makes it, in burn { }"
+no = "these-are-mine"
+arises = ["run"]
+tags = ["kernel", "beginner-likely"]
+since = "1.0.0"
+related = ["E303"]
+[[code.cause]]
+why = "the call is inside a function that was called from outside any burn"
+probe = "none"
+remedy = "wrap the call to the function in burn { }, or the call itself"
+[[code.cause]]
+why = "a lambda passed to .map or .each does the effect"
+probe = "none"
+remedy = "burn around the .map call"
+
+[[code]]
+code = "E702"
+title = "journal failure"
+meaning = "The kernel could not record a burn before performing it, so it refused it."
+fix = "check space and permissions under ~/.cigscript (or CIGSCRIPT_HOME); `cig doctor` reports both"
+no = "depends"
+arises = ["run"]
+tags = ["kernel"]
+since = "1.0.0"
+related = ["E508", "E802"]
+[[code.cause]]
+why = "the state directory is not writable: these are MY ciggies"
+probe = "state-dir-writable"
+remedy = "chmod it, or set CIGSCRIPT_HOME to a directory you own"
+[[code.cause]]
+why = "the disk holding the state directory is full"
+probe = "disk-free"
+remedy = "`cig runs --prune 20` frees old snapshots; or move CIGSCRIPT_HOME"
+[[code.cause]]
+why = "the file vanished between the check and the snapshot"
+probe = "path-exists"
+remedy = "retry; if it repeats, something else is editing that path during the run"
+
+[[code]]
+code = "E703"
+title = "snapshot missing"
+meaning = "A rollback was refused because at least one snapshot it needs is missing or corrupt; nothing was restored."
+fix = "`cig unburn <id> --dry-run` lists each problem; --force restores what can be and lists the rest"
+no = "dont-have-any"
+arises = ["unburn"]
+tags = ["kernel"]
+since = "1.1.0"
+related = ["E705", "E704"]
+[[code.cause]]
+why = "the run directory was pruned or edited"
+probe = "snapshot-integrity"
+remedy = "`cig unburn <id> --dry-run` to see what is missing; --force to restore the rest"
+[[code.cause]]
+why = "a snapshot's bytes no longer match the hash the journal recorded"
+probe = "snapshot-integrity"
+remedy = "restore runs/<id>/snapshots from a backup first, then unburn"
+
+[[code]]
+code = "E704"
+title = "file changed since the run"
+meaning = "A rollback was refused because a file the run touched has been changed by something else since; restoring would overwrite that newer content."
+fix = "look at the file, then pass --force if the old content is what you want"
+no = "these-are-mine"
+arises = ["unburn"]
+tags = ["kernel", "planned"]
+since = "1.1.0"
+related = ["E705", "E703"]
+[[code.cause]]
+why = "a later run or another program wrote the file"
+probe = "file-hash"
+remedy = "`cig unburn <id> --dry-run` shows the changed-since column; --force if the old content is what you want"
+
+[[code]]
+code = "E705"
+title = "already rolled back"
+meaning = "This run was rolled back already; doing it again would overwrite whatever happened since."
+fix = "nothing, the world is already back; pass --force only if you mean to restore the old snapshots again"
+no = "these-are-mine"
+arises = ["unburn"]
+tags = ["kernel"]
+since = "1.1.0"
+related = ["E703"]
+[[code.cause]]
+why = "`cig unburn` was run twice for the same run"
+probe = "run-record"
+remedy = "nothing; --force only if you mean to restore the old snapshots again"
+
+[[code]]
+code = "E706"
+title = "interrupted run"
+meaning = "A run's process died mid-burn. The journal is intact and nothing has been restored yet."
+fix = "`cig unburn <id>` restores what the run had burned; `cig runs <id>` shows the journal"
+no = "none"
+arises = ["doctor", "runs"]
+tags = ["kernel", "fixable-by-doctor"]
+since = "1.1.0"
+related = ["E703"]
+[[code.cause]]
+why = "the process was killed, or the machine went down, mid-burn; the journal (write-ahead log) is intact"
+probe = "pid-alive"
+remedy = "`cig unburn <id>` puts back what it burned; `cig runs <id>` shows the journal first"
+fixable = true
+needs_burn = false
+reversible = false
+
+# --- usage (E80x) ---
+
+[[code]]
+code = "E800"
+title = "usage error"
+meaning = "The command line or the environment is wrong."
+fix = "`cig --help`, or `cig <command> --help`"
+no = "none"
+arises = ["any"]
+since = "1.0.0"
+[[code.cause]]
+why = "the message says which argument or setting"
+probe = "none"
+remedy = "`cig <command> --help` shows the flags"
+
+[[code]]
+code = "E801"
+title = "cannot read script"
+meaning = "The script file could not be opened."
+fix = "check the path; scripts resolve against the current directory"
+no = "depends"
+arises = ["run", "check", "light"]
+since = "1.0.0"
+[[code.cause]]
+why = "the path is wrong, or relative to another directory: can't see any ciggies"
+probe = "path-exists"
+remedy = "ls the path; run from the directory the script lives in, or give the full path"
+[[code.cause]]
+why = "permission denied: these are MY ciggies"
+probe = "path-permissions"
+remedy = "chmod +r the file"
+
+[[code]]
+code = "E802"
+title = "state directory unavailable"
+meaning = "The state directory cannot be created or written."
+fix = "set CIGSCRIPT_HOME to a writable location; `cig doctor` shows which one is in use"
+no = "these-are-mine"
+arises = ["any"]
+since = "1.0.0"
+related = ["E702"]
+[[code.cause]]
+why = "~/.cigscript (or CIGSCRIPT_HOME) cannot be created or written"
+probe = "state-dir-writable"
+remedy = "set CIGSCRIPT_HOME to a directory you own"
+
+[[code]]
+code = "E803"
+title = "no such run"
+meaning = "No run record matches the id or prefix given."
+fix = "`cig runs` lists them; give more of the id if it is ambiguous"
+no = "cant-see-any"
+arises = ["unburn", "runs"]
+since = "1.0.0"
+[[code.cause]]
+why = "a typo, or a prefix that matches nothing or several runs"
+probe = "run-list"
+remedy = "`cig runs` lists them; give more of the id"
+[[code.cause]]
+why = "the run was pruned"
+probe = "run-list"
+remedy = "nothing to restore from; `cig runs --prune N` keeps the newest N"
+
+[[code]]
+code = "E804"
+title = "no such chain"
+meaning = "The script declares no chain by that name."
+fix = "`cig chains <file>` lists them"
+no = "cant-see-any"
+arises = ["light"]
+since = "1.0.0"
+[[code.cause]]
+why = "the script declares no chain by that name"
+probe = "chain-list"
+remedy = "`cig chains <file>` lists them"
+
+[[code]]
+code = "E805"
+title = "network tool missing"
+meaning = "Neither `gh` nor `curl` is available for the update or report."
+fix = "install curl or gh; `cig doctor --fix` offers to"
+no = "dont-have-any"
+arises = ["update"]
+since = "1.0.0"
+[[code.cause]]
+why = "neither gh nor curl is on PATH"
+probe = "network-tools"
+remedy = "install curl from any package manager, or gh; `cig doctor --fix` offers to"
+
+[[code]]
+code = "E806"
+title = "update failed"
+meaning = "The release could not be fetched, verified or installed."
+fix = "the message says which step; retry, or install from the releases page"
+no = "depends"
+arises = ["update"]
+since = "1.0.0"
+[[code.cause]]
+why = "no network, or the release host refused"
+probe = "none"
+remedy = "retry; `cig update --check` shows what it can reach"
+[[code.cause]]
+why = "the checksum did not match: nothing was installed"
+probe = "release-manifest"
+remedy = "retry once; report it if it repeats, since a mismatch means the download is not what was published"
+[[code.cause]]
+why = "the install directory is not writable, or is group-writable (refused for safety)"
+probe = "path-permissions"
+remedy = "chown or chmod the directory holding cig, or install to a directory only you can write"
+
+# --- internal (E9xx) ---
+
+[[code]]
+code = "E900"
+title = "internal error"
+meaning = "CigScript hit a condition it believes impossible."
+fix = "please report it: `cig crash send` after the crash, or file an issue with the script"
+no = "none"
+arises = ["any"]
+since = "1.0.0"
+[[code.cause]]
+why = "a bug in CigScript; nothing you wrote should be able to cause this"
+probe = "none"
+remedy = "file an issue with the script and the message; the crash pipeline makes this one command"
+
+[[code]]
+code = "E901"
+title = "crash"
+meaning = "CigScript panicked. A crash report was written locally."
+fix = "`cig crash list` then `cig crash send <id>`, or say yes at the prompt"
+no = "none"
+arises = ["any"]
+since = "1.0.0"
+[[code.cause]]
+why = "CigScript panicked; a redacted report was written under the state directory"
+probe = "crash-reports"
+remedy = "`cig crash list`, then `cig crash send <id>`; you can read the file first, it is plain JSON"

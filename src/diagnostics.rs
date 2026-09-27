@@ -5,12 +5,12 @@
 //! rustc-style. The codes are catalogued in [`crate::errors`].
 
 use crate::syntax::span::Span;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Which layer produced the error. Stable identifiers: scripts and tools
 /// can match on them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     /// Bad characters or malformed literals.

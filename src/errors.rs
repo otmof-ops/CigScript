@@ -1,55 +1,185 @@
 // SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
 // SPDX-License-Identifier: Apache-2.0
 
-//! The error-code catalogue.
+//! The error-code registry, read from `errors/registry.toml`.
 //!
-//! Every diagnostic carries a stable code. The first digit is the layer:
+//! A code is a node, not a number: it carries its family and kind (from the
+//! range it sits in), which of the four kinds of no it is, where it can
+//! arise, ranked causes each with a read-only probe and a remedy, and the
+//! codes it relates to. Everything that talks about codes reads this one
+//! table: `cig explain`, the `--json` output, the JSON schema, doctor, and
+//! the generated `docs/ERRORS.md`.
 //!
-//! | range | layer |
-//! |---|---|
-//! | E1xx | lexing |
-//! | E2xx | parsing |
-//! | E3xx | static check (`cig check`) |
-//! | E4xx | types and arity |
-//! | E5xx | runtime |
-//! | E6xx | raised by the script (`cough`, `assert`, chains) |
-//! | E7xx | the burn kernel |
-//! | E8xx | the command line and the environment |
-//! | E9xx | internal: a bug in CigScript itself |
-//!
-//! Reserved sub-ranges, so a code never changes meaning: E51x general
-//! runtime, E52x the ghost filesystem (dry-run overlay), E55x hops (child
-//! processes and foreign scripts), E70x kernel and journal, E75x folds and
-//! packs, E80x usage, E85x updater and doctor.
-//!
-//! `cig explain <code>` prints an entry; `docs/ERRORS.md` is generated from
-//! this table so the two can never disagree.
+//! The registry file documents the ranges. `tests/registry.rs` keeps the
+//! source and the registry in step in both directions.
 
 use crate::diagnostics::Kind;
+use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 
-#[derive(Clone, Copy, Debug)]
-pub struct ErrorInfo {
-    pub code: &'static str,
-    pub kind: Kind,
-    pub title: &'static str,
-    pub meaning: &'static str,
-    pub fix: &'static str,
+/// The registry source, embedded so the binary needs no file at run time.
+pub const REGISTRY_TOML: &str = include_str!("../errors/registry.toml");
+
+#[derive(Debug, Deserialize)]
+pub struct Registry {
+    pub version: u32,
+    #[serde(rename = "range")]
+    pub ranges: Vec<Range>,
+    #[serde(rename = "no")]
+    pub nos: Vec<No>,
+    #[serde(rename = "probe")]
+    pub probes: Vec<Probe>,
+    #[serde(rename = "code")]
+    pub codes: Vec<Code>,
 }
 
-const fn e(
-    code: &'static str,
-    kind: Kind,
-    title: &'static str,
-    meaning: &'static str,
-    fix: &'static str,
-) -> ErrorInfo {
-    ErrorInfo {
-        code,
-        kind,
-        title,
-        meaning,
-        fix,
+/// A contiguous block of codes with one family and one rendering kind.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Range {
+    pub from: String,
+    pub to: String,
+    pub family: String,
+    pub kind: Kind,
+    pub meaning: String,
+}
+
+/// One of the four kinds of no (plus `none` and `depends`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct No {
+    pub id: String,
+    /// What you hear, in the hallway.
+    pub hear: String,
+    /// Whose problem it is.
+    pub whose: String,
+    /// The manual's name for it.
+    pub manual: String,
+}
+
+/// A read-only check doctor may run to confirm a cause.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Probe {
+    pub name: String,
+    pub reads: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Cause {
+    pub why: String,
+    #[serde(default = "none")]
+    pub probe: String,
+    pub remedy: String,
+    /// Doctor can apply the remedy itself, with consent.
+    #[serde(default)]
+    pub fixable: bool,
+    #[serde(default)]
+    pub needs_burn: bool,
+    #[serde(default = "yes")]
+    pub reversible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Code {
+    pub code: String,
+    pub title: String,
+    pub meaning: String,
+    /// What to type next.
+    pub fix: String,
+    #[serde(default = "none")]
+    pub no: String,
+    #[serde(default)]
+    pub arises: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub since: String,
+    #[serde(default)]
+    pub retired: bool,
+    #[serde(default)]
+    pub related: Vec<String>,
+    #[serde(default, rename = "cause")]
+    pub causes: Vec<Cause>,
+}
+
+fn none() -> String {
+    "none".to_string()
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Code {
+    /// The range this code sits in.
+    pub fn range(&self) -> &'static Range {
+        registry()
+            .ranges
+            .iter()
+            .find(|r| r.from.as_str() <= self.code.as_str() && self.code.as_str() <= r.to.as_str())
+            .expect("every registered code lies in a declared range (tests/registry.rs)")
     }
+
+    pub fn kind(&self) -> Kind {
+        self.range().kind
+    }
+
+    pub fn family(&self) -> &'static str {
+        &self.range().family
+    }
+
+    /// The kind-of-no entry for this code.
+    pub fn no_entry(&self) -> &'static No {
+        lookup_no(&self.no).expect("every code's `no` is declared (tests/registry.rs)")
+    }
+
+    pub fn has_tag(&self, tag: &str) -> bool {
+        self.tags.iter().any(|t| t == tag)
+    }
+
+    /// The full node as JSON, with the derived fields filled in.
+    pub fn to_json(&self) -> serde_json::Value {
+        let no = self.no_entry();
+        serde_json::json!({
+            "code": self.code,
+            "kind": self.kind().as_str(),
+            "family": self.family(),
+            "title": self.title,
+            "meaning": self.meaning,
+            "fix": self.fix,
+            "no": {"id": no.id, "hear": no.hear, "whose": no.whose, "manual": no.manual},
+            "arises": self.arises,
+            "tags": self.tags,
+            "since": self.since,
+            "retired": self.retired,
+            "related": self.related,
+            "causes": self.causes,
+        })
+    }
+}
+
+/// The parsed registry. Parsing happens once; a malformed registry is a
+/// build defect, caught by the unit test below before it can ship.
+pub fn registry() -> &'static Registry {
+    static REGISTRY: OnceLock<Registry> = OnceLock::new();
+    REGISTRY.get_or_init(|| {
+        toml::from_str(REGISTRY_TOML).expect("errors/registry.toml parses (see tests/registry.rs)")
+    })
+}
+
+/// Every code, in registry order.
+pub fn all() -> &'static [Code] {
+    &registry().codes
+}
+
+pub fn lookup(code: &str) -> Option<&'static Code> {
+    let wanted = code.trim().to_ascii_uppercase();
+    all().iter().find(|e| e.code == wanted)
+}
+
+pub fn lookup_no(id: &str) -> Option<&'static No> {
+    registry().nos.iter().find(|n| n.id == id)
+}
+
+pub fn lookup_probe(name: &str) -> Option<&'static Probe> {
+    registry().probes.iter().find(|p| p.name == name)
 }
 
 /// Generic code for a kind, used when nothing more specific applies.
@@ -67,85 +197,76 @@ pub const fn default_code(kind: Kind) -> &'static str {
     }
 }
 
-pub static CATALOGUE: &[ErrorInfo] = &[
-    // lexing
-    e("E100", Kind::Lex, "lexing error", "The source contains something the lexer cannot turn into tokens.", "Read the message; it names the character or literal."),
-    e("E101", Kind::Lex, "unterminated string", "A string literal has no closing quote on its line.", "Close the string, or use \\n for a newline inside it."),
-    e("E102", Kind::Lex, "unknown escape", "A backslash sequence in a double-quoted string is not one CigScript knows.", "Use \\n \\t \\r \\0 \\\\ \\\" \\$ \\u{hex}; for regexes use a raw 'single-quoted' string."),
-    e("E103", Kind::Lex, "unexpected character", "A character cannot start any token, often a C-style operator.", "Spell logic as `and`, `or`, `not`; comparisons as == != < <= > >=."),
-    e("E104", Kind::Lex, "malformed number", "A numeric literal does not fit in 64 bits or is not well formed.", "Use a float for very large values, or fix the literal."),
-    // parsing
-    e("E200", Kind::Syntax, "syntax error", "The source does not follow the grammar.", "The caret marks where parsing stopped; `cig language` shows the forms."),
-    e("E201", Kind::Syntax, "expected an expression", "A value was expected here and something else was found.", "Complete the expression; check for a stray operator or comma."),
-    e("E202", Kind::Syntax, "unclosed block", "A `{` has no matching `}`.", "Add the closing brace; each block opener needs one."),
-    e("E203", Kind::Syntax, "expected end of statement", "Two statements share a line without a separator.", "Put each statement on its own line or separate them with `;`."),
-    e("E204", Kind::Syntax, "not a statement", "A word that is not a keyword starts the line, usually a typo.", "Check the spelling against the hint; `cig language` lists the keywords."),
-    e("E205", Kind::Syntax, "invalid assignment target", "The left side of `=` is not something that can hold a value.", "Assign to a name, `list[i]` or `map.key`."),
-    e("E206", Kind::Syntax, "chained comparison", "Comparisons cannot be chained like `a < b < c`.", "Write `a < b and b < c`."),
-    e("E207", Kind::Syntax, "empty chain", "A chain declares no steps.", "List the sticks to light: chain name { fetch, build }."),
-    // static check
-    e("E300", Kind::Check, "check error", "The static checker found a mistake before running anything.", "Read the message; run `cig check` to see all of them."),
-    e("E301", Kind::Check, "unknown name", "A name is used that was never declared in a visible scope.", "Declare it with `roll` or `stick`, or fix the spelling (see the hint)."),
-    e("E302", Kind::Check, "stick reassigned", "A `stick` is a constant and cannot be assigned again.", "Declare it with `roll` if it needs to change."),
-    e("E303", Kind::Check, "effect outside burn", "A function that changes the world is called where no `burn` block encloses it.", "Wrap the call: burn { ... }. Inside a pull this is a warning, since the caller may burn."),
-    e("E304", Kind::Check, "snuff outside a function", "`snuff` returns from a pull or pack and was used at the top level.", "Use exit(code) to stop the script."),
-    e("E305", Kind::Check, "break outside a loop", "`break` or `continue` appears outside `while` or `for`.", "Move it inside the loop, or restructure with `if`."),
-    e("E306", Kind::Check, "already declared", "A name is declared twice in the same scope.", "Assign with `name = ...`, or choose another name."),
-    e("E307", Kind::Check, "unknown module member", "A module such as `fs` has no function by that name.", "See the hint, or `cig language` for the full list."),
-    // types
-    e("E400", Kind::Type, "type error", "A value of the wrong type reached an operation.", "Convert with str(), int(), float(), or check type_of()."),
-    e("E401", Kind::Type, "wrong number of arguments", "A call passes more or fewer arguments than the function takes.", "Check the signature; CigScript has no optional parameters for packs."),
-    e("E402", Kind::Type, "wrong argument type", "A library function received an argument of the wrong type.", "The message names the argument and the expected type."),
-    e("E403", Kind::Type, "operator not applicable", "An operator was applied to types it does not support.", "Strings join with +, numbers add; convert first with str() or int()."),
-    e("E404", Kind::Type, "not callable", "Something that is not a function was called.", "Only packs, pulls and library functions can be called."),
-    e("E405", Kind::Type, "not indexable or iterable", "Indexing or iteration was attempted on an unsupported type.", "Lists, strings and maps support this; check type_of()."),
-    // runtime
-    e("E500", Kind::Runtime, "runtime error", "Something failed while the script was running.", "The message says what; wrap risky code in try/ashtray to handle it."),
-    e("E501", Kind::Runtime, "unknown name at run time", "A name was looked up that is not in scope.", "Usually only reachable with --no-check; run `cig check`."),
-    e("E502", Kind::Runtime, "division by zero", "An integer or float was divided by zero, or the modulus was zero.", "Guard the divisor: if d != 0 { ... }."),
-    e("E503", Kind::Runtime, "integer overflow", "An integer operation left the 64-bit range.", "Use floats for very large magnitudes."),
-    e("E504", Kind::Runtime, "index out of range", "A list or string index is outside its length.", "Check .len() first, or use .get(i, default)."),
-    e("E505", Kind::Runtime, "missing key", "A map has no entry for the key that was read.", "Use m?.key for null, or m.get(\"key\", default)."),
-    e("E506", Kind::Runtime, "call depth exceeded", "Recursion went deeper than 4,000 calls.", "Add a base case, or rewrite as a loop."),
-    e("E507", Kind::Runtime, "stick reassigned at run time", "A constant was assigned through a path the checker could not see.", "Declare it with `roll` if it needs to change."),
-    e("E508", Kind::Runtime, "file system failure", "A file or directory operation failed.", "The message shows the path and the operating-system reason."),
-    e("E509", Kind::Runtime, "process failure", "A program could not be started, or exceeded its timeout and was killed.", "Check it is installed (proc.which), or raise {timeout_ms}."),
-    e("E510", Kind::Runtime, "invalid regular expression", "A pattern passed to the text module does not compile.", "Use a raw 'single-quoted' string and check the pattern."),
-    e("E511", Kind::Runtime, "parse failure", "Text that should be JSON or CSV is not.", "Validate the input; the message includes the parser's reason."),
-    e("E512", Kind::Runtime, "range too large", "A range or list construction would exceed 10,000,000 items.", "Iterate in smaller pieces."),
-    e("E513", Kind::Runtime, "output closed", "The reader of stdout went away (for example `| head`).", "Nothing to fix; the script stopped cleanly."),
-    e("E514", Kind::Runtime, "allocation ceiling", "An operation would build a value larger than the memory ceiling (256 MiB by default).", "Work in smaller pieces, or raise the ceiling with CIG_MAX_ALLOC=<bytes>."),
-    e("E515", Kind::Runtime, "step budget exceeded", "Your loop never ends, or the script needs more steps than the budget allows.", "Check the loop condition at the line shown; raise the budget with --max-steps N or CIG_MAX_STEPS (0 disables)."),
-    e("E520", Kind::Runtime, "read of a ghost-deleted path", "In a dry-run, a step read a path that an earlier simulated op would have deleted or moved away.", "The plan is telling you the order is wrong: read before the delete, or do not delete it."),
-    // raised by the script
-    e("E600", Kind::Cough, "raised by the script", "The script called `cough` and nothing caught it.", "Catch it with try/ashtray, or let it stop the run; burns are rolled back."),
-    e("E601", Kind::Cough, "assertion failed", "assert() was given a false value.", "The optional second argument becomes the message."),
-    e("E602", Kind::Cough, "chain failed", "A step of a chain raised an error and the chain stopped.", "The error map carries chain, step, index and cause; or light with {continue_on_error: true}."),
-    e("E603", Kind::Cough, "process check failed", "proc.run with {check: true} saw a non-zero exit code.", "The error map holds code, out and err."),
-    // kernel
-    e("E700", Kind::Burn, "burn refused", "The kernel refused a side effect.", "Read the message; effects need a burn block."),
-    e("E701", Kind::Burn, "effect outside burn", "A world-changing call ran with no burn block active on the call stack.", "Wrap the call, or the call to the function that makes it, in burn { }."),
-    e("E702", Kind::Burn, "journal failure", "The kernel could not record a burn before performing it, so it refused it.", "Check disk space and permissions under ~/.cigscript (or CIGSCRIPT_HOME)."),
-    e("E703", Kind::Burn, "snapshot missing", "A rollback was refused because at least one snapshot it needs is missing or corrupt; nothing was restored.", "The run directory under ~/.cigscript/runs was altered; restore it from a backup, or pass --force to restore what can be and list what cannot."),
-    e("E704", Kind::Burn, "file changed since the run", "A rollback was refused because a file the run touched has been changed by something else since; restoring would overwrite that newer content.", "Look at the file, then pass --force if the old content is what you want."),
-    e("E705", Kind::Burn, "already rolled back", "This run was rolled back already; doing it again would overwrite whatever happened since.", "Pass --force only if you mean to restore the old snapshots again."),
-    e("E706", Kind::Burn, "interrupted run", "A run's process died mid-burn. The journal is intact and nothing has been restored yet.", "cig unburn <id> restores what the run had burned; cig runs <id> shows the journal."),
-    // usage
-    e("E800", Kind::Usage, "usage error", "The command line or the environment is wrong.", "See `cig --help`."),
-    e("E801", Kind::Usage, "cannot read script", "The script file could not be opened.", "Check the path and permissions."),
-    e("E802", Kind::Usage, "state directory unavailable", "The state directory cannot be created or written.", "Set CIGSCRIPT_HOME to a writable location."),
-    e("E803", Kind::Usage, "no such run", "No run record matches the id or prefix given.", "`cig runs` lists them; give more of the id if it is ambiguous."),
-    e("E804", Kind::Usage, "no such chain", "The script declares no chain by that name.", "`cig chains <file>` lists them."),
-    e("E805", Kind::Usage, "network tool missing", "Neither `gh` nor `curl` is available for the update or report.", "Install one of them; `cig doctor --fix` offers to."),
-    e("E806", Kind::Usage, "update failed", "The release could not be fetched, verified or installed.", "The message says which step; retry, or install manually from the releases page."),
-    // internal
-    e("E900", Kind::Internal, "internal error", "CigScript hit a condition it believes impossible.", "Please report it: `cig crash send` after the crash, or file an issue."),
-    e("E901", Kind::Internal, "crash", "CigScript panicked. A crash report was written locally.", "Run `cig crash list` and `cig crash send <id>` to file it, or say yes at the prompt."),
-];
-
-pub fn lookup(code: &str) -> Option<&'static ErrorInfo> {
-    let wanted = code.trim().to_ascii_uppercase();
-    CATALOGUE.iter().find(|e| e.code == wanted)
+/// JSON Schema (draft 2020-12) for one diagnostic as `--json` prints it,
+/// generated from the registry so the `code` enum can never drift.
+pub fn diagnostic_schema() -> serde_json::Value {
+    let codes: Vec<&str> = all().iter().map(|c| c.code.as_str()).collect();
+    let kinds: Vec<&str> = [
+        Kind::Lex,
+        Kind::Syntax,
+        Kind::Check,
+        Kind::Type,
+        Kind::Runtime,
+        Kind::Cough,
+        Kind::Burn,
+        Kind::Usage,
+        Kind::Internal,
+    ]
+    .iter()
+    .map(|k| k.as_str())
+    .collect();
+    let families: Vec<&str> = registry()
+        .ranges
+        .iter()
+        .map(|r| r.family.as_str())
+        .collect();
+    let nos: Vec<&str> = registry().nos.iter().map(|n| n.id.as_str()).collect();
+    serde_json::json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "https://github.com/otmof-ops/CigScript/blob/main/docs/diagnostic.schema.json",
+        "title": "CigScript diagnostic",
+        "description": format!("One diagnostic as `cig --json` prints it. Generated from errors/registry.toml (registry version {}) for cigscript {}.", registry().version, crate::VERSION),
+        "type": "object",
+        "required": ["code", "kind", "message"],
+        "properties": {
+            "code": {"type": "string", "enum": codes},
+            "kind": {"type": "string", "enum": kinds},
+            "message": {"type": "string"},
+            "hint": {"type": "string", "description": "what to type next"},
+            "line": {"type": "integer", "minimum": 1},
+            "col": {"type": "integer", "minimum": 1},
+            "diagnosis": {"$ref": "#/$defs/diagnosis"}
+        },
+        "additionalProperties": false,
+        "$defs": {
+            "family": {"type": "string", "enum": families},
+            "no": {"type": "string", "enum": nos},
+            "diagnosis": {
+                "type": "object",
+                "description": "doctor's read-only diagnosis, when it fired: verdict, why, fix, and what to check if that is not it",
+                "required": ["verdict"],
+                "properties": {
+                    "verdict": {"type": "string"},
+                    "why": {"type": "array", "items": {"type": "string"}},
+                    "fix": {"type": "array", "items": {"type": "string"}},
+                    "if_not": {"type": "array", "items": {"type": "string"}},
+                    "probes": {"type": "array", "items": {"type": "object"}}
+                },
+                "additionalProperties": true
+            },
+            "check_report": {
+                "type": "object",
+                "description": "what `cig --json check <file>` prints",
+                "required": ["file", "ok", "errors", "warnings"],
+                "properties": {
+                    "file": {"type": "string"},
+                    "ok": {"type": "boolean"},
+                    "errors": {"type": "array", "items": {"$ref": "#"}},
+                    "warnings": {"type": "array", "items": {"$ref": "#"}}
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -153,21 +274,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn codes_are_unique_and_well_formed() {
+    fn registry_parses_and_codes_are_unique_and_in_range() {
+        let reg = registry();
+        assert!(reg.version >= 1);
         let mut seen = std::collections::HashSet::new();
-        for e in CATALOGUE {
-            assert!(
-                (4..=5).contains(&e.code.len()) && e.code.starts_with('E'),
-                "{}",
-                e.code
-            );
-            assert!(seen.insert(e.code), "duplicate {}", e.code);
+        for c in all() {
+            assert!(c.code.len() == 4 && c.code.starts_with('E'), "{}", c.code);
+            assert!(seen.insert(c.code.as_str()), "duplicate {}", c.code);
+            // range() panics when a code sits outside every range.
+            let _ = c.range();
             assert_eq!(
-                &e.code[1..2],
-                &default_code(e.kind)[1..2],
-                "{} is in the wrong range for {:?}",
-                e.code,
-                e.kind
+                &c.code[1..2],
+                &default_code(c.kind())[1..2],
+                "{} kind",
+                c.code
             );
         }
         for kind in [
@@ -181,11 +301,17 @@ mod tests {
             Kind::Usage,
             Kind::Internal,
         ] {
-            assert!(
-                lookup(default_code(kind)).is_some(),
-                "no catalogue entry for {kind:?}"
-            );
+            let d = lookup(default_code(kind)).unwrap_or_else(|| panic!("{kind:?} default"));
+            assert_eq!(d.kind(), kind);
         }
-        assert_eq!(lookup("e502").unwrap().title, "division by zero");
+        assert!(lookup("e502").is_some(), "lookup is case-insensitive");
+        assert!(lookup("E0000").is_none());
+    }
+
+    #[test]
+    fn schema_lists_every_code() {
+        let schema = diagnostic_schema();
+        let listed = schema["properties"]["code"]["enum"].as_array().unwrap();
+        assert_eq!(listed.len(), all().len());
     }
 }

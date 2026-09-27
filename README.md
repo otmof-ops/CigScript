@@ -242,7 +242,7 @@ What rollback covers, and what it cannot, is written down in
 | `cig chains script.cig` / `cig light script.cig <chain>` | list chains; light one |
 | `cig eval "expr"` / `cig repl` | evaluate a snippet; interactive session |
 | `cig runs [id] [--prune N]` / `cig unburn <id>` | run records; roll one back |
-| `cig explain [code]` | what an error code means and how to fix it |
+| `cig explain [code]` | the page for an error code: which kind of no it is, what to type next, the ranked causes; `--schema` prints the JSON Schema for a diagnostic |
 | `cig doctor [--fix]` | health report; offers repairs, asking first |
 | `cig update [--check]` | install the newest release, verified |
 | `cig crash [list\|show\|send\|delete]` | crash reports, under your control |

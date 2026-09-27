@@ -1001,3 +1001,131 @@ fn symlinks_roll_back_as_symlinks() {
         "true"
     );
 }
+
+// ----- the Hammer update: the error registry -------------------------------
+
+#[test]
+fn explain_pages_match_golden_text() {
+    let sb = Sandbox::new();
+    let nodes: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "explain"])).unwrap();
+    assert!(nodes.len() > 50);
+    let mut text = sb.run_ok(&["explain"]);
+    for n in &nodes {
+        let code = n["code"].as_str().unwrap();
+        text.push_str(&format!("\n======== {code} ========\n"));
+        text.push_str(&sb.run_ok(&["explain", code]));
+    }
+    let golden = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/explain.txt");
+    if std::env::var_os("CIG_UPDATE_GOLDEN").is_some() {
+        fs::create_dir_all(golden.parent().unwrap()).unwrap();
+        fs::write(&golden, &text).unwrap();
+    }
+    let expected = fs::read_to_string(&golden)
+        .unwrap_or_else(|_| panic!("missing {}; run with CIG_UPDATE_GOLDEN=1", golden.display()));
+    assert_eq!(
+        text, expected,
+        "explain wording changed; if that is intended, rerun with CIG_UPDATE_GOLDEN=1"
+    );
+}
+
+#[test]
+fn registry_nodes_and_schema_agree_with_json_diagnostics() {
+    let sb = Sandbox::new();
+    let schema: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["explain", "--schema"])).unwrap();
+    let codes: Vec<&str> = schema["properties"]["code"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let kinds: Vec<&str> = schema["properties"]["kind"]["enum"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let props: Vec<&str> = schema["properties"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    let nodes: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "explain"])).unwrap();
+    assert_eq!(codes.len(), nodes.len());
+    for n in &nodes {
+        assert!(codes.contains(&n["code"].as_str().unwrap()));
+        assert!(kinds.contains(&n["kind"].as_str().unwrap()), "{n}");
+        assert!(
+            n["family"].is_string() && n["no"]["hear"].is_string() && n["no"]["manual"].is_string(),
+            "{n}"
+        );
+        assert!(!n["causes"].as_array().unwrap().is_empty(), "{n}");
+    }
+    let one: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "explain", "E508"])).unwrap();
+    assert_eq!(one["no"]["id"], "depends");
+    assert_eq!(one["causes"][0]["probe"], "path-exists");
+    // A real diagnostic validates against the schema, structurally.
+    sb.write("s.cig", "roll a = 1\nexhale b\nstick c = 1\nc = 2\n");
+    let rep: serde_json::Value =
+        serde_json::from_slice(&sb.cig(&["--json", "check", "s.cig"]).stdout).unwrap();
+    let diags = rep["errors"].as_array().unwrap();
+    assert_eq!(diags.len(), 2);
+    for d in diags {
+        for k in d.as_object().unwrap().keys() {
+            assert!(
+                props.contains(&k.as_str()),
+                "field `{k}` is not in the schema: {d}"
+            );
+        }
+        assert!(codes.contains(&d["code"].as_str().unwrap()), "{d}");
+        assert!(kinds.contains(&d["kind"].as_str().unwrap()), "{d}");
+        assert!(d["message"].is_string());
+        assert!(d["line"].as_u64().unwrap() >= 1 && d["col"].as_u64().unwrap() >= 1);
+    }
+}
+
+#[test]
+fn check_can_deny_warnings_for_ci() {
+    let sb = Sandbox::new();
+    sb.write("w.cig", "pull f() {\n  fs.rm(\"x\")\n}\n");
+    sb.run_ok(&["check", "w.cig"]);
+    let err = sb.run_err(&["check", "w.cig", "--deny-warnings"], 2);
+    assert!(
+        err.contains("warning[E303 check]") && err.contains("--deny-warnings"),
+        "{err}"
+    );
+    let out = sb.cig(&["--json", "check", "w.cig", "--deny-warnings"]);
+    assert_eq!(out.status.code(), Some(2));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["warnings_denied"], true);
+    assert_eq!(v["warnings"][0]["code"], "E303");
+}
+
+#[test]
+fn usage_layer_errors_carry_their_codes() {
+    let sb = Sandbox::new();
+    let err = sb.run_err(&["run", "nope.cig"], 3);
+    assert!(
+        err.contains("error[E801 usage]: cannot read nope.cig") && err.contains("cig explain E801"),
+        "{err}"
+    );
+    let err = sb.run_err(&["runs", "zzz"], 3);
+    assert!(
+        err.contains("error[E803 usage]: no run matches `zzz`"),
+        "{err}"
+    );
+    let err = sb.run_err(&["unburn", "zzz"], 3);
+    assert!(err.contains("error[E803 usage]"), "{err}");
+    // No transport at all is E805, distinct from a transport that failed (E806).
+    let out = sb.cig_env(&["update", "--check"], &[("PATH", "")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("error[E805 usage]") && err.contains("neither `gh` nor `curl`"),
+        "{err}"
+    );
+}

@@ -15,12 +15,17 @@ use std::path::Path;
 
 pub fn read_source(ctx: &Ctx, file: &Path) -> Result<String, i32> {
     std::fs::read_to_string(file).map_err(|e| {
-        eprintln!(
-            "{} cannot read {}: {}",
-            ctx.red("error:"),
-            file.display(),
-            e
-        );
+        let hint = match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                "check the path; scripts resolve against the current directory"
+            }
+            std::io::ErrorKind::PermissionDenied => "chmod +r the file, or run as its owner",
+            _ => "the operating system's reason is in the message",
+        };
+        let d = cigscript::diagnostics::usage(format!("cannot read {}: {e}", file.display()))
+            .code("E801")
+            .with_hint(hint);
+        report(ctx, &d, None, None);
         exit::USAGE
     })
 }
@@ -39,7 +44,7 @@ pub fn report(ctx: &Ctx, diag: &Diagnostic, file: Option<&str>, source: Option<&
     eprint!("{}", diag.render(file, source));
 }
 
-pub fn check(ctx: &Ctx, file: &Path) -> i32 {
+pub fn check(ctx: &Ctx, file: &Path, deny_warnings: bool) -> i32 {
     let source = match read_source(ctx, file) {
         Ok(s) => s,
         Err(code) => return code,
@@ -53,15 +58,17 @@ pub fn check(ctx: &Ctx, file: &Path) -> i32 {
         }
     };
     let rep = check::check(&program, &[]);
+    let denied = deny_warnings && !rep.warnings.is_empty();
     if ctx.json {
         let obj = serde_json::json!({
             "file": name,
             "ok": rep.ok(),
             "errors": rep.errors,
             "warnings": rep.warnings,
+            "warnings_denied": denied,
         });
         outln!("{}", serde_json::to_string(&obj).unwrap_or_default());
-        return if rep.ok() {
+        return if rep.ok() && !denied {
             exit::OK
         } else {
             exit::SYNTAX_ERROR
@@ -76,7 +83,16 @@ pub fn check(ctx: &Ctx, file: &Path) -> i32 {
             )
         );
     }
-    if rep.ok() {
+    if rep.ok() && denied {
+        eprintln!(
+            "{} {} has {} warning{} and --deny-warnings is set",
+            ctx.red("error[E300 check]:"),
+            name,
+            rep.warnings.len(),
+            if rep.warnings.len() == 1 { "" } else { "s" }
+        );
+        exit::SYNTAX_ERROR
+    } else if rep.ok() {
         eprintln!(
             "{} {} ({} statements, {} warning{})",
             ctx.green("ok:"),
@@ -198,9 +214,11 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         if let Err(e) = record.save() {
             eprintln!(
                 "{} cannot create the run record under {}: {e}",
-                ctx.red("error:"),
+                ctx.red("error[E802 usage]:"),
                 cigscript::burn::runs::runs_dir().display()
             );
+            eprintln!("  = hint: set CIGSCRIPT_HOME to a directory you can write");
+            eprintln!("  = explain: cig explain E802");
             return exit::USAGE;
         }
         Some(record.dir())
