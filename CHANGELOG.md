@@ -49,8 +49,10 @@ reproduced fixed, each with a row on the wall and a test named after it.
 - Compensations: the `compensated` stamp goes on a block's ops only when
   the block completes and its compensation is recorded; a block that fails
   half-way, or a process that dies inside one, leaves them honestly
-  irreversible. A deferred `cig unburn` gives the compensation the run's
-  `args`.
+  irreversible. A block left by `snuff`, `break`, `continue` or `exit()`
+  completed its effects and records its compensation (1.1.0 dropped it
+  silently, so the undo never ran). A deferred `cig unburn` gives the
+  compensation the run's `args`.
 - Pack and ghost: a link inside the pack is followed when a hop's writes
   are watched; the dry run resolves a symlinked directory to the same ghost
   entry as its target; every directory a nested write creates is listed;
@@ -70,6 +72,11 @@ reproduced fixed, each with a row on the wall and a test named after it.
   empty `sep` are refused; a directory given as the command is named as
   one; `proc.kv` reads `export KEY=value`; `proc.which` resolves a name
   with a slash the way `proc.run` does.
+- Chains: `light(steps, {names: [...]})` names the steps of a chain built at
+  run time; the narration, the report and the error used to say `step 3`.
+- `fs.append_text` creates the parent directory, as `fs.write_text` always
+  did; a log under a directory that did not exist yet failed for real after
+  a dry run that saw no problem.
 - Plan: `env.set` and `env.unset` are labelled irreversible, as `BURN.md` and
   `STDLIB.md` have always said; 1.1.0 labelled them reversible although the
   kernel restores nothing for them.

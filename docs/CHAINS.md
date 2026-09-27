@@ -76,7 +76,7 @@ exhale report.ok, report.ms, report.steps.len()
 | `failed` | the subset of `steps` that failed |
 | `result` | the last step's result |
 
-Options: `{retries: n, retry_delay_ms: m, retry_irreversible: bool, continue_on_error: bool, quiet: bool}`.
+Options: `{retries: n, retry_delay_ms: m, retry_irreversible: bool, continue_on_error: bool, quiet: bool, names: [..]}`.
 
 **Values flow forward.** A step that takes one parameter receives the previous
 step's result (`null` for the first step). A step that takes none is simply
@@ -106,7 +106,11 @@ retried on its own, because the world may already have changed;
 `{retry_irreversible: true}` says you know. A chain that lights itself,
 directly or through another chain, is `E604` with the loop spelled out.
 
-**Ad-hoc chains** need no declaration: `light([fetch, build])`.
+**Ad-hoc chains** need no declaration: `light([fetch, build])`. Steps
+that are lambdas have no name of their own and would read `step 1`,
+`step 2`; `light(steps, {names: ["fetch", "build"]})` names them for the
+narration, the report and the error, which is what a chain built from a
+manifest at run time needs.
 
 **Nesting** works: a chain can be a step of another chain, and its report
 becomes that step's result.

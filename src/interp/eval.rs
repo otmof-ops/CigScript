@@ -371,8 +371,15 @@ impl Interp {
                 if *class == BurnClass::Unlit {
                     self.unlit_depth -= 1;
                 }
-                result?;
-                if compensating {
+                // A block left by snuff, break, continue or exit() completed
+                // its effects, so its compensation is recorded before the
+                // signal goes on; only an error leaves them uncovered.
+                let completed = match &result {
+                    Ok(()) => true,
+                    Err(Signal::Error(_)) => self.exit_requested.is_some(),
+                    Err(_) => true,
+                };
+                if compensating && completed {
                     let state_json = match &state_value {
                         Some(v) => crate::stdlib::json::from_value(v, *span)?,
                         None => serde_json::Value::Null,
@@ -389,6 +396,7 @@ impl Interp {
                         )
                         .map_err(|d| d.or_at(*span))?;
                 }
+                result?;
                 Ok(())
             }
             Stmt::Expr(e) => {

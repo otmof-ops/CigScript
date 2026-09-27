@@ -26,6 +26,10 @@ pub struct Options {
     /// Retry a step even when its failed attempt ran an irreversible hop.
     pub retry_irreversible: bool,
     pub quiet: bool,
+    /// Labels for the steps of a chain built at run time (`light([..])`),
+    /// which otherwise read `step 1`, `step 2` in the narration, the report
+    /// and the error.
+    pub names: Vec<String>,
 }
 
 impl Options {
@@ -36,6 +40,7 @@ impl Options {
             retry_delay_ms: 0,
             retry_irreversible: false,
             quiet: false,
+            names: Vec::new(),
         };
         if let Some(m) = opt_map(args, 1, "light", span)? {
             for (k, v) in m.borrow().iter() {
@@ -47,6 +52,16 @@ impl Options {
                         o.retry_delay_ms = (*n).clamp(0, 3_600_000)
                     }
                     ("retry_irreversible", v) => o.retry_irreversible = v.truthy(),
+                    ("names", Value::List(l)) => {
+                        o.names = l.borrow().iter().map(|n| n.display()).collect();
+                    }
+                    ("names", other) => {
+                        return Err(type_error(format!(
+                            "light: option `names` is a list of strings, got {}",
+                            other.type_name()
+                        ))
+                        .at(span))
+                    }
                     ("retries" | "retry_delay_ms", other) => {
                         return Err(type_error(format!(
                             "light: option `{k}` must be an int, got {}",
@@ -58,7 +73,7 @@ impl Options {
                         return Err(runtime(format!("light: unknown option `{other}`"))
                             .at(span)
                             .with_hint(
-                                "use one of continue_on_error, retries, retry_delay_ms, retry_irreversible, quiet",
+                                "use one of continue_on_error, retries, retry_delay_ms, retry_irreversible, quiet, names",
                             ))
                     }
                 }
@@ -80,7 +95,11 @@ pub fn light(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> 
                 .iter()
                 .enumerate()
                 .map(|(n, v)| ChainStep {
-                    label: label_for(v, n),
+                    label: opts
+                        .names
+                        .get(n)
+                        .cloned()
+                        .unwrap_or_else(|| label_for(v, n)),
                     value: v.clone(),
                     span: s,
                 })

@@ -427,6 +427,12 @@ fn append_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic
     let text = expect_str(a, 1, "fs.append_text", s)?;
     if i.effect("fs.append_text", Op::Append { path: p.clone() }, s)? == Decision::Execute {
         use std::io::Write;
+        // Like fs.write_text: the parent is created, so a log under a
+        // directory that does not exist yet works, and the dry run (which
+        // never minded) and the real run agree.
+        if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
+            fs::create_dir_all(parent).map_err(|e| io_err("fs.append_text", parent, e, s))?;
+        }
         let mut f = fs::OpenOptions::new()
             .create(true)
             .append(true)
