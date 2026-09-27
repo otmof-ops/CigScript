@@ -114,7 +114,8 @@ fn run(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
             super::fs::describe_io(&e)
         ))
         .code("E509")
-        .at(s);
+        .at(s)
+        .with_subject(cmd.to_string());
         if e.kind() == std::io::ErrorKind::NotFound {
             d = d.with_hint("is it installed and on PATH? proc.which(name) tells you");
         }

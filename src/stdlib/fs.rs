@@ -46,6 +46,7 @@ fn io_err(name: &str, path: &Path, e: io::Error, s: Span) -> Diagnostic {
     runtime(format!("{name}: {}: {}", path.display(), describe_io(&e)))
         .code("E508")
         .at(s)
+        .with_subject(path.display().to_string())
 }
 
 pub(crate) fn describe_io(e: &io::Error) -> String {

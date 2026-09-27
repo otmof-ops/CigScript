@@ -137,7 +137,15 @@ fn page(ctx: &Ctx, e: &Code) {
             ctx.dim("ranked; doctor checks them in this order")
         );
         for (i, c) in e.causes.iter().enumerate() {
-            outln!("  {}. {}", i + 1, c.why);
+            match c.no.as_deref().and_then(cigscript::errors::lookup_no) {
+                Some(n) => outln!(
+                    "  {}. {}  {}",
+                    i + 1,
+                    c.why,
+                    ctx.dim(&format!("({}; {})", n.hear, n.manual))
+                ),
+                None => outln!("  {}. {}", i + 1, c.why),
+            }
             let probe = lookup_probe(&c.probe);
             match probe {
                 Some(p) if p.name != "none" => {

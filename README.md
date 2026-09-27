@@ -102,6 +102,18 @@ error[E701 burn]: fs.rm changes the world, so it must be inside a burn block
   = explain: cig explain E701
 ```
 
+Under every error, doctor says what it thinks happened and what it checked to
+think so, in the only sentence it is allowed: *I think X, because I checked Y
+and found Z.* Then the fix, then what to check if that is not it. Probes are
+read-only; doctor never fixes anything on its own. `--no-doctor` gives you the
+bare diagnostic; `--plain` gives you the same facts without the jokes. The
+whole model is in [docs/DOCTOR.md](docs/DOCTOR.md).
+
+```
+  = doctor: I think the program is not on PATH for this run (can't see any ciggies bro), because I checked each directory on PATH, looking for the program named in the message and found no `kubectl` in the 7 directories on PATH.
+  = fix: proc.which("name") to check; give the full path, or fix PATH in the environment the run inherits
+```
+
 **Batteries that match the job.** `fs`, `path`, `json`, `csv`, `text`
 (regex), `proc`, `env`, `time`, `hash`, `math`, `log`, plus 64 methods on
 strings, lists and maps. `proc.run` never touches a shell, captures both
@@ -243,6 +255,8 @@ What rollback covers, and what it cannot, is written down in
 | `cig eval "expr"` / `cig repl` | evaluate a snippet; interactive session |
 | `cig runs [id] [--prune N]` / `cig unburn <id>` | run records; roll one back |
 | `cig explain [code]` | the page for an error code: which kind of no it is, what to type next, the ranked causes; `--schema` prints the JSON Schema for a diagnostic |
+| `cig doctor [run]` | the installation's health, or a stored run's error diagnosed again, read-only; `--fix` asks before each repair |
+| `--plain`, `--no-doctor` | global flags: the same facts without the catchphrases; the bare diagnostic without doctor's diagnosis (also `CIG_PLAIN=1`, `CIG_DOCTOR=0`) |
 | `cig doctor [--fix]` | health report; offers repairs, asking first |
 | `cig update [--check]` | install the newest release, verified |
 | `cig crash [list\|show\|send\|delete]` | crash reports, under your control |
@@ -256,6 +270,7 @@ check, `3` usage or environment problem, `70` `cig` itself crashed.
 ## Documentation
 
 - [docs/LANGUAGE.md](docs/LANGUAGE.md): the language, statement by statement.
+- [docs/DOCTOR.md](docs/DOCTOR.md): automatic diagnosis on every error, and why it never fixes.
 - [docs/SMOKE.md](docs/SMOKE.md): the lexicon, explained by a smoker.
 - [docs/CHAINS.md](docs/CHAINS.md): chains, the automation layer.
 - [docs/BURN.md](docs/BURN.md): effects, modes, the journal, rollback and its limits.

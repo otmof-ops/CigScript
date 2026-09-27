@@ -56,7 +56,7 @@ The source contains something the lexer cannot turn into tokens.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. a character or literal the lexer does not know; the message names it (probe `source-line`). **Remedy:** fix it at the caret
+1. a character or literal the lexer does not know (probe `source-line`). **Remedy:** fix it at the caret
 
 
 ### E101 unterminated string
@@ -152,7 +152,7 @@ The source does not follow the grammar.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the caret marks where parsing stopped; the message names what was expected there (probe `source-line`). **Remedy:** supply what was expected, or remove what was not
+1. parsing stopped at the caret, short of what was expected (probe `source-line`). **Remedy:** supply what was expected, or remove what was not
 
 
 ### E201 expected an expression
@@ -183,7 +183,7 @@ A `{` has no matching `}`.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. a block opened and never closed; the message names the line it opened on (probe `brace-balance`). **Remedy:** add `}` at the end of that block
+1. a block opened and never closed (probe `brace-balance`). **Remedy:** add `}` at the end of that block
 
 
 ### E203 expected end of statement
@@ -290,7 +290,7 @@ The static checker found a mistake before running anything.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the message names the mistake and the line (probe `source-line`). **Remedy:** fix it there; `cig check <file>` lists every one
+1. the checker found the mistake at the line shown (probe `source-line`). **Remedy:** fix it there; `cig check <file>` lists every one
 
 
 ### E301 unknown name
@@ -305,7 +305,7 @@ A name is used that was never declared in a visible scope.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. a typo; the hint names the closest declared name (probe `similar-names`). **Remedy:** use the suggested name
+1. a typo in the name (probe `similar-names`). **Remedy:** use the suggested name
 2. the name is declared later in the file, or inside another block (no probe; a suggestion, not a finding). **Remedy:** move the declaration above the first use, or out of the inner block
 3. a module function called without its module: read_text instead of fs.read_text (probe `similar-names`). **Remedy:** prefix it with the module; `cig language` lists them
 
@@ -435,7 +435,7 @@ A value of the wrong type reached an operation.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the message names the type it got (probe `value-types`). **Remedy:** convert the value first, or branch on type_of()
+1. a value of the type the message names (probe `value-types`). **Remedy:** convert the value first, or branch on type_of()
 
 
 ### E401 wrong number of arguments
@@ -466,7 +466,7 @@ A library function received an argument of the wrong type.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the message names the argument position and the expected type (probe `value-types`). **Remedy:** convert the value first: str(n), int(s), float(s)
+1. an argument of the wrong type, at the position the message names (probe `value-types`). **Remedy:** convert the value first: str(n), int(s), float(s)
 
 
 ### E403 operator not applicable
@@ -551,7 +551,7 @@ Something failed while the script was running.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the message says what failed (no probe; a suggestion, not a finding). **Remedy:** wrap the risky code in try/ashtray to handle it
+1. the operation the message names failed (no probe; a suggestion, not a finding). **Remedy:** wrap the risky code in try/ashtray to handle it
 
 
 ### E501 unknown name at run time
@@ -583,7 +583,7 @@ An integer or float was divided by zero, or the modulus was zero.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the divisor came from data that was zero or empty (probe `value-types`). **Remedy:** guard it: if d != 0 { ... }, or give it a default with ??
+1. the divisor was zero, from data that was zero or empty (probe `value-types`). **Remedy:** guard it: if d != 0 { ... }, or give it a default with ??
 
 
 ### E503 integer overflow
@@ -680,9 +680,9 @@ A file or directory operation failed; the message shows the path and the operati
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the path does not exist (No such file or directory): can't see any ciggies (probe `path-exists`). **Remedy:** check it with fs.exists or fs.glob first; relative paths resolve against the working directory
-2. permission denied: these are MY ciggies (probe `path-permissions`). **Remedy:** `ls -l` the path and its parent to see who may write; chmod, or run as the owner
-3. the parent directory is missing (probe `parent-exists`). **Remedy:** fs.mkdir(path.dir(p)) first, inside the burn
+1. the path does not exist (probe `path-exists`). **Remedy:** check it with fs.exists or fs.glob first; relative paths resolve against the working directory
+2. permission denied (probe `path-permissions`). **Remedy:** `ls -l` the path and its parent to see who may write; chmod, or run as the owner
+3. the directory itself is missing, not just the file (probe `parent-exists`). **Remedy:** check the directory with fs.exists(path.dir(p)); a write creates missing directories, a read cannot
 4. the disk is full, or the mount is read-only (probe `disk-free`). **Remedy:** free space, or write somewhere else
 5. it is a directory where a file was expected, or the reverse (probe `path-is-dir`). **Remedy:** branch on fs.is_dir / fs.is_file
 
@@ -701,9 +701,9 @@ A program could not be started, or exceeded its timeout and was killed.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the program is not on PATH for this run: can't see any ciggies (probe `on-path`). **Remedy:** proc.which("name") to check; give the full path, or fix PATH in the environment the run inherits
+1. the program is not on PATH for this run (probe `on-path`). **Remedy:** proc.which("name") to check; give the full path, or fix PATH in the environment the run inherits
 2. it ran longer than {timeout_ms} and was killed (no probe; a suggestion, not a finding). **Remedy:** raise {timeout_ms: N} on the proc.run, or split the work into smaller calls
-3. the file exists but is not executable: these are MY ciggies (probe `path-permissions`). **Remedy:** chmod +x it
+3. the file exists but is not executable (probe `path-permissions`). **Remedy:** chmod +x it
 
 Related: `E603`, `E602`.
 
@@ -889,7 +889,7 @@ A step of a chain raised an error and the chain stopped.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. a step raised; the message names the step and the line the error was raised on (probe `chain-report`). **Remedy:** fix the step; or light with {continue_on_error: true} to run the rest and read failed[]
+1. a step raised an error (probe `chain-report`). **Remedy:** fix the step; or light with {continue_on_error: true} to run the rest and read failed[]
 2. a step expected the previous step's result and got null (probe `chain-report`). **Remedy:** a step that takes one parameter receives the previous result; give the earlier step a return value
 
 Related: `E603`, `E509`.
@@ -907,7 +907,7 @@ proc.run with {check: true} saw a non-zero exit code.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the program exited non-zero; the error map holds code, out and err (no probe; a suggestion, not a finding). **Remedy:** read err from the ashtray value; the program's own message is there
+1. the program exited non-zero (no probe; a suggestion, not a finding). **Remedy:** read err from the ashtray value; the program's own message is there
 
 Related: `E509`.
 
@@ -938,7 +938,7 @@ The kernel refused a side effect.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the kernel said no; the message says why (no probe; a suggestion, not a finding). **Remedy:** effects need a burn block; the message names the policy otherwise
+1. the kernel refused the effect (no probe; a suggestion, not a finding). **Remedy:** effects need a burn block; the message names the policy otherwise
 
 
 ### E701 effect outside burn
@@ -971,7 +971,7 @@ The kernel could not record a burn before performing it, so it refused it.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the state directory is not writable: these are MY ciggies (probe `state-dir-writable`). **Remedy:** chmod it, or set CIGSCRIPT_HOME to a directory you own
+1. the state directory is not writable (probe `state-dir-writable`). **Remedy:** chmod it, or set CIGSCRIPT_HOME to a directory you own
 2. the disk holding the state directory is full (probe `disk-free`). **Remedy:** `cig runs --prune 20` frees old snapshots; or move CIGSCRIPT_HOME
 3. the file vanished between the check and the snapshot (probe `path-exists`). **Remedy:** retry; if it repeats, something else is editing that path during the run
 
@@ -1079,7 +1079,7 @@ The command line or the environment is wrong.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the message says which argument or setting (no probe; a suggestion, not a finding). **Remedy:** `cig <command> --help` shows the flags
+1. an argument or setting is wrong (no probe; a suggestion, not a finding). **Remedy:** `cig <command> --help` shows the flags
 
 
 ### E801 cannot read script
@@ -1094,8 +1094,8 @@ The script file could not be opened.
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. the path is wrong, or relative to another directory: can't see any ciggies (probe `path-exists`). **Remedy:** ls the path; run from the directory the script lives in, or give the full path
-2. permission denied: these are MY ciggies (probe `path-permissions`). **Remedy:** chmod +r the file
+1. the path is wrong, or relative to another directory (probe `path-exists`). **Remedy:** ls the path; run from the directory the script lives in, or give the full path
+2. permission denied (probe `path-permissions`). **Remedy:** chmod +r the file
 
 
 ### E802 state directory unavailable

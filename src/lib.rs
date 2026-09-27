@@ -19,6 +19,7 @@ pub mod check;
 pub mod config;
 pub mod crash;
 pub mod diagnostics;
+pub mod doctor;
 pub mod errors;
 pub mod interp;
 pub mod stdlib;

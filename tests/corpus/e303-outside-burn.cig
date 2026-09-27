@@ -1,0 +1,2 @@
+# An effect outside a burn: only the hint applies, doctor stays quiet.
+fs.rm("x")

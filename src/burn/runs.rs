@@ -41,6 +41,10 @@ pub struct RunRecord {
     pub status: String,
     #[serde(default)]
     pub error: Option<String>,
+    /// The failing diagnostic in its `--json` form, so `cig doctor <run>`
+    /// can diagnose it again later, elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<serde_json::Value>,
     #[serde(default)]
     pub burns: usize,
     #[serde(default)]
@@ -79,6 +83,7 @@ impl RunRecord {
             error: None,
             burns: 0,
             irreversible: 0,
+            diagnostic: None,
             rolled_back: false,
             pid: Some(std::process::id()),
         }

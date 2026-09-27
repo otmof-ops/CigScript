@@ -58,6 +58,21 @@ seam; the package's manifest carries the state of each deliverable.
   holds a code nothing emits (unless tagged `planned`), when a page is
   incomplete, or when the generated docs are stale; the explain pages are
   golden-tested so wording cannot regress silently.
+- Doctor fires on the emit hook. Under every reported diagnostic, doctor
+  walks the code's ranked causes, runs the read-only probe for each (stat,
+  mode bits, PATH, the journal, the run records; never a write, never the
+  network) and says the one sentence it is allowed: *I think X, because I
+  checked Y and found Z*, then the fix, then what to check if that is not it.
+  Nothing confirmed: one line. Nothing to check: silence. 80 ms budget.
+  `--no-doctor` or `CIG_DOCTOR=0` gives the bare diagnostic, byte for byte.
+  In `--json` the diagnosis is a field. `cig doctor <run>` diagnoses a stored
+  run's error again, read-only (the run record now keeps the diagnostic).
+  `tests/corpus/` pins the words for every probe. `docs/DOCTOR.md`.
+- `--plain` / `CIG_PLAIN=1`: the same codes, spans, hints and evidence
+  without the banner or the hallway phrases; the manual's name stands in.
+  Golden-tested as a strict subtraction of the themed output.
+- Diagnostics carry a `subject` field in `--json`: the path, program or run
+  id the message is about.
 - `cig check --deny-warnings` for CI: exit 2 when there are warnings.
 - The usage layer carries its codes: `E801` cannot read script, `E802` state
   directory unavailable, `E803` no such run, and `E805` (no `gh` or `curl` at

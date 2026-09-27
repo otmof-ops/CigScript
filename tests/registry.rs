@@ -152,6 +152,18 @@ fn every_code_has_a_complete_page() {
                 i + 1,
                 cause.probe
             );
+            if let Some(no) = &cause.no {
+                assert!(
+                    lookup_no(no).is_some(),
+                    "{id} cause {}: unknown kind of no `{no}`",
+                    i + 1
+                );
+            }
+            assert!(
+                !cause.why.contains("ciggies"),
+                "{id} cause {}: put the kind of no in `no`, not in the text, so plain mode can drop it",
+                i + 1
+            );
         }
         if c.has_tag("fixable-by-doctor") {
             assert!(

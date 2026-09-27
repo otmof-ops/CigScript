@@ -1,0 +1,3 @@
+# A block that never closes.
+if true {
+  exhale "}"

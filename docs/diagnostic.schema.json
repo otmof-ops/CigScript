@@ -108,6 +108,13 @@
       "type": "integer",
       "minimum": 1
     },
+    "subject": {
+      "type": "string",
+      "description": "the path, program, run id or name the message is about"
+    },
+    "file": {
+      "type": "string"
+    },
     "diagnosis": {
       "$ref": "#/$defs/diagnosis"
     }
@@ -147,11 +154,31 @@
       "type": "object",
       "description": "doctor's read-only diagnosis, when it fired: verdict, why, fix, and what to check if that is not it",
       "required": [
-        "verdict"
+        "code",
+        "confirmed",
+        "verdict",
+        "why",
+        "fix",
+        "if_not",
+        "probes",
+        "ms"
       ],
       "properties": {
+        "code": {
+          "type": "string"
+        },
+        "confirmed": {
+          "type": "boolean"
+        },
         "verdict": {
           "type": "string"
+        },
+        "no": {
+          "$ref": "#/$defs/no"
+        },
+        "ms": {
+          "type": "integer",
+          "minimum": 0
         },
         "why": {
           "type": "array",

@@ -1,0 +1,10 @@
+Don't see any cigarettes.
+error[E104 syntax]: integer literal `9223372036854775808` does not fit in 64 bits
+  --> e104-too-big.cig:2:8
+  |
+2 | exhale 9223372036854775808
+  |        ^^^^^^^^^^^^^^^^^^^
+  = hint: the largest int is 9223372036854775807; -9223372036854775808 is valid with the minus sign directly in front
+  = explain: cig explain E104
+  = doctor: I think the literal is larger than 9223372036854775807, because I checked the literal's magnitude against the 64-bit range and found 9223372036854775808 is 1 more than 9223372036854775807, the largest int.
+  = fix: add .0 to make it a float, or check whether the number is right

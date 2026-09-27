@@ -1,0 +1,2 @@
+# A read of a file that is not there: the first cause, confirmed by a stat.
+exhale fs.read_text("in.csv")
