@@ -13,7 +13,8 @@ Three properties make it fit:
    `burn { }` block, and `cig check` refuses a script that tries otherwise.
    A pipeline that reads `raw/` and writes `derived/` cannot corrupt `raw/`
    by accident unless someone wrote `burn` around it on purpose, which is
-   visible in review.
+   visible in review; `pack { "./derived" }` at the top of the script makes
+   it a rule the checker and the kernel enforce rather than a convention.
 2. **Every run is a provenance record.** `~/.cigscript/runs/<id>/run.json`
    holds the script's SHA-256, the arguments, the working directory and the
    timestamps; `journal.jsonl` holds every effect with the hash of what was

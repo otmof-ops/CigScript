@@ -24,6 +24,14 @@ pub const LEGEND: &[(&str, &str)] = &[
     ),
     ("burn { }", "the only place side effects are allowed"),
     (
+        "burn (s) { } unburn { }",
+        "a burn with its undo: the compensation runs on rollback with the state map s",
+    ),
+    (
+        "pack { \"./build\" }",
+        "first statement: the scope every write must stay inside",
+    ),
+    (
         "burn unlit { }",
         "declare side effects without ever running them",
     ),

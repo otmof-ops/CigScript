@@ -41,7 +41,7 @@ may burn.
 | mode | effectful calls | run record |
 |---|---|---|
 | `cig run` | executed after being journaled | `~/.cigscript/runs/<id>/` |
-| `cig run --dry-run` | simulated, collected into a plan printed at the end | none |
+| `cig run --dry-run` | simulated, collected into a plan printed at the end; reads see the pretend writes through the ghost filesystem | none |
 | `cig check`, `cig eval`, `cig repl` | `check` never executes; `eval` and `repl` behave like `run` without a run directory | none |
 
 Inside `burn unlit { }` every effectful call is simulated whatever the mode,
@@ -171,11 +171,16 @@ per step; the journal records the effects.
 
 ```
 ~/.cigscript/runs/20260926T021500-3fa9c1/
-  run.json        script, its SHA-256, args, cwd, timings, status, burn counts
-  journal.jsonl   executed ops with before-states
+  run.json        script, its SHA-256, args, cwd, pid, timings, status, burn counts, the failing diagnostic
+  journal.jsonl   executed ops with before-states; compensations; `undone` markers left by a retry
   snapshots/      copies of files and trees as they were before each op
+  after.json      what the run left behind, for the changed-since check on unburn
   intents.jsonl   unlit burns (only when there were any)
 ```
+
+Beside `runs/`, the state directory holds `crashes/` (crash reports, yours
+until you send them), `reports/` (`cig report <run>` bundles) and
+`update-check.json`.
 
 A run's status is one of `running`, `ok`, `failed`, `rolled_back`,
 `unburned`, `unburn_failed`, or `interrupted` (derived when a `running`

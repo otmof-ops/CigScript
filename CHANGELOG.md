@@ -3,6 +3,15 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+- Docs: the narrative pages (`DESIGN.md`, `SMOKE.md`, `LANGUAGE.md`,
+  `CHAINS.md`, `BURN.md`, `DOCTOR.md`, `SCIENCE.md`, the README's burn-model
+  table and the `cig language` legend) say what 1.1.0 does; the last claims
+  from before the Hammer update (a dry run that cannot read its writes, a
+  self-lighting chain that fails at depth 32, "no `finally` yet", packs as
+  something that was cut) are gone.
+
 ## 1.1.0 — 2026-09-27
 
 The "Hammer" update: built from an external adversarial read of 1.0.0 and

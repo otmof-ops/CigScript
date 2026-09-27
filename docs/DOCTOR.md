@@ -81,6 +81,8 @@ here* (empty). In plain mode the manual's name stands in its place.
 | `brace-balance` | `{` and `}` per line | the line whose block never closes |
 | `int-magnitude` | the literal against the 64-bit range | a literal past the largest int |
 | `env-var` | `CIG_MAX_ALLOC`, `CIG_MAX_STEPS` | context for a ceiling (never a verdict on its own) |
+| `loop-condition` | the `while` on the line the step budget ran out | a condition that is literally `true`, so only a break can end the loop |
+| `plan-order` | the dry-run plan | the earlier simulated delete or move that took the path a step then read |
 | `chain-report` | the step, its label, the inner error | which step raised, and where |
 | `network-tools` | `gh` and `curl` on PATH | no transport for an update |
 | `run-list`, `run-record`, `pid-alive` | the run records | no such run; an interrupted run |

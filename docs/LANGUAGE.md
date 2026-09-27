@@ -190,6 +190,18 @@ burn (s) {
 }
 ```
 
+```cig
+burn { ... }         # side effects allowed here, journaled, rolled back on failure
+burn unlit { ... }   # side effects recorded as intent and never executed
+```
+
+Inside a normal burn, functions marked *burn* in `docs/STDLIB.md` may run. A
+function called from inside a burn inherits the permission, so helpers can be
+written once and lit by their caller. Outside a burn those calls fail before the
+script starts (when the call is visible to the checker) or at the moment of the
+call (when it is inside a function). See `docs/BURN.md` for the modes, the
+journal and what rollback can and cannot undo.
+
 ## The pack
 
 `pack { "./build", "~/Downloads" }`, first statement of the script, declares
@@ -203,18 +215,6 @@ and the files it modified or deleted as irreversible with the detail, and
 reports anything the child wrote outside the pack as `E752`, so nothing is
 hidden and nothing is laundered. One pack per script (`E753`); parameters and
 cartons are the next seam of `HAMMER.md`.
-
-```cig
-burn { ... }         # side effects allowed here, journaled, rolled back on failure
-burn unlit { ... }   # side effects recorded as intent and never executed
-```
-
-Inside a normal burn, functions marked *burn* in `docs/STDLIB.md` may run. A
-function called from inside a burn inherits the permission, so helpers can be
-written once and lit by their caller. Outside a burn those calls fail before the
-script starts (when the call is visible to the checker) or at the moment of the
-call (when it is inside a function). See `docs/BURN.md` for the modes, the
-journal and what rollback can and cannot undo.
 
 ## Chains
 
@@ -233,16 +233,22 @@ file declares. The whole story is in `docs/CHAINS.md`.
 ## Keywords as names
 
 Keywords are reserved as statement starters only. After a dot and as a map
-key they are ordinary names, so `err.chain`, `m.if` and `{chain: 1}` are
-fine. The one place this matters is the error map a failed chain raises,
+key they are ordinary names, so `err.chain`, `m.if`, `m.finally` and
+`{chain: 1}` are fine. The one place this matters is the error map a failed chain raises,
 which has a `chain` key.
 
 ## Error codes
 
 Every error `cig` reports carries a stable code, rendered as
-`error[E502 runtime]: division by zero`. The catalogue, with a fix for each,
-is `docs/ERRORS.md`; `cig explain E502` prints an entry. Codes are stable
-across versions; a code is never reused for a different meaning.
+`error[E502 runtime]: division by zero`. The first digits name the family:
+E1xx lexing, E2xx syntax, E3xx the checker, E4xx types, E5xx the runtime
+(E52x the ghost filesystem, E55x hops), E6xx raised by the script, E7xx the
+kernel (E75x folds and the pack), E8xx usage, E9xx internal. Every code is a
+node in `errors/registry.toml` with its kind of no, what to type next and its
+ranked causes; `docs/ERRORS.md` is generated from it, `cig explain E502`
+prints the page, `cig explain --schema` prints the JSON Schema `--json`
+output follows, and doctor uses the same table to diagnose. Codes are stable
+across versions; a retired code is never reused.
 
 ## Script arguments
 
@@ -257,6 +263,6 @@ cig run tidy.cig -- ~/Downloads --verbose
 ## What is deliberately not here
 
 No classes, no imports, no `match`, no async, no random numbers, no C-style
-`&& || !`, no ternary, no `finally` yet, and only one syntax for each construct. Every one of
+`&& || !`, no ternary, and only one syntax for each construct. Every one of
 those was tried in the 1.x line and made the language larger without making
 scripts shorter. The roadmap in `docs/DESIGN.md` lists what may come back.
