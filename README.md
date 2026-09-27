@@ -79,7 +79,9 @@ $ cig unburn 20260926T031500-3fa9c1      # changed your mind? put it all back
 
 **Dry-run that you can trust.** `--dry-run` runs your script for real and only
 *plans* the burns, so the preview is exactly what the real run will do, not a
-guess printed by a `--verbose` flag you had to add yourself. In the hallway:
+guess printed by a `--verbose` flag you had to add yourself. The pretend
+writes live in a *ghost filesystem* (an in-memory overlay), so a step that
+reads what an earlier step wrote works in the plan too. In the hallway:
 *the plan*.
 
 **Rollback without writing any.** Every burn is journaled with a snapshot (a
@@ -345,7 +347,8 @@ for.
 | delete one snapshot, then `unburn` | **restored half and stopped**; now refused before touching anything, `E703` | fixed 1.1.0 | `unburn_checks_every_snapshot_before_touching_anything` |
 | kill it mid-burn, then look | **invisible: status `running`, 0 burns, doctor silent**; now `interrupted`, counted from the journal, offered for `unburn` | fixed 1.1.0 | `interrupted_run_is_recognised_counted_from_the_journal_and_unburnable` |
 | a chain error, from `cig light` | **pointed at `file:0:0`**; now the step's own line | fixed 1.1.0 | `chain_failures_point_at_the_step_not_the_light_call` |
-| chain dry-run where step 2 reads step 1's write | **open: FAILED at step 2**; the ghost filesystem is the next seam of `HAMMER.md` | open | - |
+| chain dry-run where step 2 reads step 1's write | **FAILED at step 2**; now the pretend writes live in the ghost filesystem and every read consults it first | fixed 1.1.0 | `chain_dry_run_reads_ghost_write` |
+| dry-run reads a file a step just pretended to delete | **a misleading not-found**; now `E520`, naming the op that removed it | fixed 1.1.0 | `dry_run_reports_reads_of_ghost_removed_paths_as_e520_and_missing_sources_as_e508` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

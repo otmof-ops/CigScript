@@ -9,6 +9,7 @@
 //! appends a journal entry; in dry-run mode (and inside `burn unlit`) it
 //! records the intent and tells the builtin to simulate.
 
+pub mod ghost;
 pub mod journal;
 pub mod runs;
 
@@ -154,6 +155,8 @@ pub struct Kernel {
     seq: u64,
     pub executed: usize,
     pub irreversible: usize,
+    /// The ghost filesystem: present in dry-run mode only.
+    ghost: Option<ghost::Ghost>,
 }
 
 impl Kernel {
@@ -167,7 +170,25 @@ impl Kernel {
             seq: 0,
             executed: 0,
             irreversible: 0,
+            ghost: if mode == Mode::DryRun {
+                Some(ghost::Ghost::new())
+            } else {
+                None
+            },
         })
+    }
+
+    /// The ghost filesystem, when this is a dry-run.
+    pub fn ghost(&self) -> Option<&ghost::Ghost> {
+        self.ghost.as_ref()
+    }
+
+    /// Give a simulated write or append its bytes (dry-run only).
+    pub fn ghost_put(&mut self, path: &Path, bytes: &[u8], append: bool) {
+        let seq = self.seq;
+        if let Some(g) = self.ghost.as_mut() {
+            g.put(path, bytes, append, seq);
+        }
     }
 
     pub fn ephemeral(mode: Mode) -> Self {
@@ -187,6 +208,11 @@ impl Kernel {
         self.seq += 1;
         let simulate = unlit || self.mode == Mode::DryRun;
         if simulate {
+            if !unlit {
+                if let Some(g) = self.ghost.as_mut() {
+                    g.apply(self.seq, &op);
+                }
+            }
             self.planned.push(PlannedOp {
                 seq: self.seq,
                 class: if unlit {

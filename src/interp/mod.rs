@@ -15,6 +15,7 @@ use crate::syntax::span::Span;
 use crate::value::Value;
 use env::{Env, Scope};
 use std::io::Write;
+use std::path::Path;
 
 /// Deepest nesting of script calls before the interpreter refuses.
 pub const MAX_CALL_DEPTH: usize = 4000;
@@ -113,6 +114,20 @@ impl Interp {
 
     pub fn in_unlit(&self) -> bool {
         self.unlit_depth > 0
+    }
+
+    /// The ghost filesystem, when reads should consult it (dry-run).
+    pub fn ghost(&self) -> Option<&crate::burn::ghost::Ghost> {
+        self.kernel.ghost()
+    }
+
+    /// After a simulated write in a dry-run, give the ghost the bytes.
+    /// Unlit burns never enter the ghost: rehearsal changes nothing, not
+    /// even a pretend disk.
+    pub fn ghost_put(&mut self, path: &Path, bytes: &[u8], append: bool) {
+        if self.unlit_depth == 0 {
+            self.kernel.ghost_put(path, bytes, append);
+        }
     }
 
     /// Called by effectful builtins before they act.

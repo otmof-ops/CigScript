@@ -55,7 +55,7 @@ E500-E519  runtime: a failure while the script was running, including the resour
   E515  step budget exceeded               runtime
 
 E520-E529  the ghost filesystem: dry-run reads of paths that simulated ops changed
-  E520  read of a ghost-deleted path       runtime  (planned)
+  E520  read of a ghost-deleted path       runtime
 
 E550-E569  hops (process boundaries): child processes and foreign scripts
   reserved; nothing emitted yet
@@ -864,7 +864,6 @@ E515 step budget exceeded  (runtime, runtime family, since 1.1.0)
 
 ======== E520 ========
 E520 read of a ghost-deleted path  (runtime, ghost family, since 1.1.0)
-  planned: reserved for a feature that has not shipped yet
 
   kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
 

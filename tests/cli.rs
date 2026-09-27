@@ -1212,7 +1212,21 @@ fn run_corpus(sb: &Sandbox, name: &str, extra: &[(&str, &str)]) -> Output {
     let base = corpus_env(sb);
     let mut envs: Vec<(&str, &str)> = base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     envs.extend_from_slice(extra);
-    sb.cig_env(&["run", name], &envs)
+    let mut args = corpus_args(&src);
+    args.push(name.to_string());
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    sb.cig_env(&argv, &envs)
+}
+
+/// A first line `# cig: run --dry-run` chooses the command; `run` otherwise.
+fn corpus_args(script: &Path) -> Vec<String> {
+    fs::read_to_string(script)
+        .unwrap()
+        .lines()
+        .next()
+        .and_then(|l| l.strip_prefix("# cig:"))
+        .map(|rest| rest.split_whitespace().map(str::to_string).collect())
+        .unwrap_or_else(|| vec!["run".to_string()])
 }
 
 #[test]
@@ -1249,7 +1263,10 @@ fn corpus_diagnoses_match_golden_output() {
         let mut envs: Vec<(&str, &str)> =
             base.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         envs.push(("CIG_PLAIN", "1"));
-        let plain_out = sb.cig_env(&["run", &name], &envs);
+        let mut plain_args = corpus_args(&path);
+        plain_args.push(name.clone());
+        let plain_argv: Vec<&str> = plain_args.iter().map(String::as_str).collect();
+        let plain_out = sb.cig_env(&plain_argv, &envs);
         let plain = normalise(&String::from_utf8_lossy(&plain_out.stderr), sb.path());
         let plain_expect = path.with_extension("plain.expect");
         if update {
@@ -1713,4 +1730,141 @@ fn runs_without_after_state_are_still_unburnable_and_say_so() {
     );
     sb.run_ok(&["unburn", &id]);
     assert_eq!(sb.read("f.txt"), "one");
+}
+
+// ----- the Hammer update: the ghost filesystem --------------------------------
+
+#[test]
+fn chain_dry_run_reads_ghost_write() {
+    let sb = Sandbox::new();
+    sb.write(
+        "tasks.cig",
+        concat!(
+            "stick fetch = pack() { burn { fs.write_text(\"build/src.txt\", \"hello\") } }\n",
+            "stick build = pack() { burn { fs.write_text(\"build/out.txt\", fs.read_text(\"build/src.txt\").upper()) } }\n",
+            "stick report = pack() { exhale fs.read_text(\"build/out.txt\"), fs.list(\"build\").len() }\n",
+            "chain release { fetch, build, report }\n"
+        ),
+    );
+    let out = sb.cig(&["light", "--dry-run", "tasks.cig", "release"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        stdout.contains("HELLO 2"),
+        "step 3 read what step 2 pretended to write: {stdout}"
+    );
+    assert!(stderr.contains("dry-run plan: 2 ops"), "{stderr}");
+    assert!(!sb.exists("build"), "the disk was touched by a dry-run");
+    let out = sb.cig(&["light", "tasks.cig", "release"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(sb.read("build/out.txt"), "HELLO");
+}
+
+#[test]
+fn dry_run_reads_see_the_ghost_filesystem() {
+    let sb = Sandbox::new();
+    sb.write("real.txt", "disk");
+    sb.write("log.txt", "one\n");
+    fs::create_dir_all(sb.path().join("dir")).unwrap();
+    sb.write("dir/a.txt", "a");
+    sb.write(
+        "s.cig",
+        concat!(
+            "burn {\n",
+            "  fs.write_text(\"new/deep/file.txt\", \"made\")\n",
+            "  exhale fs.read_text(\"new/deep/file.txt\"), fs.exists(\"new/deep\"), fs.is_dir(\"new\"), fs.size(\"new/deep/file.txt\")\n",
+            "  fs.append_text(\"log.txt\", \"two\\n\")\n",
+            "  exhale fs.read_lines(\"log.txt\").len()\n",
+            "  fs.rm(\"real.txt\")\n",
+            "  exhale fs.exists(\"real.txt\"), fs.is_file(\"real.txt\")\n",
+            "  fs.mv(\"dir\", \"moved\")\n",
+            "  exhale fs.exists(\"dir\"), fs.read_text(\"moved/a.txt\"), fs.list(\"moved\")\n",
+            "  fs.cp(\"moved/a.txt\", \"copy.txt\")\n",
+            "  json.save(\"data.json\", {n: 1})\n",
+            "  exhale json.load(\"data.json\").n, hash.sha256_file(\"copy.txt\") == hash.sha256(\"a\")\n",
+            "  exhale fs.glob(\"*.txt\")\n",
+            "  exhale fs.mkdir(\"new\")\n",
+            "}\n"
+        ),
+    );
+    let out = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines[0], "made true true 4");
+    assert_eq!(lines[1], "2");
+    assert_eq!(lines[2], "false false");
+    assert_eq!(lines[3], "false a [\"moved/a.txt\"]");
+    assert_eq!(lines[4], "1 true");
+    assert_eq!(
+        lines[5], "[\"copy.txt\", \"log.txt\"]",
+        "removed real.txt hidden, ghost copy.txt shown"
+    );
+    assert_eq!(lines[6], "false", "the ghost knows `new` exists");
+    assert_eq!(sb.read("real.txt"), "disk");
+    assert_eq!(sb.read("log.txt"), "one\n");
+    assert!(
+        sb.exists("dir/a.txt")
+            && !sb.exists("moved")
+            && !sb.exists("new")
+            && !sb.exists("copy.txt")
+    );
+}
+
+#[test]
+fn dry_run_reports_reads_of_ghost_removed_paths_as_e520_and_missing_sources_as_e508() {
+    let sb = Sandbox::new();
+    sb.write("a.txt", "a");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.rm(\"a.txt\")\n  exhale fs.read_text(\"a.txt\")\n}\n",
+    );
+    let err = sb.run_err(&["run", "--dry-run", "s.cig"], 1);
+    assert!(err.contains("error[E520 runtime]: fs.read_text: a.txt: removed earlier in this dry-run by op 1 (delete a.txt)"), "{err}");
+    assert!(
+        err.contains(
+            "= doctor: I think an earlier step's simulated delete or move took the path away"
+        ),
+        "{err}"
+    );
+    assert_eq!(sb.read("a.txt"), "a");
+    sb.write("t.cig", "burn {\n  fs.cp(\"nope.txt\", \"x.txt\")\n}\n");
+    let err = sb.run_err(&["run", "--dry-run", "t.cig"], 1);
+    assert!(
+        err.contains("error[E508 runtime]: fs.cp: nope.txt: no such file or directory"),
+        "{err}"
+    );
+    sb.write(
+        "u.cig",
+        "burn {\n  fs.rm(\"a.txt\")\n  fs.rm(\"a.txt\")\n}\n",
+    );
+    let err = sb.run_err(&["run", "--dry-run", "u.cig"], 1);
+    assert!(
+        err.contains("E520") && err.contains("fs.rm: a.txt"),
+        "{err}"
+    );
+}
+
+#[test]
+fn unlit_burns_stay_out_of_the_ghost_and_off_the_disk() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "burn unlit {\n  fs.write_text(\"u.txt\", \"x\")\n}\nexhale fs.exists(\"u.txt\")\nburn {\n  fs.write_text(\"w.txt\", \"y\")\n}\nexhale fs.exists(\"w.txt\")\n");
+    assert_eq!(sb.run_ok(&["run", "s.cig"]).trim(), "false\ntrue");
+    assert!(!sb.exists("u.txt") && sb.exists("w.txt"));
+    fs::remove_file(sb.path().join("w.txt")).unwrap();
+    assert_eq!(
+        sb.run_ok(&["run", "--dry-run", "s.cig"]).trim(),
+        "false\ntrue",
+        "in a dry-run the unlit write stays out, the burn's write is a ghost"
+    );
+    assert!(!sb.exists("u.txt") && !sb.exists("w.txt"));
 }

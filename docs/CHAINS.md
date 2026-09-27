@@ -110,6 +110,11 @@ cig light --dry-run tasks.cig release
 cig light tasks.cig release -- --tag v3
 ```
 
+`cig light --dry-run` plans every step, and a step that reads what an
+earlier step wrote works, because the pretend writes live in the ghost
+filesystem (`BURN.md`, "Modes"): the plan is the real run with the writes
+held in memory, not a guess.
+
 `cig light` runs the script's top-level code first (so sticks and chains get
 defined, and `args` is set), then lights the chain. Its exit code is 0 when
 the chain succeeded and 1 when it failed, and every burn the chain made is in

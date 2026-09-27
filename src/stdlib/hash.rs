@@ -21,8 +21,11 @@ fn sha256(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     Ok(Value::str(hex::encode(Sha256::digest(text.as_bytes()))))
 }
 
-fn sha256_file(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+fn sha256_file(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = expect_str(a, 0, "hash.sha256_file", s)?;
+    if let Some(bytes) = super::fs::ghost_read(i, "hash.sha256_file", std::path::Path::new(p), s)? {
+        return Ok(Value::str(hex::encode(Sha256::digest(&bytes))));
+    }
     crate::burn::journal::sha256_file(std::path::Path::new(p))
         .map(Value::str)
         .map_err(|e| {

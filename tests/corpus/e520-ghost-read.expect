@@ -1,0 +1,14 @@
+Don't see any cigarettes.
+error[E520 runtime]: fs.read_text: notes.txt: removed earlier in this dry-run by op 2 (delete notes.txt)
+  --> e520-ghost-read.cig:6:10
+  |
+6 |   exhale fs.read_text("notes.txt")
+  |          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  = hint: read it before that op, or do not remove it; the plan shows the order
+  = explain: cig explain E520
+  = doctor: I think an earlier step's simulated delete or move took the path away, because I checked the dry-run plan, for the earlier op that took the path away and found the plan shows op 2 (delete notes.txt) before this read.
+  = fix: move the read before that step, or drop the delete; the plan shows the op that took it
+dry-run plan: 2 ops
+     1  reversible    write notes.txt
+     2  reversible    delete notes.txt
+nothing was changed

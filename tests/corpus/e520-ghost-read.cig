@@ -1,0 +1,7 @@
+# cig: run --dry-run
+# A dry-run that reads what an earlier step pretended to remove.
+burn {
+  fs.write_text("notes.txt", "keep me")
+  fs.rm("notes.txt")
+  exhale fs.read_text("notes.txt")
+}
