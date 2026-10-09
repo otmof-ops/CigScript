@@ -209,12 +209,16 @@ the scope every native write must stay inside: the checker refuses a literal
 path outside it before the run (`E750`), the kernel refuses a computed one at
 run time (`E751`), and the plan prints the pack beside the ops. `~` expands;
 relative roots resolve against the working directory. Hops are watched
-rather than fenced: the kernel compares the pack before and after a child
-process, journals the files it created as reversible (rollback removes them)
-and the files it modified or deleted as irreversible with the detail, and
-reports anything the child wrote outside the pack as `E752`, so nothing is
-hidden and nothing is laundered. One pack per script (`E753`); parameters and
-cartons are the next seam of `HAMMER.md`.
+rather than fenced: the kernel compares the pack and the child's working
+directory before and after a child process, journals the files it created
+as reversible (rollback removes them) and the files it modified or deleted
+as irreversible with the detail, and reports what the child wrote in its
+working directory outside the pack as `E752`, so nothing is hidden and
+nothing is laundered. What a child writes anywhere else (`/etc`, another
+tree) is not watched: the hop's irreversible label is the whole record of
+it, and the way to keep such a step honest is `burn (s) { } unburn { }`.
+One pack per script (`E753`); parameters and cartons are the next seam of
+`HAMMER.md`.
 
 ## Chains
 

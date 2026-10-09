@@ -1433,7 +1433,7 @@ remedy = "exhale the path before the burn; the pack's roots are in the plan head
 [[code]]
 code = "E752"
 title = "hop wrote outside the pack"
-meaning = "A child process changed files outside the declared pack. The kernel cannot undo them and did not watch them; they are listed so nothing is hidden."
+meaning = "A child process changed files in its working directory outside the declared pack. The kernel cannot undo them; they are listed so nothing is hidden. Writes elsewhere are not watched at all: the hop's irreversible label is their only record."
 fix = "point the program at the pack (its cwd, an output flag), or add the root it wrote to"
 no = "these-are-mine"
 arises = ["run", "light"]
