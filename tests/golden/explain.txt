@@ -1336,7 +1336,7 @@ E752 hop wrote outside the pack  (burn, fold family, since 1.1.0)
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 
-  A child process changed files outside the declared pack. The kernel cannot undo them and did not watch them; they are listed so nothing is hidden.
+  A child process changed files in its working directory outside the declared pack. The kernel cannot undo them; they are listed so nothing is hidden. Writes elsewhere are not watched at all: the hop's irreversible label is their only record.
 
   what to type next: point the program at the pack (its cwd, an output flag), or add the root it wrote to
 

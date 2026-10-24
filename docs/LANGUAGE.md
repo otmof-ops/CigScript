@@ -236,10 +236,12 @@ file declares. The whole story is in `docs/CHAINS.md`.
 
 ## Keywords as names
 
-Keywords are reserved as statement starters only. After a dot and as a map
-key they are ordinary names, so `err.chain`, `m.if`, `m.finally` and
-`{chain: 1}` are fine. The one place this matters is the error map a failed chain raises,
-which has a `chain` key.
+Keywords are reserved as statement starters and as the names of declarations:
+a keyword cannot be declared as a variable or a parameter (`stick chain = "a"`
+is `E200 expected a name, found \`chain\``, so a certificate chain is `cert_chain`
+and a package is `pkg`). After a dot and as a map key they are ordinary names,
+so `err.chain`, `m.if`, `m.finally` and `{chain: 1}` are fine. The one place
+this matters is the error map a failed chain raises, which has a `chain` key.
 
 ## Error codes
 

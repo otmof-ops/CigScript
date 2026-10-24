@@ -82,6 +82,8 @@ byte offset, never a silent replacement. `encoding: "lossy"` asks for
 replacement characters; `"latin1"` for single-byte text; `"utf-16"` for a
 Windows tool (a byte-order mark is honoured, little-endian assumed without).
 
+**`sudo` cannot ask for a password here, and `E554` is what you see.** A child's stdin is `/dev/null` unless `stdin` is given, and the child is its own process group, not the terminal's foreground group; `sudo` reads the password from `/dev/tty`, and from a background group that read stops the process until the hop's timeout. Run `sudo -n` so it refuses instead of waiting, have the operator run `sudo -v` first, or configure the command in sudoers.
+
 **No zombies, no orphans.** Every child runs in its own process group. On
 timeout the group gets SIGTERM, a grace period, then SIGKILL, grandchildren
 included; a child that ignores SIGTERM still ends. A Ctrl-C at the terminal
