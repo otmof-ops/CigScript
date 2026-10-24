@@ -3,7 +3,7 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.1.2 — 2026-10-24
 
 Found by building [cig-orchestrator](https://github.com/otmof-ops/cig-orchestrator),
 a tool written in CigScript that runs a project's existing scripts.

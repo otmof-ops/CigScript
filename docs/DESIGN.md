@@ -181,3 +181,10 @@ In rough order of value:
 6. Chains with declared dependencies between steps, and parallel steps where
    the burns are independent.
 7. A stable Rust embedding API, then a C ABI over it.
+
+## What CigScript is not for
+
+CigScript orchestrates; heavy data work belongs in a program it hops to. The
+step budget (`E515` at ten million steps) and the value ceiling (`E514` at
+256 MiB) are the design, not a limit to raise: a million-line blocklist is
+parsed by the tool that owns it, and the script checks the result.
