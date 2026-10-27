@@ -3,7 +3,7 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.2.1 — 2026-10-27
 
 - **A read-only file is snapshotted like any other.** 1.2.0 opened every
   snapshot for writing to flush it (the Windows fix of #26), which Unix
@@ -11,6 +11,13 @@ project follows semantic versioning.
   object or a `.git/objects` entry could not be removed or replaced under a
   burn (`E702`, permission denied). The flush now opens read-only on Unix
   and lifts the read-only attribute around the flush on Windows.
+- **Release assets for Intel macOS build again.** The release job asked for
+  the retired `macos-13` runner and waited on it forever; 1.2.0 shipped
+  without `cig-v1.2.0-macos-x86_64`. It asks for `macos-15-intel` now.
+- **The read-only rediagnosis test fingerprints files, not directories.**
+  On Windows a directory's modified time moved under it between the run
+  and the check, twice in four runs; the property it guards (`cig doctor
+  <run>` writes nothing) is about files, and a difference now names them.
 
 ## 1.2.0 — 2026-10-27
 
