@@ -2043,6 +2043,7 @@ fn a_move_the_os_refused_is_marked_undone_and_never_moved_back() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_cross_device_move_rolls_back_by_copying() {
     use std::os::unix::fs::MetadataExt;
     let sb = Sandbox::new();
@@ -2089,6 +2090,7 @@ fn a_hardlinked_file_is_restored_in_place() {
 }
 
 #[test]
+#[cfg(unix)]
 fn setuid_and_sticky_bits_survive_rollback() {
     use std::os::unix::fs::PermissionsExt;
     let sb = Sandbox::new();
@@ -2149,6 +2151,7 @@ fn a_named_pipe_is_refused_not_hung() {
 }
 
 #[test]
+#[cfg(unix)]
 fn rollback_failures_are_recorded_on_the_run() {
     use std::os::unix::fs::PermissionsExt;
     let sb = Sandbox::new();
@@ -2182,6 +2185,7 @@ fn rollback_failures_are_recorded_on_the_run() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_read_only_run_directory_refuses_unburn_until_forced() {
     use std::os::unix::fs::PermissionsExt;
     let sb = Sandbox::new();
@@ -2301,6 +2305,7 @@ fn a_compensation_that_reads_args_runs_on_a_deferred_unburn() {
 }
 
 #[test]
+#[cfg(unix)]
 fn the_ghost_resolves_symlinked_directories_and_lists_created_ancestors() {
     use std::os::unix::fs::symlink;
     let sb = Sandbox::new();
