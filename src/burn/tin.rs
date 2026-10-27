@@ -24,20 +24,36 @@ fn objects_dir() -> PathBuf {
     dir().join("objects")
 }
 
-/// One file kept in the tin.
+/// One path kept in the tin: a file's bytes as an object, with its mode
+/// and modification time beside them in the journal; or a symbolic link,
+/// kept as its target alone, since a link has no bytes of its own.
 #[derive(Clone, Debug)]
 pub struct Stashed {
     pub object: PathBuf,
     pub sha256: String,
     pub bytes: u64,
     pub mode: Option<u32>,
+    pub mtime_ns: Option<u64>,
+    /// The target, when the path is a symbolic link.
+    pub link: Option<PathBuf>,
 }
 
 /// Keep a copy of `path` in the tin, named by its content. The same bytes
 /// stashed twice cost nothing. The object is read-only; the file's own
-/// mode travels in the journal and is put back on restore.
+/// mode and modification time travel in the journal and are put back on
+/// restore. A symbolic link is kept as a link.
 pub fn stash(path: &Path) -> io::Result<Stashed> {
-    let meta = fs::metadata(path)?;
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return Ok(Stashed {
+            object: PathBuf::new(),
+            sha256: String::new(),
+            bytes: 0,
+            mode: None,
+            mtime_ns: None,
+            link: Some(fs::read_link(path)?),
+        });
+    }
     let sha256 = sha256_file(path)?;
     let bucket = objects_dir().join(&sha256[..2]);
     fs::create_dir_all(&bucket)?;
@@ -45,9 +61,9 @@ pub fn stash(path: &Path) -> io::Result<Stashed> {
     if !object.is_file() {
         let tmp = bucket.join(format!(".{}.{}", &sha256[..16], std::process::id()));
         fs::copy(path, &tmp)?;
-        let f = fs::OpenOptions::new().write(true).open(&tmp)?;
-        f.sync_all()?;
-        drop(f);
+        // The copy carries the file's mode, which may be read-only: the
+        // flush goes through a handle that works either way.
+        super::journal::sync_file(&tmp)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -67,6 +83,8 @@ pub fn stash(path: &Path) -> io::Result<Stashed> {
         sha256,
         bytes: meta.len(),
         mode,
+        mtime_ns: super::journal::mtime_ns(&meta),
+        link: None,
     })
 }
 

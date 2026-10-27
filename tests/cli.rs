@@ -3491,3 +3491,151 @@ fn a_read_only_file_in_a_tree_is_snapshotted_and_comes_back_read_only() {
         "{err}"
     );
 }
+
+// ----- the tin keeps what a file is, not only its bytes (#41): links, modes, times
+
+#[cfg(unix)]
+#[test]
+fn the_tin_restores_a_symlink_as_a_symlink() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "keep\n");
+    sb.write("p/other.txt", "other\n");
+    symlink("keep.txt", sb.path().join("p/link.txt")).unwrap();
+    symlink("keep.txt", sb.path().join("p/retarget.txt")).unwrap();
+    symlink("keep.txt", sb.path().join("p/gone.txt")).unwrap();
+    // The hop replaces one link with a plain file, points another somewhere
+    // else, and deletes the third; only the first is under `touches`, and
+    // none of them needs the tin: a link is its target, and the journal
+    // keeps that itself.
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"rm p/link.txt; echo plain > p/link.txt; ln -sfn other.txt p/retarget.txt; rm p/gone.txt\"], {touches: [\"link.txt\"]})\n  cough \"x\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    for name in ["link.txt", "retarget.txt", "gone.txt"] {
+        let p = sb.path().join("p").join(name);
+        let meta = fs::symlink_metadata(&p).unwrap_or_else(|_| panic!("{name} is gone: {err}"));
+        assert!(meta.file_type().is_symlink(), "{name} is not a link: {err}");
+        assert_eq!(
+            fs::read_link(&p).unwrap(),
+            PathBuf::from("keep.txt"),
+            "{name}"
+        );
+    }
+    assert_eq!(sb.read("p/keep.txt"), "keep\n");
+    assert!(err.contains("(link kept)"), "{err}");
+    assert!(!err.contains("cannot undo hop"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_tin_restores_a_mode_changed_by_a_hop() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.write("p/run.sh", "#!/bin/sh\necho hi\n");
+    sb.write("p/other.sh", "#!/bin/sh\necho there\n");
+    fs::set_permissions(
+        sb.path().join("p/run.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    fs::set_permissions(
+        sb.path().join("p/other.sh"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    // A chmod changes neither size nor mtime; it is seen all the same, and
+    // put back where the file was kept in the tin.
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"chmod 644 p/run.sh p/other.sh\"], {touches: [\"run.sh\"]})\n  cough \"x\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    let mode = |name: &str| {
+        fs::metadata(sb.path().join("p").join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode("run.sh"), 0o755, "{err}");
+    assert!(
+        err.contains("restored hop modified") && err.contains("run.sh"),
+        "{err}"
+    );
+    // The one outside `touches` is seen too, and said to be irreversible.
+    assert_eq!(mode("other.sh"), 0o644);
+    assert!(
+        err.contains("cannot undo hop modified") && err.contains("other.sh"),
+        "{err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_tin_restores_mtime() {
+    let sb = Sandbox::new();
+    sb.write("p/config.ini", "[a]\nb = 1\n");
+    sb.write("p/native.ini", "[c]\nd = 2\n");
+    let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_577_836_800); // 2020-01-01
+    for name in ["p/config.ini", "p/native.ini"] {
+        fs::File::open(sb.path().join(name))
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    let mtime = |name: &str| {
+        fs::metadata(sb.path().join(name))
+            .unwrap()
+            .modified()
+            .unwrap()
+    };
+    // A hop's edit under `touches`, and a native write: both come back with
+    // the time they had, so make and its kin see no change.
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo e = 3 >> p/config.ini\"], {touches: [\"*.ini\"]})\n  fs.write_text(\"p/native.ini\", \"changed\")\n  cough \"x\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/config.ini"), "[a]\nb = 1\n", "{err}");
+    assert_eq!(sb.read("p/native.ini"), "[c]\nd = 2\n", "{err}");
+    assert_eq!(
+        mtime("p/config.ini"),
+        old,
+        "the hop's edit came back dated now"
+    );
+    assert_eq!(
+        mtime("p/native.ini"),
+        old,
+        "the native write came back dated now"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_read_only_file_under_touches_is_kept_in_the_tin() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.write("p/ro.txt", "frozen\n");
+    fs::set_permissions(
+        sb.path().join("p/ro.txt"),
+        fs::Permissions::from_mode(0o444),
+    )
+    .unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"chmod 644 p/ro.txt; echo thawed > p/ro.txt\"], {touches: [\"ro.txt\"]})\n  cough \"x\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(!err.contains("could not be kept in the tin"), "{err}");
+    assert_eq!(sb.read("p/ro.txt"), "frozen\n", "{err}");
+    assert_eq!(
+        fs::metadata(sb.path().join("p/ro.txt"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o444
+    );
+}

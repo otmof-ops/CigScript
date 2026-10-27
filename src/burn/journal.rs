@@ -28,6 +28,10 @@ pub enum Before {
         /// whose mode is not the file's.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mode: Option<u32>,
+        /// The file's modification time, nanoseconds since the epoch, put
+        /// back on restore so mtime-driven tools see what they saw before.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mtime_ns: Option<u64>,
     },
     Dir {
         snapshot: PathBuf,
@@ -474,6 +478,7 @@ impl Journal {
                         sha256: String::new(),
                         bytes: meta.len(),
                         mode: None,
+                        mtime_ns: None,
                     }
                 },
             });
@@ -504,6 +509,7 @@ impl Journal {
                     sha256,
                     bytes: meta.len(),
                     mode: None,
+                    mtime_ns: mtime_ns(&meta),
                 },
             })
         }
@@ -1012,6 +1018,7 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
             snapshot,
             sha256,
             mode,
+            mtime_ns,
             ..
         } => {
             if snapshot.as_os_str().is_empty() {
@@ -1060,7 +1067,16 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
                             .open(path)?;
                         io::copy(&mut src, &mut dst)?;
                         dst.sync_all()?;
+                        drop(dst);
                         fs::set_permissions(path, fs::metadata(snapshot)?.permissions())?;
+                        #[cfg(unix)]
+                        if let Some(m) = mode {
+                            use std::os::unix::fs::PermissionsExt;
+                            fs::set_permissions(path, fs::Permissions::from_mode(*m))?;
+                        }
+                        if let Some(ns) = mtime_ns {
+                            set_mtime(path, *ns)?;
+                        }
                         return Ok(());
                     }
                 }
@@ -1080,7 +1096,11 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
             {
                 remove_any(path)?;
             }
-            fs::rename(&staged, path)
+            fs::rename(&staged, path)?;
+            if let Some(ns) = mtime_ns {
+                set_mtime(path, *ns)?;
+            }
+            Ok(())
         }
         Before::Dir { snapshot } => {
             if snapshot.as_os_str().is_empty() {
@@ -1256,12 +1276,52 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
     Ok(())
 }
 
+/// A file's modification time as the journal records it: nanoseconds since
+/// the epoch, or nothing when the platform does not say.
+pub(crate) fn mtime_ns(meta: &fs::Metadata) -> Option<u64> {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+}
+
+/// Put a modification time back on a restored file. Unix sets it through a
+/// read-only handle; Windows needs write access to the attributes, so a
+/// read-only file has its attribute lifted around the call.
+pub(crate) fn set_mtime(path: &Path, ns: u64) -> Result<(), io::Error> {
+    let when = std::time::UNIX_EPOCH + std::time::Duration::from_nanos(ns);
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)?.set_modified(when)
+    }
+    #[cfg(windows)]
+    {
+        match fs::OpenOptions::new().write(true).open(path) {
+            Ok(f) => f.set_modified(when),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                let perms = fs::metadata(path)?.permissions();
+                let mut writable = perms.clone();
+                #[allow(clippy::permissions_set_readonly_false)]
+                writable.set_readonly(false);
+                fs::set_permissions(path, writable)?;
+                let set = fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .and_then(|f| f.set_modified(when));
+                fs::set_permissions(path, perms)?;
+                set
+            }
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// fsync a snapshot file so it is durable before the op it protects runs.
 /// The copy carries the source's mode, so it may be read-only (a tin
 /// object, a `.git/objects` entry): Unix flushes a read-only handle, while
 /// Windows refuses to ("access is denied") and needs the read-only
 /// attribute lifted around the flush.
-fn sync_file(path: &Path) -> Result<(), io::Error> {
+pub(crate) fn sync_file(path: &Path) -> Result<(), io::Error> {
     #[cfg(not(windows))]
     {
         fs::File::open(path)?.sync_all()

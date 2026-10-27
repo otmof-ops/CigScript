@@ -370,6 +370,10 @@ for.
 | an edit that keeps a file's size and puts its mtime back | seen by the hash, restored | 1.2.0 | `a_same_size_edit_inside_touches_is_seen` |
 | a virtualenv or a cache inside the pack | not journaled, not restored, left to be rebuilt | 1.2.0 | `a_venv_inside_the_pack_is_not_journaled` |
 | a tin object edited after the run | refused before anything is restored from it; `gc` keeps what a run still needs | 1.2.0 | `gc_keeps_every_chunk_a_live_run_needs` |
+| a hop replaces, retargets or deletes a symbolic link | each comes back as the link it was, from the journal alone | 1.3.0 | `the_tin_restores_a_symlink_as_a_symlink` |
+| a hop runs `chmod` on a file, which changes neither its size nor its time | seen, and put back where the file was in the tin; said to be irreversible where it was not | 1.3.0 | `the_tin_restores_a_mode_changed_by_a_hop` |
+| a file dated 2020 is edited by a hop or a native write, then the run fails | it comes back dated 2020, so mtime-driven tools see nothing | 1.3.0 | `the_tin_restores_mtime` |
+| a read-only file under `touches` | kept in the tin like any other, and restored read-only | 1.3.0 | `a_read_only_file_under_touches_is_kept_in_the_tin` |
 | unbounded recursion | clean `E506` at depth 4000 | 1.0.0 | `unbounded_recursion_is_a_clean_e506` |
 | `MAX + 1`, `(MAX + MAX) / 2`, `1.0 / 0.0`, `0.0 / 0.0` | diagnostics, never silent | 1.0.0 | `arithmetic_edges_are_diagnostics_never_silent` |
 | delete a symlink, `unburn` | **came back as a regular file**; now a symlink, dangling or not, inside restored trees too | fixed 1.1.0 | `symlinks_roll_back_as_symlinks` |
