@@ -3843,6 +3843,43 @@ fn a_file_held_open_without_share_delete_is_restored_in_place_on_windows() {
 
 #[cfg(windows)]
 #[test]
+fn an_apostrophe_reaches_an_msys_program_on_windows() {
+    let sb = Sandbox::new();
+    // Git's sh parses its own command line: bare, `it's` arrived as `its`
+    // and `a*b` could glob.
+    sb.write(
+        "s.cig",
+        "burn {\n  stick r = proc.run(\"sh\", [\"-c\", \"printf '<%s>' \\\"$@\\\"\", \"_\", \"it's\", \"a*b\", \"plain\"])\n  exhale r.out\n}\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert!(out.contains("<it's><a*b><plain>"), "{out}");
+}
+
+#[test]
+fn a_case_only_rename_is_a_rename_on_a_case_insensitive_filesystem() {
+    let sb = Sandbox::new();
+    sb.write("dockerfile", "FROM scratch\n");
+    if !sb.path().join("DOCKERFILE").exists() {
+        eprintln!("skipped: this filesystem is case-sensitive");
+        return;
+    }
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.mv(\"dockerfile\", \"Dockerfile\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let names: Vec<String> = std::fs::read_dir(sb.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "Dockerfile") && !names.iter().any(|n| n == "dockerfile"),
+        "{names:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
 fn a_timeout_kills_the_grandchild_on_windows() {
     let sb = Sandbox::new();
     // cmd starts powershell, which would sleep well past the timeout while
