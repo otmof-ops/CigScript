@@ -2206,10 +2206,26 @@ fn a_named_pipe_is_refused_not_hung() {
     assert!(sb.path().join("fifo").exists());
 }
 
+/// Root ignores file modes, so a test that locks a directory with
+/// `chmod 000` proves nothing as root (a container, a FreeBSD VM): it says
+/// so and steps aside.
+#[cfg(unix)]
+fn running_as_root() -> bool {
+    Command::new("id")
+        .arg("-u")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
+        .unwrap_or(false)
+}
+
 #[test]
 #[cfg(unix)]
 fn rollback_failures_are_recorded_on_the_run() {
     use std::os::unix::fs::PermissionsExt;
+    if running_as_root() {
+        eprintln!("skipped: root ignores chmod 000, so a locked directory cannot be made here");
+        return;
+    }
     let sb = Sandbox::new();
     sb.write(
         "s.cig",
@@ -2244,6 +2260,12 @@ fn rollback_failures_are_recorded_on_the_run() {
 #[cfg(unix)]
 fn a_read_only_run_directory_refuses_unburn_until_forced() {
     use std::os::unix::fs::PermissionsExt;
+    if running_as_root() {
+        eprintln!(
+            "skipped: root writes into a read-only directory, so the refusal cannot be shown here"
+        );
+        return;
+    }
     let sb = Sandbox::new();
     sb.write("s.cig", "burn {\n  fs.write_text(\"ro.txt\", \"1\")\n}\n");
     sb.run_ok(&["run", "s.cig"]);
@@ -3511,16 +3533,13 @@ fn a_read_only_file_in_a_tree_is_snapshotted_and_comes_back_read_only() {
     sb.run_ok(&["unburn", &id]);
     assert_eq!(sb.read("t/ro.txt"), "frozen\n");
     assert!(fs::metadata(&ro).unwrap().permissions().readonly());
-    // The same for a single file, and for a file a hop may touch.
-    sb.write(
-        "s2.cig",
-        "burn { fs.write_text(\"t/ro.txt\", \"thawed\") }\n",
-    );
-    let err = sb.run_err(&["run", "s2.cig"], 1);
-    assert!(
-        err.contains("error[E7") || err.contains("Permission denied") || err.contains("permission"),
-        "{err}"
-    );
+    // A single read-only file, snapshotted on its own (and the same as
+    // root, who may write it: the snapshot is what is under test).
+    sb.write("s2.cig", "burn { fs.rm(\"t/ro.txt\") }\n");
+    sb.run_ok(&["run", "s2.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("t/ro.txt"), "frozen\n");
 }
 
 // ----- the tin keeps what a file is, not only its bytes (#41): links, modes, times
@@ -3906,4 +3925,57 @@ fn a_computed_device_name_is_refused_by_the_kernel_on_windows() {
     );
     // The refusal came before the write was journaled, and the run rolled back.
     assert!(!sb.exists("first.txt"), "{err}");
+}
+
+// ----- Windows ports of Unix-only guarantees (#50)
+
+#[cfg(windows)]
+#[test]
+fn symlinks_roll_back_as_symlinks_on_windows() {
+    use std::os::windows::fs::symlink_file;
+    let sb = Sandbox::new();
+    sb.write("target.txt", "t");
+    // Symbolic links need a privilege or developer mode on Windows; where
+    // this runner has neither, the guarantee cannot be shown and the test
+    // says so instead of failing.
+    if symlink_file("target.txt", sb.path().join("live.lnk")).is_err() {
+        eprintln!("skipped: this runner cannot create symbolic links");
+        return;
+    }
+    symlink_file("nowhere\\at\\all", sb.path().join("dangling.lnk")).unwrap();
+    fs::create_dir_all(sb.path().join("tree")).unwrap();
+    symlink_file("..\\target.txt", sb.path().join("tree\\inner.lnk")).unwrap();
+    sb.write(
+        "s.cig",
+        concat!(
+            "burn {\n",
+            "  fs.rm(\"live.lnk\")\n",
+            "  fs.rm(\"dangling.lnk\")\n",
+            "  fs.rm(\"tree\")\n",
+            "  fs.write_text(\"target.txt\", \"changed\")\n",
+            "}\n",
+            "cough \"abort\"\n"
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("unburn: rolling back") && !err.contains("failed"),
+        "{err}"
+    );
+    let is_link = |p: &str| {
+        fs::symlink_metadata(sb.path().join(p))
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+    };
+    assert!(
+        is_link("live.lnk"),
+        "live.lnk came back as a real file or not at all: {err}"
+    );
+    assert_eq!(
+        fs::read_link(sb.path().join("live.lnk")).unwrap(),
+        Path::new("target.txt")
+    );
+    assert!(is_link("dangling.lnk"), "{err}");
+    assert!(is_link("tree\\inner.lnk"), "{err}");
+    assert_eq!(sb.read("target.txt"), "t");
 }

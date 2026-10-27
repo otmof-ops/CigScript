@@ -33,7 +33,7 @@ jobs:
         continue-on-error: true
         run: |
           bin=target/release/cig; [ -f "$bin.exe" ] && bin="$bin.exe"
-          CIG="$PWD/$bin" bash .github/probe/probe.sh
+          CIG="$PWD/$bin" bash tests/portability/probe.sh
       - name: cargo test
         continue-on-error: true
         run: cargo test --release --no-fail-fast 2>&1 | grep -av ' ok$' | grep -av '^\s*Compiling\|^\s*Running\|^running [0-9]' | head -400
@@ -48,7 +48,7 @@ jobs:
         if: runner.os == 'Windows'
         continue-on-error: true
         shell: pwsh
-        run: pwsh -NoProfile -File .github/probe/probe.ps1 "$PWD\target\release\cig.exe"
+        run: pwsh -NoProfile -File tests/portability/probe.ps1 "$PWD\target\release\cig.exe"
       - name: cig-orchestrator suite from PowerShell
         if: runner.os == 'Windows'
         continue-on-error: true

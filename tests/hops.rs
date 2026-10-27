@@ -185,11 +185,19 @@ fn encoding_is_explicit_never_silently_lossy() {
 }
 
 fn ps_has(marker: &str) -> bool {
-    let out = Command::new("ps").args(["-eo", "args"]).output();
+    // -ww: the BSDs and macOS truncate the line without it, and the marker
+    // sits past the cut. On the BSDs `-e` asks for the environment, not for
+    // every process, and only `-ax` lists a process without a terminal (the
+    // child of a CI VM's ssh session), so the flags are not Linux's.
+    #[cfg(target_os = "linux")]
+    let args: &[&str] = &["-ww", "-eo", "args"];
+    #[cfg(not(target_os = "linux"))]
+    let args: &[&str] = &["-axww", "-o", "args"];
+    let out = Command::new("ps").args(args).output();
     match out {
         Ok(o) => String::from_utf8_lossy(&o.stdout)
             .lines()
-            .any(|l| l.contains(marker) && !l.contains("ps -eo")),
+            .any(|l| l.contains(marker) && !l.contains("-o args") && !l.contains("-eo args")),
         Err(_) => false,
     }
 }

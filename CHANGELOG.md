@@ -72,6 +72,17 @@ project follows semantic versioning.
   kernel refuses a computed one on Windows before it is journaled, where
   1.2 failed mid-burn with `E702 Incorrect function`. (#48)
 
+## Unreleased
+
+- **The suite runs where cig runs.** CI tests Ubuntu and macOS on both
+  architectures, Windows x86_64 and ARM, Alpine as root (musl, BusyBox),
+  and FreeBSD in a VM; the Ubuntu job also runs the suite in release mode,
+  where inlining changes the frames a crash report keeps. The portability
+  probe lives in `tests/portability/` and runs on every OS in the matrix,
+  a `FAIL` line failing the job. The two tests that lock a directory with
+  `chmod` step aside as root and say so; `ps -ww` reaches past the BSDs'
+  line cut; the symlink rollback has a Windows port. (#50)
+
 ## 1.2.1 — 2026-10-27
 
 - **A read-only file is snapshotted like any other.** 1.2.0 opened every
