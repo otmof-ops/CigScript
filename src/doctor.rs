@@ -343,6 +343,7 @@ fn current_uid() -> Option<u32> {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[cfg_attr(windows, allow(dead_code))]
 fn current_uid() -> Option<u32> {
     None
 }

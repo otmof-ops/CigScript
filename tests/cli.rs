@@ -1144,7 +1144,12 @@ fn usage_layer_errors_carry_their_codes() {
 fn normalise(text: &str, sandbox: &Path) -> String {
     let ms = regex::Regex::new(r"\(\d+ ms\)").unwrap();
     let ids = regex::Regex::new(r"\b\d{8}T\d{6}-[0-9a-f]{6}\b").unwrap();
-    let t = text.replace(sandbox.to_str().unwrap(), "<sb>");
+    // macOS hands back the canonical path (/private/var/...) for a tempdir
+    // under /var; both spellings are the sandbox.
+    let canonical = fs::canonicalize(sandbox).unwrap_or_else(|_| sandbox.to_path_buf());
+    let t = text
+        .replace(canonical.to_str().unwrap(), "<sb>")
+        .replace(sandbox.to_str().unwrap(), "<sb>");
     let t = ms.replace_all(&t, "(N ms)").to_string();
     ids.replace_all(&t, "<run-id>").to_string()
 }
