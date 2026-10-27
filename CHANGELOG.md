@@ -50,6 +50,15 @@ project follows semantic versioning.
   put in a Job Object (`KILL_ON_JOB_CLOSE`); a timeout terminates the job,
   grandchildren holding the pipes included, and cig dying takes the tree
   with it, the way the process group does on Unix. (#45)
+- **A dead run never reads as `running` on a reused pid.** The record keeps
+  when its process started (`/proc` ticks on Linux, `ps -o lstart` on macOS
+  and the BSDs, the creation time on Windows), and a run counts as alive
+  only when a cig with that start time holds the pid. (#46)
+- **Durability says what each platform does.** Every flush on macOS is
+  `F_FULLFSYNC`, which reaches the drive where `fsync` stops at its cache;
+  on Windows the directory that gained a snapshot or an entry is flushed
+  through a backup-semantics handle where NTFS allows it. BURN.md has the
+  table. (#47)
 
 ## 1.2.1 — 2026-10-27
 

@@ -107,6 +107,21 @@ code pay nothing.
 Directory deletes snapshot the whole tree, so deleting a large directory costs
 a copy of it. Moves cost nothing: rollback moves the file back.
 
+### Durability, by platform
+
+The journal is write-ahead: the snapshot and the entry are flushed before the
+effect happens, so a crash between them leaves a record that `cig unburn`
+can act on. What "flushed" means is the platform's:
+
+- **Linux and the BSDs:** `fsync` on the snapshot, `fdatasync` on the
+  appended entry, `fsync` on the directory that gained the file.
+- **macOS:** `fsync` stops at the drive's cache; every flush here is
+  `F_FULLFSYNC`, which asks the drive to write it out, with `fsync` as the
+  fallback on a filesystem that does not take it.
+- **Windows:** `FlushFileBuffers` on the snapshot and the entry; the
+  directory is flushed through a handle opened with backup semantics where
+  NTFS allows it, and left to the filesystem's own journal where it does not.
+
 ## Rollback
 
 Rollback replays the journal newest entry first. For each recorded before-state:
