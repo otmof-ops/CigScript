@@ -70,6 +70,11 @@ pub enum Op {
         change: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         tinned: bool,
+        /// Where the before-state is kept when the change is reversible:
+        /// `tin` for a file's bytes, `link` for a symbolic link's target,
+        /// which the journal holds itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kept: Option<String>,
     },
     /// The compensation recorded when a `burn { } unburn { }` block ends.
     Compensate {
@@ -140,10 +145,15 @@ impl Op {
                 path,
                 change,
                 tinned,
+                kept,
             } => format!(
                 "hop {change} {}{}",
                 path.display(),
-                if *tinned { "  (tin)" } else { "" }
+                match (tinned, kept.as_deref()) {
+                    (true, Some("link")) => "  (link kept)",
+                    (true, _) => "  (tin)",
+                    (false, _) => "",
+                }
             ),
             Op::Compensate { line } => format!("compensation for the burn at line {line}"),
         }
@@ -232,11 +242,22 @@ pub struct HopWrites {
     pub outside: Vec<PathBuf>,
 }
 
-/// A snapshot of mtimes and sizes, cheap enough to take around every hop,
-/// plus the before-bytes of the files the hop said it may touch.
+/// What hop watching sees of one path: enough to notice a change without
+/// reading the file. A link is its target; a directory is watched for
+/// being created, not for changing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Seen {
+    File { mtime: u64, len: u64, mode: u32 },
+    Dir,
+    Link { target: PathBuf },
+}
+
+/// A snapshot of mtimes, sizes, modes and link targets, cheap enough to
+/// take around every hop, plus the before-bytes of the files the hop said
+/// it may touch.
 pub struct PackWatch {
-    inside: std::collections::BTreeMap<PathBuf, (u64, u64)>,
-    outside: std::collections::BTreeMap<PathBuf, (u64, u64)>,
+    inside: std::collections::BTreeMap<PathBuf, Seen>,
+    outside: std::collections::BTreeMap<PathBuf, Seen>,
     outside_root: Option<PathBuf>,
     /// Files stashed in the tin before the hop, by path.
     tinned: std::collections::BTreeMap<PathBuf, tin::Stashed>,
@@ -313,15 +334,7 @@ pub fn inside_roots(path: &Path, roots: &[PathBuf]) -> bool {
     })
 }
 
-/// What `scan` records for a directory in place of a file's (mtime, size):
-/// directories are watched for being created, not for changing.
-const DIR_MARK: (u64, u64) = (u64::MAX, u64::MAX);
-
-fn scan(
-    root: &Path,
-    max_depth: usize,
-    cap: usize,
-) -> std::collections::BTreeMap<PathBuf, (u64, u64)> {
+fn scan(root: &Path, max_depth: usize, cap: usize) -> std::collections::BTreeMap<PathBuf, Seen> {
     let mut out = std::collections::BTreeMap::new();
     // Links are followed: a directory linked from inside the pack is part
     // of what a child can write through, and a loop is skipped by walkdir.
@@ -343,8 +356,20 @@ fn scan(
         })
     {
         let Ok(entry) = entry else { continue };
+        // The link itself is what is watched (its target can change); what
+        // it points at is seen under its own path, or walked when it is a
+        // directory.
+        if entry.path_is_symlink() {
+            if let Ok(target) = std::fs::read_link(entry.path()) {
+                out.insert(entry.path().to_path_buf(), Seen::Link { target });
+            }
+            if out.len() >= cap {
+                break;
+            }
+            continue;
+        }
         if entry.file_type().is_dir() {
-            out.insert(entry.path().to_path_buf(), DIR_MARK);
+            out.insert(entry.path().to_path_buf(), Seen::Dir);
             if out.len() >= cap {
                 break;
             }
@@ -354,13 +379,22 @@ fn scan(
             continue;
         }
         let Ok(m) = entry.metadata() else { continue };
-        let mtime = m
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
-        out.insert(entry.path().to_path_buf(), (mtime, m.len()));
+        let mtime = journal::mtime_ns(&m).unwrap_or(0);
+        #[cfg(unix)]
+        let mode = {
+            use std::os::unix::fs::PermissionsExt;
+            m.permissions().mode() & 0o7777
+        };
+        #[cfg(not(unix))]
+        let mode = 0;
+        out.insert(
+            entry.path().to_path_buf(),
+            Seen::File {
+                mtime,
+                len: m.len(),
+                mode,
+            },
+        );
         if out.len() >= cap {
             break;
         }
@@ -492,7 +526,7 @@ impl Kernel {
             match tin::globs(touches) {
                 Ok(set) => {
                     for (path, meta) in &inside {
-                        if *meta == DIR_MARK {
+                        if *meta == Seen::Dir {
                             continue;
                         }
                         let hit = roots.iter().any(|r| {
@@ -548,17 +582,28 @@ impl Kernel {
             after.extend(scan(r, 64, 50_000));
         }
         let mut writes = HopWrites::default();
+        // A symbolic link the hop retargeted, replaced or deleted comes
+        // back from the journal alone: its target is all there is to keep.
+        let mut links: std::collections::BTreeMap<PathBuf, PathBuf> =
+            std::collections::BTreeMap::new();
         // A directory the hop created is journaled before the files in it
         // (the map is ordered), so rollback, newest first, empties it and
         // then removes it. A deleted directory is told by its files.
         for (p, meta) in &after {
             match watch.inside.get(p) {
                 None => writes.created.push(p.clone()),
-                Some(before) if before != meta => writes.modified.push(p.clone()),
-                // Same mtime and size: a tinned file is told by its hash.
+                Some(before) if before != meta => {
+                    if let Seen::Link { target } = before {
+                        links.insert(p.clone(), target.clone());
+                    }
+                    writes.modified.push(p.clone());
+                }
+                // Same mtime, size and mode: a tinned file is told by its hash.
                 Some(_) => {
                     if let Some(st) = watch.tinned.get(p) {
-                        if journal::sha256_file(p).ok().as_deref() != Some(st.sha256.as_str()) {
+                        if st.link.is_none()
+                            && journal::sha256_file(p).ok().as_deref() != Some(st.sha256.as_str())
+                        {
                             writes.modified.push(p.clone());
                         }
                     }
@@ -566,14 +611,17 @@ impl Kernel {
             }
         }
         for (p, meta) in &watch.inside {
-            if *meta != DIR_MARK && !after.contains_key(p) {
+            if *meta != Seen::Dir && !after.contains_key(p) {
+                if let Seen::Link { target } = meta {
+                    links.insert(p.clone(), target.clone());
+                }
                 writes.deleted.push(p.clone());
             }
         }
         if let Some(w) = &watch.outside_root {
             let now = scan(w, 3, 5_000);
             for (p, meta) in &now {
-                if *meta == DIR_MARK || inside_roots(p, &roots) {
+                if *meta == Seen::Dir || inside_roots(p, &roots) {
                     continue;
                 }
                 match watch.outside.get(p) {
@@ -583,7 +631,7 @@ impl Kernel {
                 }
             }
             for (p, meta) in &watch.outside {
-                if *meta != DIR_MARK && !now.contains_key(p) && !inside_roots(p, &roots) {
+                if *meta != Seen::Dir && !now.contains_key(p) && !inside_roots(p, &roots) {
                     writes.outside.push(p.clone());
                 }
             }
@@ -607,25 +655,40 @@ impl Kernel {
         {
             self.seq += 1;
             self.executed += 1;
-            if let Some(st) = watch.tinned.get(p) {
-                // The before-bytes are in the tin: this one can be undone.
-                let before = vec![journal::BeforeState {
-                    path: p.clone(),
-                    before: journal::Before::File {
+            // The before-state the journal can restore from: a link's
+            // target, or a file's bytes in the tin with its mode and time.
+            let kept = match (links.get(p), watch.tinned.get(p)) {
+                (Some(target), _) => Some((
+                    journal::Before::Symlink {
+                        target: target.clone(),
+                    },
+                    "link",
+                )),
+                (None, Some(st)) if st.link.is_none() => Some((
+                    journal::Before::File {
                         snapshot: st.object.clone(),
                         sha256: st.sha256.clone(),
                         bytes: st.bytes,
                         mode: st.mode,
+                        mtime_ns: st.mtime_ns,
                     },
-                }];
+                    "tin",
+                )),
+                _ => None,
+            };
+            if let Some((before, how)) = kept {
                 let _ = self.journal.record_with_before(
                     self.seq,
                     Op::HopChanged {
                         path: p.clone(),
                         change: change.to_string(),
                         tinned: true,
+                        kept: Some(how.to_string()),
                     },
-                    before,
+                    vec![journal::BeforeState {
+                        path: p.clone(),
+                        before,
+                    }],
                     None,
                     compensated,
                 );
@@ -640,6 +703,7 @@ impl Kernel {
                     path: p.clone(),
                     change: change.to_string(),
                     tinned: false,
+                    kept: None,
                 },
                 None,
                 compensated,

@@ -34,7 +34,7 @@ to die in step C.
 | `timeout_ms` | wall-clock limit; ten minutes by default |
 | `grace_ms` | after SIGTERM, how long before SIGKILL; 500 ms by default |
 | `stdin` | text fed to the child's stdin |
-| `touches` | globs, relative to the pack root, of the files the child may change (`"*"` the root's own files, `"**"` everything under it, `"src/**"` a tree, `"package.json"` one file). Each existing file under them is kept in the tin before the child runs, so a file it modifies or deletes comes back on rollback, byte for byte and hash-verified, where it would otherwise be listed as irreversible. Needs a `pack { }` (`E757`) |
+| `touches` | globs, relative to the pack root, of the files the child may change (`"*"` the root's own files, `"**"` everything under it, `"src/**"` a tree, `"package.json"` one file). Each existing file under them is kept in the tin before the child runs, so a file it modifies or deletes comes back on rollback, byte for byte and hash-verified, with its mode and modification time, where it would otherwise be listed as irreversible. A symbolic link comes back as a link with or without `touches`. Needs a `pack { }` (`E757`) |
 | `ok` | the exit-code contract: an int or a list of ints; `null` for none. It wins over `check` whatever the order of the keys |
 | `check` | `true` means the contract `[0]`, `false` none; ignored when `ok` is given |
 | `encoding` | `utf-8` (strict, the default), `lossy`, `latin1`, `utf-16` |

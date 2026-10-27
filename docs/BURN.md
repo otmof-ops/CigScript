@@ -208,7 +208,12 @@ formatter that changes three lines of a file stores that file about once
 and fifty runs of the same chain store it once. On rollback a modified or
 deleted file comes back from its object, which is re-hashed against its
 name first: a corrupt object is refused, never written. The file's own mode
-travels in the journal. `cig tin` says what the tin holds, `cig tin verify`
+and modification time travel in the journal and are put back with the
+bytes, so a `chmod` by the hop is undone and `make` sees the time it saw
+before. A symbolic link is kept as a link: its target is all there is, the
+journal holds it itself (`(link kept)` in the record), and a link the hop
+retargeted, replaced or deleted comes back as the link it was, whether or
+not `touches` named it. `cig tin` says what the tin holds, `cig tin verify`
 re-hashes every object, and `cig tin gc` removes the objects no run in the
 history refers to (`cig runs --prune N` frees more).
 

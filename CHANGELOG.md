@@ -3,6 +3,16 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+- **The tin keeps what a file is.** A symbolic link a hop retargets,
+  replaces or deletes comes back as the link it was, with or without
+  `touches` (`(link kept)` in the record); a `chmod` by a hop is seen,
+  although it changes neither size nor time, and put back where the file
+  was in the tin; a modified file comes back with the modification time it
+  had, from the tin and from a native snapshot alike. A read-only file
+  under `touches` is stashed like any other. (#41)
+
 ## 1.2.1 — 2026-10-27
 
 - **A read-only file is snapshotted like any other.** 1.2.0 opened every
