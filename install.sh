@@ -54,16 +54,23 @@ done
 # ----- preflight ------------------------------------------------------------------
 os=$(uname -s | tr '[:upper:]' '[:lower:]')
 arch=$(uname -m)
+android=0
+case "$(uname -o 2>/dev/null || true)" in Android) android=1;; esac
 case "$os" in
   linux) os=linux;;
   darwin) os=macos;;
+  freebsd) os=freebsd;;
   msys*|mingw*|cygwin*) os=windows;;
   *) say "unsupported OS '$os'; use --from-source";;
 esac
 case "$arch" in
   x86_64|amd64) arch=x86_64;;
   aarch64|arm64) arch=aarch64;;
+  armv7l|armv6l|armhf) arch=arm;;
 esac
+# The Linux assets are static musl builds: they run on any glibc, on Alpine,
+# and on Android under Termux, where uname says Linux/aarch64.
+[ "$android" = 1 ] && say "Android (Termux) detected: the static linux-$arch build runs here; installing into $PREFIX, not Termux's own package tree"
 
 pkg_cmd() {
   # The command that would install $1, for this machine's package manager.
@@ -160,6 +167,15 @@ download_release() {
   [ -n "$actual" ] || { rm -rf "$work"; fail "no sha256 tool (sha256sum, shasum or openssl) to verify the download"; }
   [ "$expected" = "$actual" ] || { rm -rf "$work"; fail "checksum mismatch for $asset (expected $expected, got $actual)"; }
   say "verified: sha256 matches the published checksum (integrity, not authorship; see SECURITY.md)"
+  # The build attestation names the release workflow that produced the
+  # asset; gh checks it against Sigstore when it is installed.
+  if have gh; then
+    if gh attestation verify "$work/$asset" -R "$REPO" >/dev/null 2>&1; then
+      say "attested: the build provenance names $REPO's release workflow"
+    else
+      say "attestation: gh could not verify the provenance (no network, an old gh, or not logged in); the checksum stands"
+    fi
+  fi
   mkdir -p "$PREFIX" || fail "cannot create $PREFIX"
   chmod 755 "$work/$asset"
   mv "$work/$asset" "$PREFIX/cig$ext" || fail "cannot move into $PREFIX"

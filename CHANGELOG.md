@@ -12,6 +12,22 @@ project follows semantic versioning.
   was in the tin; a modified file comes back with the modification time it
   had, from the tin and from a native snapshot alike. A read-only file
   under `touches` is stashed like any other. (#41)
+- **Linux assets are static musl builds** (`x86_64`, `aarch64`, and `armv7`
+  as `linux-arm`): they run on any glibc, on Alpine, and on Android under
+  Termux, where 1.2.1's glibc 2.39 binary would not start. Windows on ARM
+  (`windows-aarch64.exe`) and FreeBSD x86_64 (built in a VM) join the
+  matrix, and `workflow_dispatch` builds the whole matrix without
+  publishing. (#40, #49)
+- **`install.ps1`.** A PowerShell installer for Windows: picks the x86_64
+  or ARM64 asset, checks the checksum and the attestation, installs to
+  `%LOCALAPPDATA%\Programs\cig` and offers to add it to the user PATH;
+  `irm … | iex` reads its options from `CIG_*` variables. (#49)
+- **Attestations checked at install.** `install.sh` and `cig update` run
+  `gh attestation verify` when `gh` is installed and say `attested`; the
+  checksum stays the floor. `install.sh` maps `armv7l` and `armv6l`, knows
+  FreeBSD, and says so on Android. (#49)
+- **`cig update` with a `gh` that is not logged in** falls back to the
+  public API through curl instead of failing. (#35)
 
 ## 1.2.1 — 2026-10-27
 

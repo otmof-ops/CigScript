@@ -6,6 +6,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # Run by hand to build the whole release matrix without publishing anything.
+  workflow_dispatch:
 
 jobs:
   test:
@@ -35,7 +37,7 @@ jobs:
 
   release:
     name: release (${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: [test, reuse]
     runs-on: ${{ matrix.os }}
     permissions:
@@ -43,31 +45,50 @@ jobs:
       id-token: write
       attestations: write
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  asset: linux-x86_64,   ext: "" }
-          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu, asset: linux-aarch64, ext: "" }
-          - { os: macos-latest,   target: aarch64-apple-darwin,      asset: macos-aarch64,  ext: "" }
-          - { os: macos-15-intel, target: x86_64-apple-darwin,       asset: macos-x86_64,   ext: "" }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc,    asset: windows-x86_64, ext: ".exe" }
+          # Linux assets are static musl builds, so they run on any glibc, on
+          # Alpine, and on Android under Termux. The asset names match
+          # update::asset_name (OS, then std::env::consts::ARCH).
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-musl,       asset: linux-x86_64,     ext: "",     tool: cargo }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl,      asset: linux-aarch64,    ext: "",     tool: cargo }
+          - { os: ubuntu-latest,    target: armv7-unknown-linux-musleabihf,  asset: linux-arm,        ext: "",     tool: cross }
+          - { os: macos-latest,     target: aarch64-apple-darwin,            asset: macos-aarch64,    ext: "",     tool: cargo }
+          - { os: macos-15-intel,   target: x86_64-apple-darwin,             asset: macos-x86_64,     ext: "",     tool: cargo }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,          asset: windows-x86_64,   ext: ".exe", tool: cargo }
+          - { os: windows-11-arm,   target: aarch64-pc-windows-msvc,         asset: windows-aarch64,  ext: ".exe", tool: cargo }
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: cargo build --release --target ${{ matrix.target }}
+      - name: cross, for a target this runner cannot link itself
+        if: matrix.tool == 'cross'
+        run: cargo install cross --locked
+      - run: ${{ matrix.tool }} build --release --target ${{ matrix.target }}
       - name: name and checksum the asset (matches update::asset_name)
         shell: bash
         run: |
-          name="cig-${GITHUB_REF_NAME}-${{ matrix.asset }}${{ matrix.ext }}"
+          ref="${GITHUB_REF_NAME//\//-}"
+          name="cig-${ref}-${{ matrix.asset }}${{ matrix.ext }}"
           cp "target/${{ matrix.target }}/release/cig${{ matrix.ext }}" "$name"
           if command -v sha256sum >/dev/null; then sha256sum "$name" > "$name.sha256"; else shasum -a 256 "$name" > "$name.sha256"; fi
           cat "$name.sha256"
-      - name: attest the build (the humidor checks this with gh attestation verify)
+          file "$name" 2>/dev/null || true
+      - name: keep the build (a dry run of the matrix)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: cig-${{ matrix.asset }}
+          path: cig-*-${{ matrix.asset }}${{ matrix.ext }}*
+      - name: attest the build (the humidor and install.sh check this with gh attestation verify)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: cig-${{ github.ref_name }}-${{ matrix.asset }}${{ matrix.ext }}
       - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
         with:
           files: |
             cig-*-${{ matrix.asset }}${{ matrix.ext }}
@@ -75,3 +96,48 @@ jobs:
             LICENSE
             NOTICE
             THIRD-PARTY-NOTICES.md
+
+  # FreeBSD has no hosted runner: a VM builds the asset natively. It must not
+  # hold the other assets back, so a failure here is reported, not fatal.
+  release-freebsd:
+    name: release (x86_64-unknown-freebsd)
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: [test, reuse]
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: build in a FreeBSD VM
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          usesh: true
+          prepare: pkg install -y rust
+          run: |
+            cargo build --release
+            ref="$(echo "${GITHUB_REF_NAME:-dispatch}" | tr / -)"
+            name="cig-${ref}-freebsd-x86_64"
+            cp target/release/cig "$name"
+            sha256 -q "$name" | awk -v n="$name" '{print $1 "  " n}' > "$name.sha256"
+            cat "$name.sha256"
+      - name: keep the build (a dry run of the matrix)
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: cig-freebsd-x86_64
+          path: cig-*-freebsd-x86_64*
+      - name: attest the build
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: cig-${{ github.ref_name }}-freebsd-x86_64
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          files: |
+            cig-*-freebsd-x86_64
+            cig-*-freebsd-x86_64.sha256
