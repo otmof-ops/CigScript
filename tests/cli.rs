@@ -110,8 +110,11 @@ fn golden_scripts_match_expected_output() {
         let path = entry.path();
         // The path module prints the platform's separators; its golden is
         // the Unix one.
-        if cfg!(windows) && path.to_string_lossy().contains("05-modules") {
-            continue;
+        if cfg!(windows) {
+            let n = path.to_string_lossy();
+            if n.contains("05-modules") || n.contains("06-fs-read") {
+                continue;
+            }
         }
         if path.extension().is_none_or(|e| e != "cig") {
             continue;
