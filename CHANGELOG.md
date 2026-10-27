@@ -42,6 +42,10 @@ project follows semantic versioning.
   all came back is tried once more on the last good version. Never after an
   irreversible op. `trial = auto | always | never`, `--trial`,
   `--no-trial`. (#22)
+- **`cig.version()`, `cig.os()`, `cig.arch()`, `cig.run_id()`.** A script
+  can read the cig it runs under and the id of its own run, so a tool
+  written in CigScript (cig-orchestrator) checks the cig it was handed and
+  prints its own `cig unburn` line. (#22, cig-orchestrator FINDINGS)
 - **Records know their format.** `run.json`, `after.json` and the first
   line of `journal.jsonl` carry `format: 1`. A newer cig reads older
   formats; an older cig refuses a newer one by its number (`E808`) and

@@ -20,6 +20,8 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "crash_rollback",
         "ask",
         "after a crash mid-run: ask before putting its reversible burns back, always, or never (print the unburn command)",
+    ),
+    (
         "trial",
         "auto",
         "before a run on a cig this script has not been proved on: auto (compare plans with its last good version when that is in the humidor), always (fetch it if needed), never",
@@ -116,6 +118,8 @@ impl Config {
             ("crash_rollback", other) => {
                 return Err(format!(
                     "crash_rollback must be ask, always or never, not `{other}`"
+                ))
+            }
             ("trial", "auto" | "always" | "never") => {}
             ("trial", other) => {
                 return Err(format!(

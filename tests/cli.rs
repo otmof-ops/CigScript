@@ -3259,3 +3259,32 @@ fn a_failed_reversible_run_falls_back_and_an_irreversible_one_stops() {
         "{stderr}"
     );
 }
+
+// ----- cig.*: a script can read the cig it runs under (for the tools written in CigScript)
+
+#[test]
+fn a_script_reads_its_cig_version_platform_and_run_id() {
+    let sb = Sandbox::new();
+    sb.write(
+        "v.cig",
+        "exhale cig.version()\nexhale cig.os(), cig.arch()\nexhale cig.run_id()\nburn { fs.write_text(\"a.txt\", \"x\") }\nexhale cig.run_id()\n",
+    );
+    let out = sb.run_ok(&["run", "v.cig"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], env!("CARGO_PKG_VERSION"));
+    assert_eq!(
+        lines[1],
+        format!("{} {}", std::env::consts::OS, std::env::consts::ARCH)
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        lines[2], id,
+        "the record exists before the first statement: {out}"
+    );
+    assert_eq!(lines[3], id);
+    // A dry run has no record to name.
+    let dry = sb.run_ok(&["run", "--dry-run", "v.cig"]);
+    assert!(dry.lines().nth(2) == Some("null"), "{dry}");
+    // And `check` sees the namespace.
+    sb.run_ok(&["check", "v.cig"]);
+}

@@ -120,6 +120,17 @@ Reads are free; anything that changes a file is a **burn**, snapshotted before a
 | `hash.sha256_file` | 1 | read |
 | `hash.short` | 1-2 | pure |
 
+## cig
+
+The cig a script runs under: its version as `cig --version` prints it, the platform it was built for (`linux`, `macos`, `windows`; `x86_64`, `aarch64`), and the id of the run in progress, the one `cig unburn` takes (null in a dry run and under `cig check`). A tool written in CigScript checks the cig it was handed against what it was written for with these, and names its own run; the pin (`# cig 1.2` under the shebang) is how a script asks for the right one in the first place.
+
+| function | args | effect |
+|---|---|---|
+| `cig.version` | 0 | pure |
+| `cig.os` | 0 | pure |
+| `cig.arch` | 0 | pure |
+| `cig.run_id` | 0 | read |
+
 ## math
 
 | function | args | effect |
