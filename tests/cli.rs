@@ -1407,12 +1407,40 @@ fn json_diagnostics_carry_the_diagnosis_within_budget() {
         .contains("`count`"));
 }
 
+/// Every file under `root` with its size and modified time. Directories are
+/// left out: their modified time moves when the OS finishes a pending
+/// delete or rename under them (seen on Windows), which says nothing about
+/// what a command wrote.
 fn tree_fingerprint(root: &Path) -> Vec<(PathBuf, u64, std::time::SystemTime)> {
     let mut out = Vec::new();
     for e in walkdir::WalkDir::new(root).sort_by_file_name() {
         let e = e.unwrap();
+        if e.file_type().is_dir() {
+            continue;
+        }
         let m = e.metadata().unwrap();
         out.push((e.path().to_path_buf(), m.len(), m.modified().unwrap()));
+    }
+    out
+}
+
+/// The entries that differ between two fingerprints, for the message.
+fn fingerprint_diff(
+    before: &[(PathBuf, u64, std::time::SystemTime)],
+    after: &[(PathBuf, u64, std::time::SystemTime)],
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for b in before {
+        match after.iter().find(|a| a.0 == b.0) {
+            None => out.push(format!("removed {}", b.0.display())),
+            Some(a) if a.1 != b.1 || a.2 != b.2 => out.push(format!("changed {}", b.0.display())),
+            Some(_) => {}
+        }
+    }
+    for a in after {
+        if !before.iter().any(|b| b.0 == a.0) {
+            out.push(format!("added {}", a.0.display()));
+        }
     }
     out
 }
@@ -1435,10 +1463,11 @@ fn rediagnosis_is_read_only_and_reproduces_the_verdict() {
             && err.contains("= doctor: I think the path does not exist"),
         "{err}"
     );
-    assert_eq!(
-        before,
-        tree_fingerprint(sb.path()),
-        "cig doctor <run> wrote something"
+    let after = tree_fingerprint(sb.path());
+    assert!(
+        before == after,
+        "cig doctor <run> wrote something: {:?}",
+        fingerprint_diff(&before, &after)
     );
     // With the whole state directory read-only it still answers.
     #[cfg(unix)]
