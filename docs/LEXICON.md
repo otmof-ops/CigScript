@@ -93,8 +93,12 @@ word yet: tell me what you'd call them and they get promoted.
 | **subtool** | A separate program with one job that only yarns with cig about the result. Big architecture moves become subtools so the kernel stays small enough to hold in your head. | plugin process; helper binary; sidecar |
 | **yarn with cig** | What a subtool does: report back what it changed and whether it can be undone, in a fixed shape, and nothing else. | inter-process contract; effects manifest; protocol |
 | **the burn protocol** *(planned)* | The one-page contract a foreign tool speaks to become a native step: read `CIG_DRY_RUN`, print what you changed. `cig` is its own first speaker. | plugin protocol; effect reporting API |
+| **the box** *(planned)* | A hop run over a copy-on-write overlay of the pack (overlayfs in a user namespace on Linux, a reflink clone on macOS and Windows), so a failing hop's changes never land at all instead of being put back. | sandboxed step; overlay |
+| **the parcel** *(planned)* | One run's record, tin objects and compensations exported as a single file, imported on another machine for `cig unburn` there. Not a carton: a carton is what you install, a parcel is what you undo. | run bundle; export |
+| **sealed** *(planned)* | Tin objects encrypted at rest (a key in the OS keyring), because a tin holds old `.env` files and private keys in the clear today. | encrypted at rest |
+| **pressed** *(planned)* | A tin object written once and never rewritten: the name is the hash, and a second write is refused. The tin's objects are pressed already; the word is for the guarantee. | write-once; immutable object |
 | **hop** | Crossing from CigScript into another program and back. Where guarantees die unless the hop is built to carry them. | process boundary; FFI call; subprocess invocation |
-| **foreign script** *(planned)* | Someone's existing Python, bash, Node, Ruby or PowerShell, run inside a pack so it gains the plan and the rollback without being rewritten. | wrapped script; adapter-run task |
+| **foreign script** | Someone's existing Python, bash, Node, Ruby or PowerShell, run inside a pack so it gains the plan and the rollback without being rewritten. Since 1.2 the pack watches what it creates, `touches` keeps what it may change in the tin, and cig-orchestrator runs whole projects' scripts this way; what is still to come is the script telling cig what it did, which is the burn protocol. | wrapped script; adapter-run task |
 | **the doors** | The handful of APIs a language changes the world through (`open`, `shutil`, `fs`, `child_process`). Instrument the doors, leave the room alone. | effect surface; syscall wrappers; I/O boundary |
 
 ---

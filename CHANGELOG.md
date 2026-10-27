@@ -59,6 +59,12 @@ project follows semantic versioning.
   on Windows the directory that gained a snapshot or an entry is flushed
   through a backup-semantics handle where NTFS allows it. BURN.md has the
   table. (#47)
+- **Docs.** LANGUAGE.md describes the pack as it is (scope, since 1.1),
+  not as planned; LEXICON.md says what of the foreign script has landed and
+  what the burn protocol still adds; one word per idea for the tin's next
+  steps, in LEXICON.md and the roadmap: the box is the overlay, the parcel
+  is the export, sealed is encrypted at rest, pressed is write-once. (#51,
+  #52)
 
 ## 1.2.1 — 2026-10-27
 

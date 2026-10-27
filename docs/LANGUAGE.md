@@ -57,10 +57,13 @@ turns it off.
 ## The levels, in one line each
 
 A **stick** is one step. A **chain** is order: sticks that light from each
-other, fail together, roll back together. A **pack** (planned) is scope and
-reuse: a chain with its own root, ready to be lit from anywhere. A **carton**
-(planned) is distribution. Nobody has to be taught the hierarchy; the words
-are in [LEXICON.md](LEXICON.md) with the manual's names.
+other, fail together, roll back together. A **pack** is scope: the roots a
+script's writes stay inside (`pack { "./build" }`, the first statement), the
+boundary hop watching and the tin keep, one journal for everything inside;
+the composition sense, a chain with its own root lit from anywhere, is
+still to come, as are parameters and cartons. A **carton** (planned) is
+distribution. Nobody has to be taught the hierarchy; the words are in
+[LEXICON.md](LEXICON.md) with the manual's names.
 
 ## Files and statements
 

@@ -18,8 +18,16 @@ Each lands with a wall row and a test named after it, like everything else.
 | 9 | The tin in chunks: content-defined chunking (FastCDC) of the files `touches` names, so a large file edited in one place stores the chunk that changed, not the file again | a 200 MB lockfile or asset stashed whole on every run (cig-orchestrator #18 step 5; 1.2.0 stashes whole files, one object per distinct content) |
 | 10 | Git blob reuse: a file whose bytes git already holds (`git hash-object`) is referenced from the repository's object store instead of copied into the tin | the tin doubling what `.git/objects` keeps (cig-orchestrator #18 step 6) |
 | 11 | The hash chain: each journal line carries the hash of the one before it, `cig runs <id> --verify` walks it | a journal edited after the fact passing as the record (cig-orchestrator #18 step 7) |
-| 12 | Sealed chunks and the burn protocol: a tin object written once and never rewritten, the before-bytes of an irreversible hop exchanged with the child through a declared protocol | the kernel trusting a hop's word about what it touched (cig-orchestrator #18 steps 9 and 10) |
-| 13 | The box: one run's record, tin objects and compensations exported as a single file and imported on another machine for `cig unburn` there | undoing a deploy from the machine that did not run it (cig-orchestrator #18 step 11) |
+| 12 | The burn protocol: a foreign tool tells cig what it changed (`$CIG_JOURNAL`), so a hop that speaks it is reversible without `touches`; the tin's objects stay **pressed** (written once, named by their hash, a second write refused) | the kernel trusting a hop's word about what it touched (cig-orchestrator #18 steps 9 and 10) |
+| 13 | **The parcel**: one run's record, tin objects and compensations exported as a single file and imported on another machine for `cig unburn` there | undoing a deploy from the machine that did not run it (cig-orchestrator #18 step 11) |
+| 14 | **The box**: a hop run over a copy-on-write overlay of the pack (overlayfs in a user namespace on Linux, a reflink clone on macOS and Windows), so a failing hop's changes never land | restoring what could have been left unwritten (cig-orchestrator #18's "box") |
+| 15 | **Sealed** objects: the tin encrypted at rest with a key from the OS keyring, before the tin is on by default for real projects | a tin that holds old `.env` files and private keys in the clear (cig-orchestrator #18's "sealed") |
+
+One word per idea, settled in LEXICON.md before any of rows 12 to 15 lands:
+**the box** is the overlay, **the parcel** is the export, **sealed** is
+encrypted at rest, **pressed** is write-once. Chunking (row 9) comes first:
+it makes `touches: ["**"]` cheap enough to be cig-orchestrator's default;
+sealing (row 15) comes before the tin is on by default for real projects.
 
 Done in 1.2.0 instead of waiting: the tin for whole files (`touches`, `cig tin`, `.cigignore`;
 cig-orchestrator #18 steps 1 to 4 and 8), the pin, the humidor and the trial (#22), crash
