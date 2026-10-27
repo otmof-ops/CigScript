@@ -185,11 +185,13 @@ fn encoding_is_explicit_never_silently_lossy() {
 }
 
 fn ps_has(marker: &str) -> bool {
-    let out = Command::new("ps").args(["-eo", "args"]).output();
+    // -ww: the BSDs and macOS truncate the line without it, and the marker
+    // sits past the cut.
+    let out = Command::new("ps").args(["-ww", "-eo", "args"]).output();
     match out {
         Ok(o) => String::from_utf8_lossy(&o.stdout)
             .lines()
-            .any(|l| l.contains(marker) && !l.contains("ps -eo")),
+            .any(|l| l.contains(marker) && !l.contains("ps -ww")),
         Err(_) => false,
     }
 }

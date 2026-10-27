@@ -16,7 +16,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Every OS GitHub hosts, on both architectures where it offers them.
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15-intel, windows-latest, windows-11-arm]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -25,8 +26,65 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
+      # Release inlining changes which frames a backtrace keeps, and the
+      # crash tests read them: run the suite once as users run cig.
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo test --release
       - run: cargo run --release -- run examples/hello.cig -- ci
       - run: cargo run --release -- chains examples/tasks.cig
+      # The portability probe: the kernel's promises checked on disk the way
+      # a user would, one scenario each. A FAIL line fails the job.
+      - name: portability probe
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          CIG="$PWD/target/release/cig" bash tests/portability/probe.sh | tee probe.txt
+          ! grep -q '^FAIL' probe.txt
+      - name: portability probe (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $lines = pwsh -NoProfile -File tests/portability/probe.ps1 "$PWD\target\release\cig.exe"
+          $lines
+          if ($lines -match '^FAIL') { exit 1 }
+
+  # musl, BusyBox, and root: the tests that lock a directory with chmod step
+  # aside as root and say so.
+  test-alpine:
+    name: test (alpine, musl, as root)
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: apk add --no-cache bash curl gcc musl-dev python3 git nodejs procps
+      - run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      - run: |
+          . "$HOME/.cargo/env"
+          cargo test
+      - run: |
+          . "$HOME/.cargo/env"
+          cargo build --release
+          CIG="$PWD/target/release/cig" bash tests/portability/probe.sh | tee probe.txt
+          ! grep -q '^FAIL' probe.txt
+
+  # No hosted runner: a VM. It must not hold a merge back when the VM itself
+  # misbehaves, so its failure is reported, not fatal; the log says.
+  test-freebsd:
+    name: test (freebsd)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          usesh: true
+          prepare: pkg install -y rust bash python3 git
+          run: |
+            cargo test
+            cargo build --release
+            CIG="$PWD/target/release/cig" bash tests/portability/probe.sh | tee probe.txt
+            ! grep -q '^FAIL' probe.txt
 
   reuse:
     name: licence headers (REUSE)
