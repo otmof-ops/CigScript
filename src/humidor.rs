@@ -233,7 +233,7 @@ pub fn add(repo: &str, version: &Version) -> Result<Entry, String> {
 /// `gh attestation verify`: proof the binary came from this repository's
 /// release workflow, not only that the download was complete. Only when
 /// `gh` is there; the checksum is the floor.
-fn attest(repo: &str, bin: &Path) -> bool {
+pub fn attest(repo: &str, bin: &Path) -> bool {
     if std::env::var_os("CIG_UPDATE_MANIFEST").is_some() || !update::has_tool("gh") {
         return false;
     }

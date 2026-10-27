@@ -256,6 +256,14 @@ runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 cargo install --git https://github.com/otmof-ops/CigScript --tag v1.2.1 cigscript
 ```
 
+Every release asset carries a build attestation from this repository's release
+workflow: `gh attestation verify cig-v1.2.1-linux-x86_64 -R otmof-ops/CigScript`
+checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
+when `gh` is installed; the checksum is the floor without it. The Linux assets
+are static musl builds (any glibc, Alpine, Android under Termux); there are
+assets for Linux x86_64, aarch64 and armv7, macOS on Apple Silicon and Intel,
+Windows x86_64 and ARM64, and FreeBSD x86_64.
+
 Then:
 
 ```sh

@@ -124,10 +124,17 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
         let _ = std::fs::remove_file(&bin);
         return exit::USAGE;
     }
-    eprintln!(
-        "{} sha256 matches the published checksum (integrity, not authorship: see SECURITY.md)",
-        ctx.green("verified:")
-    );
+    if cigscript::humidor::attest(&repo, &bin) {
+        eprintln!(
+            "{} the checksum matches and the build attestation names {repo}'s release workflow",
+            ctx.green("attested:")
+        );
+    } else {
+        eprintln!(
+            "{} sha256 matches the published checksum (integrity, not authorship: see SECURITY.md; `gh` would also check the build attestation)",
+            ctx.green("verified:")
+        );
+    }
     match update::install(&bin) {
         Ok(path) => {
             let _ = std::fs::remove_file(&bin);

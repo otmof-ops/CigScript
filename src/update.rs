@@ -140,18 +140,22 @@ fn releases_json(repo: &str) -> Result<String, String> {
     if let Some(path) = std::env::var_os("CIG_UPDATE_MANIFEST").filter(|p| !p.is_empty()) {
         return fs::read_to_string(&path).map_err(|e| format!("CIG_UPDATE_MANIFEST: {e}"));
     }
+    let mut gh_said = None;
     if has_tool("gh") {
         let out = Command::new("gh")
             .args(["api", &format!("repos/{repo}/releases?per_page=20")])
             .output()
             .map_err(|e| format!("gh: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "gh could not read releases for {repo}: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
+        if out.status.success() {
+            return Ok(String::from_utf8_lossy(&out.stdout).to_string());
         }
-        return Ok(String::from_utf8_lossy(&out.stdout).to_string());
+        // gh installed but not logged in (CI runners, a fresh machine): the
+        // releases of a public repository are readable without it.
+        let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if !has_tool("curl") {
+            return Err(format!("gh could not read releases for {repo}: {said}"));
+        }
+        gh_said = Some(said);
     }
     if has_tool("curl") {
         let out = curl_base()
@@ -163,8 +167,11 @@ fn releases_json(repo: &str) -> Result<String, String> {
             .map_err(|e| format!("curl: {e}"))?;
         if !out.status.success() {
             return Err(format!(
-                "could not read releases for {repo} (is it public?): {}",
-                String::from_utf8_lossy(&out.stderr).trim()
+                "could not read releases for {repo} (is it public?): {}{}",
+                String::from_utf8_lossy(&out.stderr).trim(),
+                gh_said
+                    .map(|g| format!("; gh said: {g}"))
+                    .unwrap_or_default()
             ));
         }
         return Ok(String::from_utf8_lossy(&out.stdout).to_string());
