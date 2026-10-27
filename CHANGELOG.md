@@ -3,7 +3,9 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.2.0 — 2026-10-27
+
+The pin, the humidor, the tin, and crash reports that put the run back.
 
 - **Crash reports name the function.** A release build keeps its symbol
   names (`strip = "debuginfo"`, about 0.7 MB more binary), so the backtrace
