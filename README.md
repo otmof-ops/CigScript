@@ -256,6 +256,13 @@ runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 cargo install --git https://github.com/otmof-ops/CigScript --tag v1.2.1 cigscript
 ```
 
+On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
+`-NoModifyPath`, `-Yes`, or the `CIG_*` environment variables when piped):
+
+```powershell
+irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
+```
+
 Every release asset carries a build attestation from this repository's release
 workflow: `gh attestation verify cig-v1.2.1-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves

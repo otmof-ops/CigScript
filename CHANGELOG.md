@@ -18,6 +18,10 @@ project follows semantic versioning.
   (`windows-aarch64.exe`) and FreeBSD x86_64 (built in a VM) join the
   matrix, and `workflow_dispatch` builds the whole matrix without
   publishing. (#40, #49)
+- **`install.ps1`.** A PowerShell installer for Windows: picks the x86_64
+  or ARM64 asset, checks the checksum and the attestation, installs to
+  `%LOCALAPPDATA%\Programs\cig` and offers to add it to the user PATH;
+  `irm … | iex` reads its options from `CIG_*` variables. (#49)
 - **Attestations checked at install.** `install.sh` and `cig update` run
   `gh attestation verify` when `gh` is installed and say `attested`; the
   checksum stays the floor. `install.sh` maps `armv7l` and `armv6l`, knows
