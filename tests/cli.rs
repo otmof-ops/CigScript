@@ -2261,7 +2261,9 @@ fn rollback_failures_are_recorded_on_the_run() {
 fn a_read_only_run_directory_refuses_unburn_until_forced() {
     use std::os::unix::fs::PermissionsExt;
     if running_as_root() {
-        eprintln!("skipped: root writes into a read-only directory, so the refusal cannot be shown here");
+        eprintln!(
+            "skipped: root writes into a read-only directory, so the refusal cannot be shown here"
+        );
         return;
     }
     let sb = Sandbox::new();

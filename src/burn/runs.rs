@@ -275,7 +275,11 @@ fn process_identity(pid: u32) -> Option<(String, String)> {
                 return None;
             }
             let text = String::from_utf8_lossy(&out.stdout);
-            let line = text.lines().find(|l| !l.trim().is_empty())?.trim().to_string();
+            let line = text
+                .lines()
+                .find(|l| !l.trim().is_empty())?
+                .trim()
+                .to_string();
             if line.is_empty() {
                 None
             } else {
@@ -288,7 +292,14 @@ fn process_identity(pid: u32) -> Option<(String, String)> {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or(comm.clone());
         let started = ask("lstart=").unwrap_or_default();
-        Some((name, if started.is_empty() { String::new() } else { format!("lstart:{started}") }))
+        Some((
+            name,
+            if started.is_empty() {
+                String::new()
+            } else {
+                format!("lstart:{started}")
+            },
+        ))
     }
     #[cfg(windows)]
     {
