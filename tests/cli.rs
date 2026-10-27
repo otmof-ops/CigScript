@@ -2860,8 +2860,15 @@ fn a_run_from_1_1_1_reads_on_the_current_version() {
 #[test]
 fn a_pinned_script_names_the_version_it_needs() {
     let sb = Sandbox::new();
-    // Satisfied: this cig is 1.1.x.
-    sb.write("ok.cig", "#!/usr/bin/env cig\n# cig 1.1\nexhale \"hi\"\n");
+    // Satisfied: the pin names this cig's own major.minor.
+    let mm = {
+        let mut parts = env!("CARGO_PKG_VERSION").split('.');
+        format!("{}.{}", parts.next().unwrap(), parts.next().unwrap())
+    };
+    sb.write(
+        "ok.cig",
+        &format!("#!/usr/bin/env cig\n# cig {mm}\nexhale \"hi\"\n"),
+    );
     assert_eq!(sb.run_ok(&["run", "ok.cig"]), "hi\n");
     // A usage line in a comment is not a pin.
     sb.write("usage.cig", "# cig run usage.cig -- x\nexhale \"hi\"\n");
