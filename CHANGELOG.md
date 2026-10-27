@@ -3,6 +3,23 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+- **Crash reports name the function.** A release build keeps its symbol
+  names (`strip = "debuginfo"`, about 0.7 MB more binary), so the backtrace
+  in a report reads `cigscript::interp::…` instead of `<unknown>`. The
+  report keeps every frame of cig's own code, never the panic hook itself,
+  the one `std` or `core` frame our code called into when the panic came
+  from a library, and a closure inlined into a `std` frame under LTO.
+  `CIG_INTERNAL_PANIC=eval` and `CIG_INTERNAL_PANIC=after-burn` join `=1`
+  as the reporter's test hooks. (#23)
+- **A crash mid-run offers to put its burns back.** The crash prompt reads
+  the run's journal from disk and, before asking about the report, asks
+  whether to roll the reversible burns back (`crash_rollback = ask`, the
+  default); `always` does it unasked, `never` and a run without a terminal
+  print the `cig unburn <run>` line instead. The report records
+  `rolled_back`. (#24)
+
 ## 1.1.2 — 2026-10-24
 
 Found by building [cig-orchestrator](https://github.com/otmof-ops/cig-orchestrator),

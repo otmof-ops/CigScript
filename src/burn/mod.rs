@@ -645,6 +645,13 @@ impl Kernel {
                 .code("E702")
                 .with_hint("free space or fix permissions under ~/.cigscript (CIGSCRIPT_HOME), then run again; nothing was changed")
         })?;
+        if self.executed == 2 && std::env::var("CIG_INTERNAL_PANIC").as_deref() == Ok("after-burn")
+        {
+            // Test hook for the crash reporter: the process dies with a burn
+            // journaled and a second one about to happen, the state a real
+            // mid-run panic leaves on disk.
+            panic!("deliberate test panic after a burn (CIG_INTERNAL_PANIC=after-burn)");
+        }
         Ok(Decision::Execute)
     }
 

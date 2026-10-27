@@ -57,6 +57,7 @@ Nothing, unless you say yes. A panic writes a report under
 | panic message and location | the failure and the line in `cig`'s own source | home paths and token-shaped words removed; 500 characters at most |
 | backtrace | frames from `cig`'s own code only | paths made relative to the crate |
 | active run id | the run in progress, if any | id only; the run's journal and snapshots are never attached |
+| rolled back | after a crash mid-run: whether its reversible burns were put back before the report was sent (`null` when no run was in progress) | none |
 
 Never included: script source, environment variable values, file contents,
 tokens. Filing goes through `gh` (your own credentials) or a
@@ -66,6 +67,13 @@ Set `cig config crash_reports never` to keep reports local, or `always` to
 file them without the prompt (the report is still printed before it goes).
 Filed reports are public and permanent; duplicates of a known crash are added
 as a comment to the existing issue, at most once a day.
+
+A crash in the middle of a run leaves its burns in place; the journal is
+write-ahead, so it survives, and `cig unburn <run>` puts the reversible ones
+back. Before the report prompt, cig offers to do that (`cig config
+crash_rollback ask`, the default), does it without asking (`always`), or only
+names the command (`never`, and whenever there is no terminal). The rollback
+reads the journal on disk, never anything from the thread that crashed.
 
 ## What `install.sh` trusts
 

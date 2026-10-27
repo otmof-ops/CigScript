@@ -11,9 +11,12 @@ fn main() {
         .name("cig".into())
         .stack_size(256 * 1024 * 1024)
         .spawn(|| {
-            if std::env::var_os("CIG_INTERNAL_PANIC").is_some() {
-                // Test hook for the crash reporter.
-                panic!("deliberate test panic (CIG_INTERNAL_PANIC is set)");
+            // Test hook for the crash reporter: `1` panics here, `eval` inside
+            // the evaluator, `after-burn` in the kernel after the first burn.
+            if let Ok(v) = std::env::var("CIG_INTERNAL_PANIC") {
+                if v != "eval" && v != "after-burn" {
+                    panic!("deliberate test panic (CIG_INTERNAL_PANIC is set)");
+                }
             }
             cli::main()
         })

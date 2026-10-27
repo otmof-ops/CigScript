@@ -31,6 +31,10 @@ pub struct CrashReport {
     pub active_run_id: Option<String>,
     #[serde(default)]
     pub sent: Option<String>,
+    /// After a crash mid-run: whether the run's reversible burns were put
+    /// back before this report was sent. `null` when no run was in progress.
+    #[serde(default)]
+    pub rolled_back: Option<bool>,
 }
 
 static LAST: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -135,6 +139,7 @@ fn build(message: &str, location: &str, backtrace: &str) -> CrashReport {
         backtrace: filter_backtrace(backtrace),
         active_run_id,
         sent: None,
+        rolled_back: None,
     }
 }
 
@@ -297,6 +302,10 @@ fn strip_numbers(s: &str) -> String {
 
 fn crate_relative(path: &str) -> String {
     let p = path.replace('\\', "/");
+    if p.starts_with("src/") {
+        // A panic location inside this crate is already crate-relative.
+        return p;
+    }
     if let Some(i) = p.find("/src/") {
         return p[i + 1..].to_string();
     }
@@ -309,43 +318,92 @@ fn crate_relative(path: &str) -> String {
         .unwrap_or(p)
 }
 
-/// Keep only frames from this crate, with paths made crate-relative.
+/// The frames a report keeps: every frame of cig's own code (a symbol that
+/// mentions `cigscript::` or `cig::` anywhere, so a closure inlined into a
+/// `std` frame under LTO still counts), never the panic hook itself, and the
+/// one library frame our code called into when the panic came from `std`
+/// or `core` (an `unwrap` on `None`, an index out of range). Paths are made
+/// crate-relative.
 fn filter_backtrace(bt: &str) -> Vec<String> {
-    let mut frames = Vec::new();
     let lines: Vec<&str> = bt.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i].trim();
-        let is_frame = line
-            .split_once(": ")
-            .is_some_and(|(n, _)| n.trim().chars().all(|c| c.is_ascii_digit()));
-        if is_frame {
-            let symbol = line.split_once(": ").map(|(_, s)| s).unwrap_or(line);
-            let at = lines
-                .get(i + 1)
-                .map(|l| l.trim())
-                .filter(|l| l.starts_with("at "))
-                .unwrap_or("");
-            if symbol.contains("cigscript")
-                || symbol.starts_with("cig::")
-                || at.contains("cigscript/src")
-                || at.contains("/src/cli/")
-            {
-                let location = at
-                    .strip_prefix("at ")
-                    .map(crate_relative)
-                    .unwrap_or_default();
-                frames.push(if location.is_empty() {
-                    symbol.to_string()
-                } else {
-                    format!("{symbol} ({location})")
-                });
-            }
+    let mut frames: Vec<(String, String, String)> = Vec::new(); // symbol, raw at, location
+    for (i, raw) in lines.iter().enumerate() {
+        let line = raw.trim();
+        let Some((n, symbol)) = line.split_once(": ") else {
+            continue;
+        };
+        let n = n.trim();
+        if n.is_empty() || !n.chars().all(|c| c.is_ascii_digit()) {
+            continue;
         }
-        i += 1;
+        let at = lines
+            .get(i + 1)
+            .map(|l| l.trim())
+            .filter(|l| l.starts_with("at "))
+            .map(|l| l[3..].to_string())
+            .unwrap_or_default();
+        let location = if at.is_empty() {
+            String::new()
+        } else {
+            crate_relative(&at)
+        };
+        frames.push((symbol.to_string(), at, location));
     }
-    frames.truncate(40);
-    frames
+    // A direct frame is one of our functions. An indirect one is a `std`
+    // frame that carries our code as a generic parameter, which is all that
+    // is left of a closure inlined under LTO; it stands in only when no
+    // direct frame survived.
+    let direct = |symbol: &str, at: &str| {
+        let at = at.to_ascii_lowercase();
+        (symbol.starts_with("cigscript::")
+            || symbol.starts_with("cig::")
+            || symbol.starts_with("<cigscript::")
+            || symbol.starts_with("<cig::")
+            || at.contains("cigscript/src")
+            || at.contains("/src/cli/"))
+            && !symbol.contains("cigscript::crash::")
+    };
+    let indirect = |symbol: &str| {
+        (symbol.contains("cigscript::") || symbol.contains("cig::"))
+            && !symbol.contains("cigscript::crash::")
+    };
+    let any_direct = frames.iter().any(|f| direct(&f.0, &f.1));
+    let ours = |symbol: &str, at: &str| {
+        if any_direct {
+            direct(symbol, at)
+        } else {
+            indirect(symbol)
+        }
+    };
+    let machinery = |symbol: &str| {
+        symbol.contains("panicking")
+            || symbol.contains("rust_panic")
+            || symbol.contains("rust_begin_unwind")
+            || symbol.contains("lang_start")
+            || symbol.contains("std::rt::")
+            || symbol.contains("__rust_end_short_backtrace")
+    };
+    let render = |f: &(String, String, String)| {
+        if f.2.is_empty() {
+            f.0.clone()
+        } else {
+            format!("{} ({})", f.0, f.2)
+        }
+    };
+    let mut out = Vec::new();
+    if let Some(k) = frames.iter().position(|f| ours(&f.0, &f.1)) {
+        let library = (0..k).rev().find(|&j| {
+            let s = frames[j].0.as_str();
+            (s.starts_with("std::") || s.starts_with("core::") || s.starts_with("alloc::"))
+                && !machinery(s)
+        });
+        if let Some(j) = library {
+            out.push(render(&frames[j]));
+        }
+    }
+    out.extend(frames.iter().filter(|f| ours(&f.0, &f.1)).map(render));
+    out.truncate(40);
+    out
 }
 
 pub fn truncate(s: &str, max: usize) -> String {
@@ -602,6 +660,42 @@ mod tests {
         assert_eq!(
             frames[0],
             "cigscript::interp::eval::x (src/interp/eval.rs:10:5)"
+        );
+    }
+
+    #[test]
+    fn the_panic_hook_is_not_in_the_backtrace_it_reports() {
+        let bt = "   0: cigscript::crash::install_hook::{closure#1}\n   1: std::panicking::panic_with_hook\n   2: std::panicking::begin_panic::<&str>\n   3: cigscript::interp::Interp::run_program\n";
+        let frames = filter_backtrace(bt);
+        assert_eq!(frames, vec!["cigscript::interp::Interp::run_program"]);
+    }
+
+    #[test]
+    fn an_inlined_closure_frame_is_kept() {
+        // Under LTO the closure in `main` is inlined into a `std` frame and
+        // survives only as a generic parameter.
+        let bt = "   0: cigscript::crash::install_hook::{closure#1}\n   1: std::panicking::panic_with_hook\n   2: std::panicking::begin_panic_handler::{closure#0}\n   3: std::sys::backtrace::__rust_end_short_backtrace::<std::panicking::begin_panic_handler::{closure#0}, !>\n   4: std::panicking::begin_panic::<&str>\n   5: std::sys::backtrace::__rust_begin_short_backtrace::<cig::main::{closure#0}, i32>\n   6: std::thread::Builder::spawn_unchecked_::<cig::main::{closure#0}, i32>::{closure#1}\n";
+        let frames = filter_backtrace(bt);
+        assert_eq!(
+            frames[0],
+            "std::sys::backtrace::__rust_begin_short_backtrace::<cig::main::{closure#0}, i32>"
+        );
+        assert!(
+            frames.iter().all(|f| !f.contains("install_hook")),
+            "{frames:?}"
+        );
+    }
+
+    #[test]
+    fn a_panic_inside_a_library_keeps_the_frame_our_code_called() {
+        let bt = "   0: cigscript::crash::install_hook::{closure#1}\n   1: std::panicking::panic_with_hook\n   2: core::panicking::panic_fmt\n   3: core::option::unwrap_failed\n   4: cigscript::interp::eval::Interp::eval_expr\n             at /home/u/CigScript/src/interp/eval.rs:10:5\n";
+        let frames = filter_backtrace(bt);
+        assert_eq!(
+            frames,
+            vec![
+                "core::option::unwrap_failed".to_string(),
+                "cigscript::interp::eval::Interp::eval_expr (src/interp/eval.rs:10:5)".to_string()
+            ]
         );
     }
 }
