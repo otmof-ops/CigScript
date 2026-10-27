@@ -108,6 +108,14 @@ fn golden_scripts_match_expected_output() {
     entries.sort_by_key(|e| e.path());
     for entry in entries {
         let path = entry.path();
+        // The path module prints the platform's separators; its golden is
+        // the Unix one.
+        if cfg!(windows) {
+            let n = path.to_string_lossy();
+            if n.contains("05-modules") || n.contains("06-fs-read") {
+                continue;
+            }
+        }
         if path.extension().is_none_or(|e| e != "cig") {
             continue;
         }
@@ -1144,7 +1152,12 @@ fn usage_layer_errors_carry_their_codes() {
 fn normalise(text: &str, sandbox: &Path) -> String {
     let ms = regex::Regex::new(r"\(\d+ ms\)").unwrap();
     let ids = regex::Regex::new(r"\b\d{8}T\d{6}-[0-9a-f]{6}\b").unwrap();
-    let t = text.replace(sandbox.to_str().unwrap(), "<sb>");
+    // macOS hands back the canonical path (/private/var/...) for a tempdir
+    // under /var; both spellings are the sandbox.
+    let canonical = fs::canonicalize(sandbox).unwrap_or_else(|_| sandbox.to_path_buf());
+    let t = text
+        .replace(canonical.to_str().unwrap(), "<sb>")
+        .replace(sandbox.to_str().unwrap(), "<sb>");
     let t = ms.replace_all(&t, "(N ms)").to_string();
     ids.replace_all(&t, "<run-id>").to_string()
 }
@@ -1245,6 +1258,11 @@ fn corpus_diagnoses_match_golden_output() {
     let mut failures = Vec::new();
     for path in scripts {
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        // The operating system words a missing program its own way; this
+        // golden carries the Unix wording.
+        if cfg!(windows) && name.starts_with("e551") {
+            continue;
+        }
         let sb = Sandbox::new();
         let out = run_corpus(&sb, &name, &[]);
         let text = normalise(&String::from_utf8_lossy(&out.stderr), sb.path());
@@ -1504,6 +1522,7 @@ fn plain_mode_drops_the_catchphrases_and_keeps_the_facts() {
 }
 
 #[test]
+#[cfg(unix)]
 fn report_bundles_a_run_redacted() {
     let sb = Sandbox::new();
     run_corpus(&sb, "e551-not-on-path.cig", &[]);
@@ -1766,6 +1785,7 @@ fn chain_dry_run_reads_ghost_write() {
 }
 
 #[test]
+#[cfg(unix)]
 fn dry_run_reads_see_the_ghost_filesystem() {
     let sb = Sandbox::new();
     sb.write("real.txt", "disk");
@@ -2038,6 +2058,7 @@ fn a_move_the_os_refused_is_marked_undone_and_never_moved_back() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_cross_device_move_rolls_back_by_copying() {
     use std::os::unix::fs::MetadataExt;
     let sb = Sandbox::new();
@@ -2066,6 +2087,7 @@ fn a_cross_device_move_rolls_back_by_copying() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_hardlinked_file_is_restored_in_place() {
     let sb = Sandbox::new();
     sb.write("orig", "before");
@@ -2084,6 +2106,7 @@ fn a_hardlinked_file_is_restored_in_place() {
 }
 
 #[test]
+#[cfg(unix)]
 fn setuid_and_sticky_bits_survive_rollback() {
     use std::os::unix::fs::PermissionsExt;
     let sb = Sandbox::new();
@@ -2108,6 +2131,7 @@ fn setuid_and_sticky_bits_survive_rollback() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_named_pipe_is_refused_not_hung() {
     use wait_timeout::ChildExt;
     let sb = Sandbox::new();
@@ -2144,6 +2168,7 @@ fn a_named_pipe_is_refused_not_hung() {
 }
 
 #[test]
+#[cfg(unix)]
 fn rollback_failures_are_recorded_on_the_run() {
     use std::os::unix::fs::PermissionsExt;
     let sb = Sandbox::new();
@@ -2177,6 +2202,7 @@ fn rollback_failures_are_recorded_on_the_run() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_read_only_run_directory_refuses_unburn_until_forced() {
     use std::os::unix::fs::PermissionsExt;
     let sb = Sandbox::new();
@@ -2296,6 +2322,7 @@ fn a_compensation_that_reads_args_runs_on_a_deferred_unburn() {
 }
 
 #[test]
+#[cfg(unix)]
 fn the_ghost_resolves_symlinked_directories_and_lists_created_ancestors() {
     use std::os::unix::fs::symlink;
     let sb = Sandbox::new();
@@ -2593,6 +2620,7 @@ fn a_semicolon_may_follow_a_block_statement() {
 }
 
 #[test]
+#[cfg(unix)]
 fn glob_star_lists_no_empty_entry_and_dot_slash_patterns_match() {
     let sb = Sandbox::new();
     sb.write("scripts/a.sh", "");

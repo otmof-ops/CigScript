@@ -1037,6 +1037,8 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     });
     let deadline = Instant::now() + Duration::from_millis(o.timeout_ms);
     let mut codes: Vec<Option<i32>> = vec![None; children.len()];
+    // Only Unix fills this in; Windows reports exit codes alone.
+    #[cfg_attr(windows, allow(unused_mut))]
     let mut signals: Vec<i32> = vec![0; children.len()];
     let mut timed_out = false;
     'wait: loop {

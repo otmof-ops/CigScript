@@ -25,6 +25,12 @@ impl Sandbox {
     fn path(&self) -> &Path {
         self.dir.path()
     }
+
+    /// The sandbox as the operating system spells it: macOS gives a tempdir
+    /// under /var back as /private/var/..., and both spellings are it.
+    fn canonical(&self) -> PathBuf {
+        fs::canonicalize(self.path()).unwrap_or_else(|_| self.path().to_path_buf())
+    }
     fn write(&self, name: &str, content: &str) -> PathBuf {
         let p = self.path().join(name);
         if let Some(parent) = p.parent() {
@@ -51,6 +57,7 @@ impl Sandbox {
     }
     fn stderr(&self, args: &[&str]) -> String {
         String::from_utf8_lossy(&self.cig(args).stderr)
+            .replace(self.canonical().to_str().unwrap(), "<sb>")
             .replace(self.path().to_str().unwrap(), "<sb>")
     }
     fn stdout(&self, args: &[&str]) -> String {
@@ -94,7 +101,9 @@ fn plan_one_child_writes_inside_the_pack() {
     fs::create_dir_all(sb.path().join("build")).unwrap();
     sb.write("s.cig", &packed(false, "exhale \"planned\"\n"));
     let out = sb.cig(&["run", "--dry-run", "s.cig"]);
-    let err = String::from_utf8_lossy(&out.stderr).replace(sb.path().to_str().unwrap(), "<sb>");
+    let err = String::from_utf8_lossy(&out.stderr)
+        .replace(sb.canonical().to_str().unwrap(), "<sb>")
+        .replace(sb.path().to_str().unwrap(), "<sb>");
     assert!(out.status.success(), "{err}");
     assert_eq!(
         err,

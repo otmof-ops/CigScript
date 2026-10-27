@@ -1,0 +1,4 @@
+# Goldens and scripts compare byte for byte: never let a checkout rewrite their line endings.
+* text=auto eol=lf
+*.png binary
+*.ico binary

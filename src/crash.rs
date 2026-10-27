@@ -244,12 +244,33 @@ fn looks_like_token(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// The home directory as written in the environment and as the operating
+/// system resolves it (macOS keeps `/var` as a link to `/private/var`, so a
+/// working directory can come back in either spelling); longest first.
+fn home_spellings() -> Vec<String> {
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+        return Vec::new();
+    };
+    let raw = home.to_string_lossy().to_string();
+    if raw.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![raw.clone()];
+    if let Ok(canonical) = fs::canonicalize(&raw) {
+        let c = canonical.to_string_lossy().to_string();
+        if c != raw {
+            out.push(c);
+        }
+    }
+    out.sort_by_key(|h| std::cmp::Reverse(h.len()));
+    out
+}
+
 /// Replace the home directory with `~` in a path.
 pub fn tilde(p: &Path) -> String {
     let s = p.to_string_lossy().to_string();
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        let home = home.to_string_lossy().to_string();
-        if !home.is_empty() && s.starts_with(&home) {
+    for home in home_spellings() {
+        if s.starts_with(&home) {
             return format!("~{}", &s[home.len()..]);
         }
     }
@@ -259,11 +280,8 @@ pub fn tilde(p: &Path) -> String {
 /// Redact free text: home paths become `~`, token-shaped words are removed.
 pub fn redact_text(text: &str) -> String {
     let mut out = text.to_string();
-    if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
-        let home = home.to_string_lossy().to_string();
-        if !home.is_empty() {
-            out = out.replace(&home, "~");
-        }
+    for home in home_spellings() {
+        out = out.replace(&home, "~");
     }
     out.split_whitespace()
         .map(|w| if looks_like_token(w) { "<redacted>" } else { w })
