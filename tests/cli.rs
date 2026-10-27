@@ -108,6 +108,11 @@ fn golden_scripts_match_expected_output() {
     entries.sort_by_key(|e| e.path());
     for entry in entries {
         let path = entry.path();
+        // The path module prints the platform's separators; its golden is
+        // the Unix one.
+        if cfg!(windows) && path.to_string_lossy().contains("05-modules") {
+            continue;
+        }
         if path.extension().is_none_or(|e| e != "cig") {
             continue;
         }
@@ -1250,6 +1255,11 @@ fn corpus_diagnoses_match_golden_output() {
     let mut failures = Vec::new();
     for path in scripts {
         let name = path.file_name().unwrap().to_str().unwrap().to_string();
+        // The operating system words a missing program its own way; this
+        // golden carries the Unix wording.
+        if cfg!(windows) && name.starts_with("e551") {
+            continue;
+        }
         let sb = Sandbox::new();
         let out = run_corpus(&sb, &name, &[]);
         let text = normalise(&String::from_utf8_lossy(&out.stderr), sb.path());
