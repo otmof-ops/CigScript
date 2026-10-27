@@ -4,6 +4,8 @@
 //! `cig crash`: local crash reports, and the prompt that follows a crash.
 
 use super::{exit, Ctx};
+use cigscript::burn::journal::Journal;
+use cigscript::burn::runs;
 use cigscript::config::Config;
 use cigscript::crash::{self, CrashReport, SendOutcome};
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -190,6 +192,8 @@ pub fn after_crash(ctx: &Ctx) {
         return;
     };
     let cfg = Config::load();
+    // The files are the person's first worry; the report is cig's.
+    offer_rollback(ctx, &mut report, &cfg);
     let repo = cfg.get("issues_repo");
     match cfg.get("crash_reports").as_str() {
         "never" => {
@@ -247,4 +251,87 @@ pub fn after_crash(ctx: &Ctx) {
             }
         }
     }
+}
+
+/// A crash mid-run leaves its burns in place; the journal (write-ahead, so
+/// it survived) can put the reversible ones back. The journal on disk is
+/// the authority here, never anything from the panicked thread: this is
+/// the same path as `cig unburn` on an interrupted run.
+fn offer_rollback(ctx: &Ctx, report: &mut CrashReport, cfg: &Config) {
+    let Some(id) = report.active_run_id.clone() else {
+        return;
+    };
+    let Ok(Some(rec)) = runs::find(&id) else {
+        return;
+    };
+    let Ok(journal) = Journal::load(&rec.dir()) else {
+        return;
+    };
+    if journal.is_empty() {
+        return;
+    }
+    let total = journal.len();
+    let irreversible: Vec<String> = journal
+        .entries()
+        .iter()
+        .filter(|e| !e.reversible && !e.compensated && e.compensation.is_none() && !e.undone)
+        .map(|e| e.op.describe())
+        .collect();
+    let reversible = total - irreversible.len();
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let interactive = io::stdin().is_terminal() && io::stderr().is_terminal();
+    let put_back = match cfg.get("crash_rollback").as_str() {
+        "always" => {
+            eprintln!(
+                "crash_rollback is \"always\": putting back the {reversible} reversible change{} the run in progress ({id}) made.",
+                plural(reversible)
+            );
+            true
+        }
+        "never" => {
+            eprintln!(
+                "The run in progress ({id}) made {total} change{}: cig unburn {id} puts them back (crash_rollback is \"never\").",
+                plural(total)
+            );
+            false
+        }
+        _ if !interactive => {
+            eprintln!(
+                "The run in progress ({id}) made {total} change{}: cig unburn {id} puts them back.",
+                plural(total)
+            );
+            false
+        }
+        _ => {
+            eprintln!();
+            eprintln!(
+                "The run in progress ({id}) made {total} change{} before cig stopped:",
+                plural(total)
+            );
+            if irreversible.is_empty() {
+                eprintln!("  {reversible} reversible");
+            } else {
+                eprintln!(
+                    "  {reversible} reversible, {} irreversible ({})",
+                    irreversible.len(),
+                    irreversible.join("; ")
+                );
+            }
+            eprint!("Put the reversible ones back now? [Y/n] ");
+            let _ = io::stderr().flush();
+            let mut line = String::new();
+            let _ = io::stdin().lock().read_line(&mut line);
+            !matches!(line.trim().to_ascii_lowercase().as_str(), "n" | "no")
+        }
+    };
+    if put_back {
+        let code = super::runs::unburn(ctx, &id, false, false);
+        report.rolled_back = Some(code == exit::OK);
+    } else {
+        if cfg.get("crash_rollback") == "ask" && interactive {
+            eprintln!("not put back. Later: cig unburn {id}");
+        }
+        report.rolled_back = Some(false);
+    }
+    let _ = crash::write(report);
 }

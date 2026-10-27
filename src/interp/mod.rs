@@ -184,6 +184,12 @@ impl Interp {
     }
 
     pub fn run_program(&mut self, program: &Program) -> Result<(), Diagnostic> {
+        if std::env::var("CIG_INTERNAL_PANIC").as_deref() == Ok("eval") {
+            // Test hook for the crash reporter: a panic from inside the
+            // evaluator, deeper than `main`, so a report's backtrace has
+            // something to name.
+            panic!("deliberate test panic in the evaluator (CIG_INTERNAL_PANIC=eval)");
+        }
         let globals = self.globals.clone();
         let result = self.exec_block_in(&program.body, &globals);
         self.out.flush().ok();

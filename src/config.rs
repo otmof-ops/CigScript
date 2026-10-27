@@ -17,6 +17,11 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "what to do with a crash report: ask, always (file without asking), never (keep local only)",
     ),
     (
+        "crash_rollback",
+        "ask",
+        "after a crash mid-run: ask before putting its reversible burns back, always, or never (print the unburn command)",
+    ),
+    (
         "issues_repo",
         "otmof-ops/CigScript",
         "GitHub repository that receives crash reports (owner/name)",
@@ -102,6 +107,12 @@ impl Config {
             ("crash_reports", other) => {
                 return Err(format!(
                     "crash_reports must be ask, always or never, not `{other}`"
+                ))
+            }
+            ("crash_rollback", "ask" | "always" | "never") => {}
+            ("crash_rollback", other) => {
+                return Err(format!(
+                    "crash_rollback must be ask, always or never, not `{other}`"
                 ))
             }
             ("update_channel", "stable" | "prerelease") => {}

@@ -561,7 +561,10 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
     let cmd = r["command"].as_array().unwrap();
     assert!(cmd.iter().any(|a| a == "--token=<redacted>"), "{cmd:?}");
     assert!(!serde_json::to_string(r).unwrap().contains("supersecret"));
-    assert!(r["panic_location"].as_str().unwrap().starts_with("main.rs"));
+    assert!(r["panic_location"]
+        .as_str()
+        .unwrap()
+        .starts_with("src/main.rs"));
     let id = r["id"].as_str().unwrap().to_string();
     let shown = sb.run_ok(&["crash", "show", &id]);
     assert!(shown.contains("\"fingerprint\""));
@@ -2647,4 +2650,126 @@ fn glob_star_lists_no_empty_entry_and_dot_slash_patterns_match() {
     assert_eq!(lines[2], "[\"scripts/a.sh\", \"scripts/deep\"]");
     assert_eq!(lines[3], "[\"scripts/a.sh\", \"scripts/deep/b.sh\"]");
     assert_eq!(lines[4], "[\"./top.txt\"]");
+}
+
+// ----- crash round: backtraces that name the function (#23), burns put back after a crash (#24)
+
+#[test]
+fn a_release_crash_report_names_the_function_that_panicked() {
+    let sb = Sandbox::new();
+    sb.write("x.cig", "exhale \"never\"\n");
+    let out = sb.cig_env(&["run", "x.cig"], &[("CIG_INTERNAL_PANIC", "eval")]);
+    assert_eq!(out.status.code(), Some(70));
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    let report = &list[0];
+    assert!(
+        report["panic_location"]
+            .as_str()
+            .unwrap()
+            .starts_with("src/interp/"),
+        "{report}"
+    );
+    let bt: Vec<&str> = report["backtrace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap())
+        .collect();
+    assert!(
+        bt.iter().any(|f| f.contains("cigscript::interp")),
+        "no evaluator frame in {bt:?}"
+    );
+    assert!(
+        bt.iter().all(|f| !f.contains("install_hook")),
+        "the hook's own frame is in {bt:?}"
+    );
+}
+
+fn mid_run_script(sb: &Sandbox) {
+    sb.write("old.txt", "old\n");
+    sb.write(
+        "k.cig",
+        "burn {\n  fs.write_text(\"a.txt\", \"1\")\n  fs.write_text(\"old.txt\", \"changed\")\n  fs.write_text(\"b.txt\", \"2\")\n}\n",
+    );
+}
+
+#[test]
+fn a_panic_mid_run_offers_to_put_its_burns_back() {
+    let sb = Sandbox::new();
+    mid_run_script(&sb);
+    sb.run_ok(&["config", "crash_rollback", "always"]);
+    let out = sb.cig_env(&["run", "k.cig"], &[("CIG_INTERNAL_PANIC", "after-burn")]);
+    assert_eq!(out.status.code(), Some(70));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("crash_rollback is \"always\""), "{stderr}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("restored") || stdout.contains("removed"),
+        "the rollback report was not printed:\n{stdout}\n{stderr}"
+    );
+    assert!(!sb.exists("a.txt"), "a.txt was not put back:\n{stderr}");
+    assert!(!sb.exists("b.txt"), "b.txt was written after the crash");
+    assert_eq!(sb.read("old.txt"), "old\n");
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    assert_eq!(list[0]["rolled_back"], serde_json::Value::Bool(true));
+    assert!(list[0]["active_run_id"].is_string(), "{}", list[0]);
+}
+
+#[test]
+fn without_a_terminal_the_crash_names_the_unburn_command() {
+    let sb = Sandbox::new();
+    mid_run_script(&sb);
+    let out = sb.cig_env(&["run", "k.cig"], &[("CIG_INTERNAL_PANIC", "after-burn")]);
+    assert_eq!(out.status.code(), Some(70));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert!(
+        stderr.contains(&format!("cig unburn {id} puts them back")),
+        "{stderr}"
+    );
+    assert!(sb.exists("a.txt"), "nothing was asked, so nothing moves");
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    assert_eq!(list[0]["rolled_back"], serde_json::Value::Bool(false));
+    // The command it named works, and puts the files back.
+    sb.run_ok(&["unburn", &id]);
+    assert!(!sb.exists("a.txt"));
+    assert_eq!(sb.read("old.txt"), "old\n");
+}
+
+#[test]
+fn crash_rollback_never_leaves_the_run_interrupted() {
+    let sb = Sandbox::new();
+    mid_run_script(&sb);
+    sb.run_ok(&["config", "crash_rollback", "always"]);
+    let out = sb.cig_env(&["run", "k.cig"], &[("CIG_INTERNAL_PANIC", "after-burn")]);
+    assert_eq!(out.status.code(), Some(70));
+    let run = &sb.runs()[0];
+    assert_eq!(run["status"], "unburned", "{run}");
+    assert_eq!(run["rolled_back"], serde_json::Value::Bool(true));
+    // A second unburn is refused like any other repeat: the record was written.
+    let id = run["id"].as_str().unwrap().to_string();
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(err.contains("error[E705 burn]"), "{err}");
+}
+
+#[test]
+fn the_crash_rollback_reads_the_journal_not_the_panicked_state() {
+    // The second op was journaled (its snapshot of old.txt taken) and never
+    // executed; the restore comes from that snapshot on disk, so old.txt is
+    // byte for byte what it was, and the created file goes.
+    let sb = Sandbox::new();
+    mid_run_script(&sb);
+    sb.run_ok(&["config", "crash_rollback", "always"]);
+    let out = sb.cig_env(&["run", "k.cig"], &[("CIG_INTERNAL_PANIC", "after-burn")]);
+    assert_eq!(out.status.code(), Some(70));
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["--json", "runs", &id]);
+    let v: serde_json::Value = serde_json::from_str(&shown).unwrap();
+    let journal = v["journal"].as_array().unwrap();
+    assert_eq!(journal.len(), 2, "{journal:?}");
+    assert_eq!(sb.read("old.txt"), "old\n");
+    assert!(!sb.exists("a.txt"));
 }
