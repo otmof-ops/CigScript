@@ -1509,6 +1509,7 @@ fn plain_mode_drops_the_catchphrases_and_keeps_the_facts() {
 }
 
 #[test]
+#[cfg(unix)]
 fn report_bundles_a_run_redacted() {
     let sb = Sandbox::new();
     run_corpus(&sb, "e551-not-on-path.cig", &[]);
@@ -1771,6 +1772,7 @@ fn chain_dry_run_reads_ghost_write() {
 }
 
 #[test]
+#[cfg(unix)]
 fn dry_run_reads_see_the_ghost_filesystem() {
     let sb = Sandbox::new();
     sb.write("real.txt", "disk");
@@ -2072,6 +2074,7 @@ fn a_cross_device_move_rolls_back_by_copying() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_hardlinked_file_is_restored_in_place() {
     let sb = Sandbox::new();
     sb.write("orig", "before");
@@ -2115,6 +2118,7 @@ fn setuid_and_sticky_bits_survive_rollback() {
 }
 
 #[test]
+#[cfg(unix)]
 fn a_named_pipe_is_refused_not_hung() {
     use wait_timeout::ChildExt;
     let sb = Sandbox::new();
@@ -2603,6 +2607,7 @@ fn a_semicolon_may_follow_a_block_statement() {
 }
 
 #[test]
+#[cfg(unix)]
 fn glob_star_lists_no_empty_entry_and_dot_slash_patterns_match() {
     let sb = Sandbox::new();
     sb.write("scripts/a.sh", "");
