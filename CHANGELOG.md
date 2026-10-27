@@ -28,6 +28,15 @@ project follows semantic versioning.
   FreeBSD, and says so on Android. (#49)
 - **`cig update` with a `gh` that is not logged in** falls back to the
   public API through curl instead of failing. (#35)
+- **One resolver finds a hop's program.** `proc.run`, `proc.which`, every
+  `proc.pipe` stage and the shell behind `proc.shell` agree on what starts:
+  a name with a separator is a path against the hop's `cwd` on every
+  platform; a bare name is searched on `PATH` with `PATHEXT` on Windows,
+  so `npm` is `npm.cmd`; System32's `bash.exe` (the WSL launcher) and
+  `wsl.exe` are never chosen for `bash` or `sh`. (#42)
+- **`proc.shell` on Windows** runs under `sh -c` when an `sh` is on PATH
+  (Git for Windows, MSYS2) and otherwise under `cmd /d /s /c` with the line
+  reaching cmd as written; the plan line names the shell. (#43)
 
 ## 1.2.1 — 2026-10-27
 

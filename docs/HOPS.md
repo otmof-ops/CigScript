@@ -120,6 +120,31 @@ already have changed; `{retry_irreversible: true}` says you know.
 **Determinism holds across hops.** Same inputs, same plan. A child's output
 may vary; the plan does not, because CigScript itself did nothing different.
 
+## How a program is found
+
+One resolver answers for `proc.run`, `proc.which`, every `proc.pipe` stage
+and the shell behind `proc.shell`, so what `proc.which` names is what starts.
+
+- A name with a path separator is a path, made absolute against the hop's
+  `cwd` (`./gradlew` with `cwd: "api"` is `api/gradlew`), on every platform.
+  Windows itself would resolve it against the parent's directory.
+- A bare name is searched on `PATH`, never in the current directory. On
+  Unix the first executable file wins. On Windows each directory is tried
+  with each `PATHEXT` extension in order (`.COM;.EXE;.BAT;.CMD` by default),
+  so `npm` is `npm.cmd` and `node` is `node.exe`; a name that already ends
+  in one of them is taken as spelled. A `.bat` or `.cmd` found this way is
+  started by its full path, which Rust runs through `cmd.exe` with safe
+  argument quoting and refuses arguments it cannot quote.
+- `bash` and `sh` on Windows mean a shell: System32's `bash.exe` (the WSL
+  launcher) and `wsl.exe` are never chosen, whatever the order of `PATH`.
+  With no other shell on `PATH` the hop fails as `E551` and the hint names
+  Git for Windows.
+- `proc.shell` runs its line with `sh -c` everywhere an `sh` is found, Git
+  for Windows and MSYS2 included; without one it runs `cmd /d /s /c` and
+  the line reaches cmd exactly as written, in one pair of quotes that `/s`
+  strips. The plan line says which (`run sh -c …` or `run cmd /d /s /c …`),
+  so a dry run is honest about the shell.
+
 ## Pipelines without a shell
 
 ```cig

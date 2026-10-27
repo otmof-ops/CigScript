@@ -3639,3 +3639,115 @@ fn a_read_only_file_under_touches_is_kept_in_the_tin() {
         0o444
     );
 }
+
+// ----- finding programs (#42, #43): one resolver for run, which and shell, on every OS
+
+#[test]
+fn a_relative_program_resolves_against_the_hops_cwd() {
+    let sb = Sandbox::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        sb.write("sub/tool.sh", "#!/bin/sh\necho from-sub\n");
+        fs::set_permissions(
+            sb.path().join("sub/tool.sh"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        sb.write(
+            "s.cig",
+            "burn { exhale proc.text(\"./tool.sh\", [], {cwd: \"sub\"}) }\n",
+        );
+    }
+    #[cfg(windows)]
+    {
+        sb.write("sub/tool.cmd", "@echo off\r\necho from-sub\r\n");
+        // No extension given: PATHEXT finds tool.cmd beside the hop's cwd.
+        sb.write(
+            "s.cig",
+            "burn { exhale proc.text(\"./tool\", [], {cwd: \"sub\"}) }\n",
+        );
+    }
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(out.trim(), "from-sub");
+}
+
+#[cfg(windows)]
+#[test]
+fn npm_resolves_to_npm_cmd_on_windows() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "exhale proc.which(\"npm\")\nexhale proc.which(\"node\")\nburn { exhale proc.text(\"npm\", [\"--version\"]) }\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert!(lines[0].to_ascii_lowercase().ends_with("npm.cmd"), "{out}");
+    assert!(lines[1].to_ascii_lowercase().ends_with("node.exe"), "{out}");
+    assert!(
+        lines[2]
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false),
+        "{out}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn which_and_run_agree_on_windows() {
+    let sb = Sandbox::new();
+    // A program with its extension spelled, one without, and a path.
+    sb.write("tools/hello.bat", "@echo off\r\necho hello\r\n");
+    sb.write(
+        "s.cig",
+        "exhale proc.which(\"node.exe\") == proc.which(\"node\")\nexhale proc.which(\"tools/hello\")\nburn { exhale proc.text(\"tools/hello\", []) }\nexhale proc.which(\"no-such-program-anywhere\")\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "true", "{out}");
+    assert!(
+        lines[1].to_ascii_lowercase().ends_with("hello.bat"),
+        "{out}"
+    );
+    assert_eq!(lines[2].trim(), "hello", "{out}");
+    assert_eq!(lines[3], "null", "{out}");
+}
+
+#[cfg(windows)]
+#[test]
+fn bash_on_windows_is_not_the_wsl_launcher() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "exhale proc.which(\"bash\")\nexhale proc.which(\"sh\")\nburn { exhale proc.text(\"bash\", [\"-c\", \"echo $((20+22))\"]) }\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    let lines: Vec<&str> = out.lines().collect();
+    for which in &lines[..2] {
+        let lower = which.to_ascii_lowercase();
+        assert!(
+            !lower.contains("system32") && !lower.contains("syswow64"),
+            "{out}"
+        );
+        assert!(lower.ends_with(".exe"), "{out}");
+    }
+    assert_eq!(lines[2].trim(), "42", "{out}");
+}
+
+#[cfg(windows)]
+#[test]
+fn proc_shell_on_windows_runs_sh_when_present() {
+    let sb = Sandbox::new();
+    // Git for Windows puts sh on PATH on the runners: a POSIX line works,
+    // and the plan names the shell that ran it.
+    sb.write(
+        "s.cig",
+        "burn { exhale proc.shell(\"x=$((6*7)); echo \\\"answer $x\\\"\").out.trim() }\n",
+    );
+    let out = sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(out.trim(), "answer 42", "{out}");
+    let plan = sb.run_ok(&["run", "--dry-run", "s.cig"]);
+    assert!(plan.contains("run sh -c"), "{plan}");
+}

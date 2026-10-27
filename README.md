@@ -389,6 +389,10 @@ for.
 | a hop runs `chmod` on a file, which changes neither its size nor its time | seen, and put back where the file was in the tin; said to be irreversible where it was not | 1.3.0 | `the_tin_restores_a_mode_changed_by_a_hop` |
 | a file dated 2020 is edited by a hop or a native write, then the run fails | it comes back dated 2020, so mtime-driven tools see nothing | 1.3.0 | `the_tin_restores_mtime` |
 | a read-only file under `touches` | kept in the tin like any other, and restored read-only | 1.3.0 | `a_read_only_file_under_touches_is_kept_in_the_tin` |
+| `proc.run("./tool", [], {cwd: "sub"})` | the program is found beside the hop's own directory on every platform | 1.3.0 | `a_relative_program_resolves_against_the_hops_cwd` |
+| `proc.run("npm", ...)` on Windows | `npm.cmd` is found through `PATHEXT` and started; `proc.which` names the same file | 1.3.0 | `npm_resolves_to_npm_cmd_on_windows` |
+| `proc.run("bash", ...)` on Windows with WSL installed | Git's bash runs, never System32's WSL launcher | 1.3.0 | `bash_on_windows_is_not_the_wsl_launcher` |
+| `proc.shell("x=$((6*7)); echo $x")` on Windows | runs under `sh` when one is on PATH, and the plan says so | 1.3.0 | `proc_shell_on_windows_runs_sh_when_present` |
 | unbounded recursion | clean `E506` at depth 4000 | 1.0.0 | `unbounded_recursion_is_a_clean_e506` |
 | `MAX + 1`, `(MAX + MAX) / 2`, `1.0 / 0.0`, `0.0 / 0.0` | diagnostics, never silent | 1.0.0 | `arithmetic_edges_are_diagnostics_never_silent` |
 | delete a symlink, `unburn` | **came back as a regular file**; now a symlink, dangling or not, inside restored trees too | fixed 1.1.0 | `symlinks_roll_back_as_symlinks` |
