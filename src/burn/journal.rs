@@ -438,7 +438,9 @@ impl Journal {
             })
         } else {
             copy_file_with_mode(path, &snap)?;
-            fs::File::open(&snap)?.sync_all()?;
+            // Opened for writing: Windows refuses to flush a handle opened
+            // read-only ("access is denied"), and the snapshot must be durable.
+            fs::OpenOptions::new().write(true).open(&snap)?.sync_all()?;
             sync_dir(&dir.join("snapshots"))?;
             let sha256 = sha256_file(&snap)?;
             Ok(BeforeState {
@@ -1148,7 +1150,7 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
         } else if entry.file_type().is_file() {
             copy_file_with_mode(entry.path(), &dest)?;
             if durable {
-                fs::File::open(&dest)?.sync_all()?;
+                fs::OpenOptions::new().write(true).open(&dest)?.sync_all()?;
             }
         } else {
             return Err(io::Error::other(format!(
