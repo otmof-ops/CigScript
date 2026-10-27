@@ -263,19 +263,189 @@ fn hop_label(cmd: &str, args: &[String]) -> String {
     parts.join(" ")
 }
 
+/// The Windows `PATHEXT` list, lower-cased with the dots, or the default.
+#[cfg(windows)]
+fn pathext() -> Vec<String> {
+    let raw = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let mut out: Vec<String> = raw
+        .split(';')
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| e.starts_with('.'))
+        .collect();
+    if out.is_empty() {
+        out = vec![".com".into(), ".exe".into(), ".bat".into(), ".cmd".into()];
+    }
+    out
+}
+
+/// Is this directory Windows' System32 (or SysWOW64), where `bash.exe` is
+/// the WSL launcher and `wsl.exe` lives? A hop asking for `bash` or `sh`
+/// means a shell, never WSL, so those directories are skipped for them.
+#[cfg(windows)]
+fn is_system_dir(dir: &std::path::Path) -> bool {
+    let root = std::env::var_os("SystemRoot")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("C:\\Windows"));
+    let lower = dir.to_string_lossy().to_ascii_lowercase();
+    for sub in ["system32", "syswow64"] {
+        let sys = root.join(sub).to_string_lossy().to_ascii_lowercase();
+        if lower.trim_end_matches('\\') == sys.trim_end_matches('\\') {
+            return true;
+        }
+    }
+    false
+}
+
+/// A candidate on PATH that a hop could start: a regular file, executable
+/// where the platform says so.
+fn startable(p: &std::path::Path) -> bool {
+    let Ok(m) = std::fs::metadata(p) else {
+        return false;
+    };
+    if !m.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        m.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// Where a hop's program is: the file `proc.run` would start for `name`,
+/// so `proc.which` and `proc.run` can never disagree. A name with a path
+/// separator is a path, made absolute against the hop's working directory
+/// (the platform's own answer differs: Windows resolves it against the
+/// parent's directory). A bare name is searched on `PATH`: on Unix the
+/// first executable file; on Windows each directory in turn with each
+/// `PATHEXT` extension (`npm` is `npm.cmd`), never the WSL launcher in
+/// System32 for `bash` or `sh`, and never the current directory.
+pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    if name.is_empty() {
+        return None;
+    }
+    let is_path = name.contains('/') || name.contains(std::path::MAIN_SEPARATOR);
+    if is_path {
+        let given = Path::new(name);
+        let base: PathBuf = if given.is_absolute() {
+            given.to_path_buf()
+        } else {
+            let dir = cwd
+                .map(Path::to_path_buf)
+                .or_else(|| std::env::current_dir().ok())
+                .unwrap_or_default();
+            dir.join(given)
+        };
+        // Absolute, always: a relative program handed to `Command` with
+        // a `cwd` is resolved against that cwd by the child, which is not
+        // where it was found.
+        let absolute = |p: PathBuf| std::path::absolute(&p).unwrap_or(p);
+        if startable(&base) {
+            return Some(absolute(base));
+        }
+        #[cfg(windows)]
+        if base.extension().is_none() {
+            for ext in pathext() {
+                let mut with = base.clone().into_os_string();
+                with.push(&ext);
+                let with = PathBuf::from(with);
+                if startable(&with) {
+                    return Some(absolute(with));
+                }
+            }
+        }
+        return None;
+    }
+    let paths = std::env::var_os("PATH")?;
+    #[cfg(windows)]
+    {
+        let exts = pathext();
+        let lower = name.to_ascii_lowercase();
+        let shell_name = matches!(lower.as_str(), "bash" | "sh" | "bash.exe" | "sh.exe");
+        let has_known_ext = Path::new(&lower)
+            .extension()
+            .map(|e| exts.iter().any(|x| x[1..] == e.to_string_lossy()))
+            .unwrap_or(false);
+        for dir in std::env::split_paths(&paths) {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            if shell_name && is_system_dir(&dir) {
+                continue;
+            }
+            if has_known_ext {
+                let c = dir.join(name);
+                if startable(&c) {
+                    return Some(std::path::absolute(&c).unwrap_or(c));
+                }
+                continue;
+            }
+            for ext in &exts {
+                let c = dir.join(format!("{name}{ext}"));
+                if startable(&c) {
+                    return Some(std::path::absolute(&c).unwrap_or(c));
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        for dir in std::env::split_paths(&paths) {
+            if dir.as_os_str().is_empty() {
+                continue;
+            }
+            let c = dir.join(name);
+            if startable(&c) {
+                return Some(std::path::absolute(&c).unwrap_or(c));
+            }
+        }
+        None
+    }
+}
+
 /// Build a `Command` the same way for every hop: no shell, its own process
 /// group, `NO_COLOR` set, the run id passed down, and either the inherited
-/// environment plus the script's additions or a clean documented one.
+/// environment plus the script's additions or a clean documented one. The
+/// program is resolved first (`resolve_program`), so what starts is what
+/// `proc.which` names; a name nothing resolves is handed to the platform
+/// as written, which reports it as not found.
 fn command(cmd: &str, args: &[String], o: &Options) -> Command {
-    let mut c = Command::new(cmd);
-    c.args(args)
-        .stdin(if o.stdin.is_some() {
-            Stdio::piped()
+    let program =
+        resolve_program(cmd, o.cwd.as_deref()).unwrap_or_else(|| std::path::PathBuf::from(cmd));
+    let mut c = Command::new(program);
+    #[cfg(windows)]
+    {
+        // `cmd /d /s /c <line>`: the line reaches cmd exactly as written,
+        // in one pair of quotes that /s strips, instead of re-quoted by
+        // the C runtime's rules, which cmd does not read.
+        let cmd_line = cmd.eq_ignore_ascii_case("cmd")
+            && args.len() == 4
+            && args[0] == "/d"
+            && args[1] == "/s"
+            && args[2] == "/c";
+        if cmd_line {
+            use std::os::windows::process::CommandExt;
+            c.args(&args[..3]);
+            c.raw_arg(format!("\"{}\"", args[3]));
         } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+            c.args(args);
+        }
+    }
+    #[cfg(not(windows))]
+    c.args(args);
+    c.stdin(if o.stdin.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     if let Some(dir) = &o.cwd {
         c.current_dir(dir);
     }
@@ -452,6 +622,21 @@ fn spawn_error(name: &str, cmd: &str, e: std::io::Error, s: Span) -> Diagnostic 
         .at(s)
         .with_subject(cmd.to_string())
         .with_hint("name the program inside it, or check the path");
+    }
+    #[cfg(windows)]
+    if e.kind() == std::io::ErrorKind::NotFound
+        && matches!(
+            cmd.to_ascii_lowercase().as_str(),
+            "bash" | "sh" | "bash.exe" | "sh.exe"
+        )
+    {
+        return runtime(format!(
+            "{name}: could not start `{cmd}`: no shell of that name is on PATH outside System32"
+        ))
+        .code("E551")
+        .at(s)
+        .with_subject(cmd.to_string())
+        .with_hint("Git for Windows or MSYS2 put bash and sh on PATH; the WSL launcher in System32 is never used for a hop");
     }
     let (code, hint) = match e.kind() {
         std::io::ErrorKind::NotFound => (
@@ -929,13 +1114,35 @@ fn kv(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
 /// `proc.shell(command, opts)`: the shell, by name, for the honest cases.
 /// Everything you pass is interpreted by `sh -c`; that is where injection
 /// lives, so this verb exists so that `proc.run` does not have to.
+/// The shell `proc.shell` runs a line with, as a program and the arguments
+/// before the line. Unix: `sh -c`. Windows: `sh -c` too when an `sh` is on
+/// PATH (Git for Windows and MSYS2 ship one; the WSL launcher does not
+/// count), else `cmd /d /s /c` with the line reaching cmd exactly as
+/// written. The plan names which, so a dry run is honest about it.
+pub fn shell_command(cwd: Option<&std::path::Path>) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        if resolve_program("sh", cwd).is_some() {
+            ("sh".to_string(), vec!["-c".to_string()])
+        } else {
+            (
+                "cmd".to_string(),
+                vec!["/d".to_string(), "/s".to_string(), "/c".to_string()],
+            )
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cwd;
+        ("sh".to_string(), vec!["-c".to_string()])
+    }
+}
+
 fn shell(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let script = expect_str(a, 0, "proc.shell", s)?.to_string();
     let o = Options::parse(a, 1, "proc.shell", s, None)?;
-    #[cfg(windows)]
-    let (cmd, args) = ("cmd".to_string(), vec!["/C".to_string(), script.clone()]);
-    #[cfg(not(windows))]
-    let (cmd, args) = ("sh".to_string(), vec!["-c".to_string(), script.clone()]);
+    let (cmd, mut args) = shell_command(o.cwd.as_deref());
+    args.push(script.clone());
     match hop(i, "proc.shell", &cmd, &args, &o, s)? {
         None => Ok(result_map(0, "", "", 0, true)),
         Some((raw, out, err)) => Ok(result_map(raw.code, &out, &err, raw.duration_ms, false)),
@@ -1201,26 +1408,21 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
 
 fn which(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let name = expect_str(a, 0, "proc.which", s)?;
-    // A name with a slash is a path, resolved as proc.run would: against
-    // the current directory, never PATH.
-    if name.contains('/') || name.contains(std::path::MAIN_SEPARATOR) {
-        let p = std::path::Path::new(name);
-        return Ok(if p.is_file() {
-            Value::str(p.to_string_lossy())
-        } else {
-            Value::Null
-        });
-    }
-    let Some(paths) = std::env::var_os("PATH") else {
-        return Ok(Value::Null);
-    };
-    for dir in std::env::split_paths(&paths) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Ok(Value::str(candidate.to_string_lossy()));
+    // Exactly what proc.run would start: a path against the current
+    // directory, a bare name on PATH (with PATHEXT on Windows). A path is
+    // answered as it was spelled, unless PATHEXT completed its name.
+    let is_path = name.contains('/') || name.contains(std::path::MAIN_SEPARATOR);
+    Ok(match resolve_program(name, None) {
+        Some(p) => {
+            let same_name = p.file_name() == std::path::Path::new(name).file_name();
+            if is_path && same_name {
+                Value::str(name)
+            } else {
+                Value::str(p.to_string_lossy())
+            }
         }
-    }
-    Ok(Value::Null)
+        None => Value::Null,
+    })
 }
 
 fn cigscript_burn(msg: String) -> Diagnostic {
