@@ -295,6 +295,7 @@ static check (`cig check`): a mistake found before anything runs.
 | [`E306`](#e306-already-declared) | already declared | not one of the four | assign with `name = ...` the second time, or choose another name |
 | [`E307`](#e307-unknown-module-member) | unknown module member | can't see any ciggies bro | use the member the hint suggests; `cig language` lists every one |
 | [`E308`](#e308-shell-through-proc.run) | shell through proc.run | not one of the four | call the program directly with its arguments as a list; proc.pipe for a pipeline; proc.shell if you mean the shell and the string is yours |
+| [`E309`](#e309-newer-than-the-pin) | newer than the pin | not one of the four | raise the pin to the version the feature arrived in (cig pin <file> infers it), or drop the feature |
 
 ### E300 check error
 
@@ -441,6 +442,23 @@ proc.run is handed a shell (`sh -c`, `bash -c`, `cmd /C`) with a command string 
 **Known causes**, ranked; doctor checks them in this order:
 
 1. a value that came from outside the script is spliced into a shell command (probe `source-line`). **Remedy:** pass the value as its own argument to the program; the shell never sees it
+
+
+### E309 newer than the pin
+
+*check · since 1.2.0 · arises in check, run*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The script is pinned to a cig older than something it uses: the pinned version would refuse the script, or run it wrong.
+
+**What to type next:** raise the pin to the version the feature arrived in (cig pin <file> infers it), or drop the feature
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the pin was written before the script started using the feature (probe `source-line`). **Remedy:** cig pin <file> rewrites the pin from what the script uses
+
+Related: `E807`.
 
 
 ## type (`E400`–`E499`)

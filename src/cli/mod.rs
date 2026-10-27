@@ -190,6 +190,12 @@ pub struct RunArgs {
     /// Step budget before "your loop never ends" (E515); 0 disables it (also: CIG_MAX_STEPS).
     #[arg(long, value_name = "N")]
     pub max_steps: Option<u64>,
+    /// Compare this cig's plan with the script's last good version before running, fetching that version if needed.
+    #[arg(long, conflicts_with = "no_trial")]
+    pub trial: bool,
+    /// Run here without comparing plans with the last good version.
+    #[arg(long)]
+    pub no_trial: bool,
     /// Arguments passed to the script as `args`.
     #[arg(last = true)]
     pub args: Vec<String>,
@@ -213,6 +219,12 @@ pub struct LightArgs {
     /// Step budget before "your loop never ends" (E515); 0 disables it (also: CIG_MAX_STEPS).
     #[arg(long, value_name = "N")]
     pub max_steps: Option<u64>,
+    /// Compare this cig's plan with the script's last good version before running, fetching that version if needed.
+    #[arg(long, conflicts_with = "no_trial")]
+    pub trial: bool,
+    /// Run here without comparing plans with the last good version.
+    #[arg(long)]
+    pub no_trial: bool,
     /// Arguments passed to the script as `args`.
     #[arg(last = true)]
     pub args: Vec<String>,
@@ -265,6 +277,8 @@ pub fn main() -> i32 {
                 no_rollback: a.no_rollback,
                 no_check: a.no_check,
                 max_steps: a.max_steps,
+                trial: a.trial,
+                no_trial: a.no_trial,
                 args: a.args,
             },
             Some(a.chain),

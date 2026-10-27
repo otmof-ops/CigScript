@@ -66,6 +66,10 @@ pub struct RunRecord {
     /// Process id of the run, to tell an interrupted run from a live one.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// What the trial found before this run: the versions compared, whether
+    /// their plans agreed, and what was done about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<serde_json::Value>,
     /// The directory this record was read from, which is where its journal
     /// is even when the directory no longer matches the id.
     #[serde(skip)]
@@ -104,6 +108,7 @@ impl RunRecord {
             rolled_back: false,
             rollback_failed: Vec::new(),
             pid: Some(std::process::id()),
+            trial: None,
             loaded_from: None,
         }
     }
@@ -139,6 +144,7 @@ impl RunRecord {
             rolled_back: false,
             rollback_failed: Vec::new(),
             pid: None,
+            trial: None,
             loaded_from: None,
         }
     }
@@ -308,6 +314,16 @@ pub fn list() -> io::Result<Vec<RunRecord>> {
     // Newest first; `started` carries milliseconds, ids only seconds.
     out.sort_by(|a, b| b.started.cmp(&a.started).then_with(|| b.id.cmp(&a.id)));
     Ok(out)
+}
+
+/// The last good version of a script: the cig that lit the newest run of
+/// this exact source (by hash) that went through, with that run's id.
+pub fn last_good(script_sha256: &str) -> Option<(crate::update::Version, String)> {
+    list().ok()?.into_iter().find_map(|r| {
+        (r.script_sha256 == script_sha256 && r.status == "ok" && r.mode == "run")
+            .then(|| r.written_by().map(|v| (v, r.id.clone())))
+            .flatten()
+    })
 }
 
 /// Resolve a full id or a unique prefix to a run directory.

@@ -363,6 +363,9 @@ for.
 | a script pinned to a cig that is neither installed nor on the shelf | refused with the version and the command that fetches it, never run on the wrong cig | 1.2.0 | `a_pinned_script_names_the_version_it_needs` |
 | a journal from a newer cig, unburned by an older one | refused by its format number, or handed to the cig that wrote it | 1.2.0 | `unburn_hands_an_old_journal_to_the_cig_that_wrote_it` |
 | a release asset whose checksum does not match | never kept, never run | 1.2.0 | `a_humidor_binary_with_the_wrong_hash_is_never_run` |
+| a script that uses a builtin newer than its pin | caught by `cig check` before anything runs | 1.2.0 | `a_script_pinned_below_a_builtin_it_calls_is_caught_before_it_runs` |
+| an upgrade that changes what a script would do | the plans are compared first; the proved version runs it | 1.2.0 | `identical_plans_run_on_the_new_version` |
+| a run that fails on the new cig after an irreversible op | not tried again on the old one | 1.2.0 | `a_failed_reversible_run_falls_back_and_an_irreversible_one_stops` |
 | unbounded recursion | clean `E506` at depth 4000 | 1.0.0 | `unbounded_recursion_is_a_clean_e506` |
 | `MAX + 1`, `(MAX + MAX) / 2`, `1.0 / 0.0`, `0.0 / 0.0` | diagnostics, never silent | 1.0.0 | `arithmetic_edges_are_diagnostics_never_silent` |
 | delete a symlink, `unburn` | **came back as a regular file**; now a symlink, dangling or not, inside restored trees too | fixed 1.1.0 | `symlinks_roll_back_as_symlinks` |

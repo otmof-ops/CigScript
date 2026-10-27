@@ -2779,6 +2779,7 @@ fn the_crash_rollback_reads_the_journal_not_the_panicked_state() {
     assert_eq!(journal.len(), 2, "{journal:?}");
     assert_eq!(sb.read("old.txt"), "old\n");
     assert!(!sb.exists("a.txt"));
+}
 
 // ----- pins and the humidor (#22): a script runs on the cig it was written for
 
@@ -2910,7 +2911,7 @@ fn a_pin_is_written_under_the_shebang_by_cig_pin() {
     sb.run_ok(&["pin", "s.cig"]);
     assert_eq!(
         sb.read("s.cig"),
-        "#!/usr/bin/env cig\n# cig 1.1\nexhale 1\n"
+        "#!/usr/bin/env cig\n# cig >=1.0.0\nexhale 1\n"
     );
     sb.run_ok(&["pin", "s.cig", "--to", ">=1.1.2"]);
     assert_eq!(
@@ -3043,5 +3044,218 @@ fn unburn_hands_an_old_journal_to_the_cig_that_wrote_it() {
         String::from_utf8_lossy(&out.stderr).contains("unburn handed to cig 9.9.9"),
         "{}",
         String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ----- #22, the automatic part: the since table, last good, the trial and the fallback
+
+#[test]
+fn a_script_pinned_below_a_builtin_it_calls_is_caught_before_it_runs() {
+    let sb = Sandbox::new();
+    // proc.text arrived in 1.1.0; a pin that allows 1.0.0 contradicts it.
+    sb.write(
+        "p.cig",
+        "# cig >=1.0.0\nburn { stick r = proc.text(\"true\", []) }\n",
+    );
+    let err = sb.run_err(&["check", "--deny-warnings", "p.cig"], 2);
+    assert!(
+        err.contains("warning[E309 check]") && err.contains("proc.text") && err.contains("1.1.0"),
+        "{err}"
+    );
+    sb.write(
+        "q.cig",
+        "# cig >=1.1.0\nburn { stick r = proc.text(\"true\", []) }\n",
+    );
+    sb.run_ok(&["check", "--deny-warnings", "q.cig"]);
+    // cig pin writes what the script needs, and check --json says the same.
+    sb.write("r.cig", "burn { stick r = proc.text(\"true\", []) }\n");
+    sb.run_ok(&["pin", "r.cig"]);
+    assert!(
+        sb.read("r.cig").starts_with("# cig >=1.1.0\n"),
+        "{}",
+        sb.read("r.cig")
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "check", "r.cig"])).unwrap();
+    assert_eq!(v["pin"], ">=1.1.0");
+    assert_eq!(v["needs"], "1.1.0");
+    assert_eq!(v["uses"][0]["what"], "proc.text");
+    assert!(v["last_good"].is_null(), "{v}");
+    sb.write("plain.cig", "exhale 1\n");
+    sb.run_ok(&["pin", "plain.cig"]);
+    assert_eq!(sb.read("plain.cig"), "# cig >=1.0.0\nexhale 1\n");
+}
+
+#[test]
+fn the_newest_ok_run_names_the_last_good_version() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "exhale 1\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let sha = sb.runs()[0]["script_sha256"].as_str().unwrap().to_string();
+    let v: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "check", "s.cig"])).unwrap();
+    assert_eq!(v["last_good"], env!("CARGO_PKG_VERSION"), "{v}");
+    // A later ok run by an older cig is the last good one; a later failed run is not.
+    for (id, started, version, status) in [
+        (
+            "20991231T000000-aaaaaa",
+            "2099-12-31T00:00:00.000Z",
+            "1.0.0",
+            "ok",
+        ),
+        (
+            "20991231T000001-bbbbbb",
+            "2099-12-31T00:00:01.000Z",
+            "1.0.5",
+            "error",
+        ),
+    ] {
+        write_run(
+            &sb,
+            id,
+            serde_json::json!({"id": id, "format": 1, "version": version, "script": "s.cig", "script_sha256": sha,
+                "args": [], "cwd": "", "mode": "run", "started": started, "finished": started, "status": status,
+                "burns": 0, "irreversible": 0}),
+            "{\"format\":1}\n",
+        );
+    }
+    let v: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "check", "s.cig"])).unwrap();
+    assert_eq!(v["last_good"], "1.0.0", "{v}");
+}
+
+/// A fake cig on the shelf that hands back a recorded plan for a dry run
+/// and reports itself for a real one.
+#[cfg(unix)]
+fn shelf_fake_with_plan(sb: &Sandbox, version: &str, plan_path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let home = sb.home().join("humidor").join(version);
+    fs::create_dir_all(&home).unwrap();
+    let fake = home.join("cig");
+    fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *--dry-run*) cat \"{}\" ;;\n  *) echo \"fake cig {version} ran it: $*\" ;;\nesac\n",
+            plan_path.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+fn prove_on(sb: &Sandbox, script: &str, version: &str) {
+    let sha = cigscript::burn::journal::sha256_file(&sb.path().join(script)).unwrap();
+    let id = format!("20990101T000000-{}", &sha[..6]);
+    write_run(
+        sb,
+        &id,
+        serde_json::json!({"id": id, "format": 1, "version": version, "script": script, "script_sha256": sha,
+            "args": [], "cwd": "", "mode": "run", "started": "2099-01-01T00:00:00.000Z",
+            "finished": "2099-01-01T00:00:01.000Z", "status": "ok", "burns": 1, "irreversible": 0}),
+        "{\"format\":1}\n",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn identical_plans_run_on_the_new_version() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn { fs.write_text(\"out.txt\", \"made\") }\nexhale \"done\"\n",
+    );
+    let plan = sb.run_ok(&["--json", "run", "--dry-run", "s.cig"]);
+    let plan_path = sb.write("plan.json", &plan);
+    shelf_fake_with_plan(&sb, "1.0.0", &plan_path);
+    prove_on(&sb, "s.cig", "1.0.0");
+    let out = sb.cig(&["run", "s.cig"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
+    assert!(
+        stderr.contains("identical plans") && stderr.contains("running on"),
+        "{stderr}"
+    );
+    assert_eq!(sb.read("out.txt"), "made");
+    let runs = sb.runs();
+    let run = runs
+        .iter()
+        .find(|r| r["version"] == env!("CARGO_PKG_VERSION"))
+        .unwrap();
+    assert_eq!(run["trial"]["same"], true, "{run}");
+    assert_eq!(run["trial"]["compared"][0], "1.0.0");
+    // Plans that differ hand the run to the proved version.
+    sb.write("plan.json", &plan.replace("write ", "write elsewhere/"));
+    let out = sb.cig(&["run", "s.cig"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "fake cig 1.0.0 ran it: run s.cig\n",
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("plans differ") || stderr.contains("plans 1 op"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("running on cig 1.0.0"), "{stderr}");
+    // And --no-trial runs here regardless.
+    let out = sb.cig(&["run", "--no-trial", "s.cig"]);
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "done\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_failed_reversible_run_falls_back_and_an_irreversible_one_stops() {
+    // Reversible: the write came back, so the last good version gets a go.
+    let sb = Sandbox::new();
+    sb.write(
+        "f.cig",
+        "burn { fs.write_text(\"a.txt\", \"1\") }\ncough \"boom\"\n",
+    );
+    let plan = String::from_utf8_lossy(&sb.cig(&["--json", "run", "--dry-run", "f.cig"]).stdout)
+        .to_string();
+    let plan_path = sb.write("plan.json", &plan);
+    shelf_fake_with_plan(&sb, "1.0.0", &plan_path);
+    prove_on(&sb, "f.cig", "1.0.0");
+    let out = sb.cig(&["run", "f.cig"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stderr}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "fake cig 1.0.0 ran it: run f.cig\n"
+    );
+    assert!(
+        stderr.contains("boom")
+            && stderr.contains("trying cig 1.0.0")
+            && stderr.contains("works on cig 1.0.0 and not on"),
+        "{stderr}"
+    );
+    assert!(
+        !sb.exists("a.txt"),
+        "the failed attempt was rolled back before the fallback"
+    );
+    let failed = sb
+        .runs()
+        .into_iter()
+        .find(|r| r["status"] == "rolled_back")
+        .unwrap();
+    assert_eq!(failed["trial"]["fallback"], "1.0.0", "{failed}");
+
+    // Irreversible: a hop ran, so nothing is tried twice.
+    let sb = Sandbox::new();
+    sb.write("g.cig", "burn { proc.run(\"true\", []) }\ncough \"boom\"\n");
+    let plan = String::from_utf8_lossy(&sb.cig(&["--json", "run", "--dry-run", "g.cig"]).stdout)
+        .to_string();
+    let plan_path = sb.write("plan.json", &plan);
+    shelf_fake_with_plan(&sb, "1.0.0", &plan_path);
+    prove_on(&sb, "g.cig", "1.0.0");
+    let out = sb.cig(&["run", "g.cig"]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("fake cig"));
+    assert!(
+        stderr.contains("irreversible") && stderr.contains("not trying it again"),
+        "{stderr}"
     );
 }

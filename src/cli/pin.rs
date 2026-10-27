@@ -28,10 +28,29 @@ pub fn pin_cmd(ctx: &Ctx, file: &Path, to: Option<String>) -> i32 {
                 return exit::USAGE;
             }
         },
-        None => {
-            let v = Version::current();
-            format!("{}.{}", v.0, v.1)
-        }
+        None => match cigscript::syntax::parse(&source) {
+            Ok(program) => {
+                let min = cigscript::since::minimum(&program);
+                let uses = cigscript::since::uses(&program);
+                if !ctx.json && !uses.is_empty() {
+                    eprintln!(
+                        "{}",
+                        ctx.dim(&format!(
+                            "the script uses {}",
+                            uses.iter()
+                                .map(|u| format!("{} (from {})", u.what, u.since))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ))
+                    );
+                }
+                format!(">={min}")
+            }
+            Err(_) => {
+                let v = Version::current();
+                format!("{}.{}", v.0, v.1)
+            }
+        },
     };
     let had = pin::header(&source)
         .ok()
@@ -59,7 +78,7 @@ pub fn pin_cmd(ctx: &Ctx, file: &Path, to: Option<String>) -> i32 {
                 file.display()
             ),
             None => eprintln!(
-                "{} {} now pins cig {constraint}; a newer cig hands it to that version, and an older one refuses to guess",
+                "{} {} now pins cig {constraint}; a cig outside the pin hands it to one inside, or refuses to guess",
                 ctx.green("pinned:"),
                 file.display()
             ),

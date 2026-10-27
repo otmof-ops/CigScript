@@ -31,6 +31,17 @@ project follows semantic versioning.
   attestation where `gh` is installed) before they are ever run. `cig
   versions` lists the shelf, `add`, `remove` and `prune` tend it; a
   `YANKED` file in the repository keeps a range pin off a bad version. (#22)
+- **The since table and the trial.** Every builtin and clause knows the
+  release it arrived in: `cig check` warns (`E309`) when a pinned script
+  uses something newer than its pin allows, and `cig pin` infers the
+  lowest version a script needs. Before a run on a cig a script has not
+  been proved on, its plan here and its plan on its last good version (the
+  newest run that went through, from the run history) are compared op by
+  op: identical plans run here, different plans run on the proved version
+  with the difference printed, and a run that fails here after burns that
+  all came back is tried once more on the last good version. Never after an
+  irreversible op. `trial = auto | always | never`, `--trial`,
+  `--no-trial`. (#22)
 - **Records know their format.** `run.json`, `after.json` and the first
   line of `journal.jsonl` carry `format: 1`. A newer cig reads older
   formats; an older cig refuses a newer one by its number (`E808`) and

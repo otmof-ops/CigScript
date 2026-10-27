@@ -35,6 +35,25 @@ the installed version. A run is put back by the cig that wrote its journal:
 `cig unburn` reads the record's version and hands over the same way
 (`E808` when that cig is not on the shelf).
 
+Every part of the language and library knows the release it arrived in.
+`cig check` reads a pinned script against that table and warns (`E309`)
+when the script uses something newer than its pin allows, before anything
+runs; `cig pin <file>` with no `--to` writes `# cig >=X.Y.Z`, the lowest
+version that has everything the script uses.
+
+**The trial.** A script's *last good* version is the cig that lit the newest
+run of that exact source which went through. Before a run on a newer cig,
+when the last good version is in the humidor, cig dry-runs the script on
+both and compares the plans op by op (`trial = auto`, the default). Identical
+plans: the run goes ahead on the installed cig, and the report says so.
+Different plans: the difference is printed and the proved version runs the
+script. If the run on the newer cig fails and every op it burned came back,
+cig runs the script once more on the last good version and names both
+outcomes; after an irreversible op it stops instead, because a trial never
+repeats one. `cig run --trial` fetches the last good version when it is
+missing, `--no-trial` runs here regardless, and `cig config trial never`
+turns it off.
+
 ## The levels, in one line each
 
 A **stick** is one step. A **chain** is order: sticks that light from each
