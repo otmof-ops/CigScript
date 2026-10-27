@@ -3842,3 +3842,68 @@ fn a_timeout_kills_the_grandchild_on_windows() {
         "the hop took {took:?}: the grandchild outlived the timeout\n{err}"
     );
 }
+
+// ----- Windows device names (#48): refused before anything runs
+
+#[test]
+fn writing_to_nul_is_refused_before_anything_runs() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "pack { \".\" }\nburn {\n  fs.write_text(\"nul\", \"x\")\n  fs.write_text(\"COM1.txt\", \"y\")\n  fs.write_text(\"console.txt\", \"fine\")\n}\n",
+    );
+    if cfg!(windows) {
+        // A device here: the checker refuses the script outright (check
+        // errors exit 2), and so does run, before anything is written.
+        let err = sb.run_err(&["check", "s.cig"], 2);
+        assert!(
+            err.contains("error[E758 check]") && err.contains("nul"),
+            "{err}"
+        );
+        assert!(err.contains("COM1.txt"), "{err}");
+        assert!(!err.contains("console.txt"), "{err}");
+        let refused = sb.cig(&["run", "s.cig"]);
+        let err = String::from_utf8_lossy(&refused.stderr);
+        assert_ne!(refused.status.code(), Some(0), "{err}");
+        assert!(err.contains("E758"), "{err}");
+        assert!(!sb.exists("console.txt"));
+    } else {
+        // An ordinary file here, but the script will not run on Windows:
+        // a warning, which --deny-warnings turns into a stop.
+        let out = sb.cig(&["check", "s.cig"]);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{err}");
+        assert!(
+            err.contains("warning[E758 check]") && err.contains("nul"),
+            "{err}"
+        );
+        assert!(
+            err.contains("COM1.txt") && !err.contains("console.txt"),
+            "{err}"
+        );
+        let denied = sb.cig(&["check", "--deny-warnings", "s.cig"]);
+        let err = String::from_utf8_lossy(&denied.stderr);
+        assert_ne!(denied.status.code(), Some(0), "{err}");
+        assert!(err.contains("E758"), "{err}");
+        // And the kernel lets it through at run time, as the file it is here.
+        sb.run_ok(&["run", "s.cig"]);
+        assert_eq!(sb.read("nul"), "x");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn a_computed_device_name_is_refused_by_the_kernel_on_windows() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "pack { \".\" }\nstick name = \"nu\" + \"l\"\nburn {\n  fs.write_text(\"first.txt\", \"1\")\n  fs.write_text(name, \"x\")\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("error[E758 burn]") && err.contains("nul device"),
+        "{err}"
+    );
+    // The refusal came before the write was journaled, and the run rolled back.
+    assert!(!sb.exists("first.txt"), "{err}");
+}

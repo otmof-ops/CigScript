@@ -386,6 +386,7 @@ for.
 | a virtualenv or a cache inside the pack | not journaled, not restored, left to be rebuilt | 1.2.0 | `a_venv_inside_the_pack_is_not_journaled` |
 | a tin object edited after the run | refused before anything is restored from it; `gc` keeps what a run still needs | 1.2.0 | `gc_keeps_every_chunk_a_live_run_needs` |
 | a run dies and its pid is reused by another program, or by another cig | the record reads `interrupted`, not `running`: the live process must be a cig started when the record says | 1.3.0 | `a_dead_run_whose_pid_was_reused_is_interrupted_not_running` |
+| `fs.write_text("nul", ...)`, `report.COM1.txt` | refused by the checker with `E758` on Windows, a warning elsewhere (the script will not run there); the kernel refuses a computed one before journaling it | 1.3.0 | `writing_to_nul_is_refused_before_anything_runs` |
 | a hop replaces, retargets or deletes a symbolic link | each comes back as the link it was, from the journal alone | 1.3.0 | `the_tin_restores_a_symlink_as_a_symlink` |
 | a hop runs `chmod` on a file, which changes neither its size nor its time | seen, and put back where the file was in the tin; said to be irreversible where it was not | 1.3.0 | `the_tin_restores_a_mode_changed_by_a_hop` |
 | a file dated 2020 is edited by a hop or a native write, then the run fails | it comes back dated 2020, so mtime-driven tools see nothing | 1.3.0 | `the_tin_restores_mtime` |

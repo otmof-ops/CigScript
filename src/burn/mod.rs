@@ -265,6 +265,23 @@ pub struct PackWatch {
     pub warnings: Vec<String>,
 }
 
+/// The device name a path's base name spells, if any: `con`, `prn`, `aux`,
+/// `nul`, `com1` to `com9`, `lpt1` to `lpt9`, in any case and with any
+/// extension (`nul.txt` is still the null device on Windows). Such a path
+/// is a device on Windows and an ordinary file everywhere else, so a
+/// script that writes to one is not portable; the checker says so, and
+/// the kernel refuses it on Windows before anything is journaled.
+pub fn reserved_device_name(path: &Path) -> Option<String> {
+    let base = path.file_name()?.to_string_lossy();
+    let stem = base.split('.').next()?.trim_end().to_ascii_lowercase();
+    let reserved = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        || (stem.len() == 4
+            && (stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.as_bytes()[3].is_ascii_digit()
+            && stem.as_bytes()[3] != b'0');
+    reserved.then_some(stem)
+}
+
 /// Expand `~`, make absolute against the working directory, and normalise
 /// lexically (no symlink resolution, no disk access).
 pub fn normalize_root(raw: &str) -> PathBuf {
@@ -740,6 +757,30 @@ impl Kernel {
     /// Ask permission to perform `op`. `unlit` is true inside `burn unlit`.
     pub fn decide(&mut self, op: Op, unlit: bool) -> Result<Decision, Diagnostic> {
         if let Some(roots) = &self.pack {
+            // A Windows device name is not a file: refused before it is journaled,
+            // with its own code, on the platform where it is one.
+            if cfg!(windows) {
+                let named: Vec<&PathBuf> = match &op {
+                    Op::Write { path }
+                    | Op::Append { path }
+                    | Op::Delete { path }
+                    | Op::Mkdir { path } => vec![path],
+                    Op::Copy { to, .. } => vec![to],
+                    Op::Move { from, to } => vec![from, to],
+                    _ => Vec::new(),
+                };
+                for p in named {
+                    if let Some(device) = reserved_device_name(p) {
+                        return Err(burn_error(format!(
+                            "{} is the {device} device on Windows, not a file",
+                            p.display()
+                        ))
+                        .code("E758")
+                        .with_subject(p.display().to_string())
+                        .with_hint("name the file something else; con, prn, aux, nul, com1-9 and lpt1-9 are devices here whatever the extension"));
+                    }
+                }
+            }
             let outside: Vec<&PathBuf> = match &op {
                 Op::Write { path }
                 | Op::Append { path }

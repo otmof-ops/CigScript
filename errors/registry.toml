@@ -1536,6 +1536,21 @@ probe = "path-permissions"
 remedy = "the hop still ran; the change to that file is irreversible this time, as the warning says"
 
 [[code]]
+code = "E758"
+title = "a Windows device name used as a file"
+meaning = "A write names a path whose base name is a Windows device (con, prn, aux, nul, com1-9, lpt1-9, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows."
+fix = "name the file something else"
+no = "cant-see-any"
+arises = ["check", "run", "light"]
+tags = ["kernel"]
+since = "1.3.0"
+related = ["E750", "E702"]
+[[code.cause]]
+why = "the path's base name, before its first dot, is a reserved device name"
+probe = "source-line"
+remedy = "rename the file; on Unix the warning can be denied with --deny-warnings"
+
+[[code]]
 code = "E800"
 title = "usage error"
 meaning = "The command line or the environment is wrong."
