@@ -494,9 +494,7 @@ impl Journal {
             })
         } else {
             copy_file_with_mode(path, &snap)?;
-            // Opened for writing: Windows refuses to flush a handle opened
-            // read-only ("access is denied"), and the snapshot must be durable.
-            fs::OpenOptions::new().write(true).open(&snap)?.sync_all()?;
+            sync_file(&snap)?;
             sync_dir(&dir.join("snapshots"))?;
             let sha256 = sha256_file(&snap)?;
             Ok(BeforeState {
@@ -1237,7 +1235,7 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
         } else if entry.file_type().is_file() {
             copy_file_with_mode(entry.path(), &dest)?;
             if durable {
-                fs::OpenOptions::new().write(true).open(&dest)?.sync_all()?;
+                sync_file(&dest)?;
             }
         } else {
             return Err(io::Error::other(format!(
@@ -1256,6 +1254,38 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
         sync_dir(to)?;
     }
     Ok(())
+}
+
+/// fsync a snapshot file so it is durable before the op it protects runs.
+/// The copy carries the source's mode, so it may be read-only (a tin
+/// object, a `.git/objects` entry): Unix flushes a read-only handle, while
+/// Windows refuses to ("access is denied") and needs the read-only
+/// attribute lifted around the flush.
+fn sync_file(path: &Path) -> Result<(), io::Error> {
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)?.sync_all()
+    }
+    #[cfg(windows)]
+    {
+        match fs::OpenOptions::new().write(true).open(path) {
+            Ok(f) => f.sync_all(),
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                let perms = fs::metadata(path)?.permissions();
+                let mut writable = perms.clone();
+                #[allow(clippy::permissions_set_readonly_false)]
+                writable.set_readonly(false);
+                fs::set_permissions(path, writable)?;
+                let synced = fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .and_then(|f| f.sync_all());
+                fs::set_permissions(path, perms)?;
+                synced
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
 /// fsync a directory so newly created entries in it are durable. A no-op

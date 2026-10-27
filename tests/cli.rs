@@ -3432,3 +3432,33 @@ fn touches_without_a_pack_is_refused() {
     let err = sb.run_err(&["run", "s.cig"], 1);
     assert!(err.contains("error[E757 burn]"), "{err}");
 }
+
+// ----- 1.2.1: a read-only file is snapshotted like any other (the tin's objects, .git/objects)
+
+#[test]
+fn a_read_only_file_in_a_tree_is_snapshotted_and_comes_back_read_only() {
+    let sb = Sandbox::new();
+    sb.write("t/keep.txt", "keep\n");
+    sb.write("t/ro.txt", "frozen\n");
+    let ro = sb.path().join("t").join("ro.txt");
+    let mut perms = fs::metadata(&ro).unwrap().permissions();
+    perms.set_readonly(true);
+    fs::set_permissions(&ro, perms).unwrap();
+    sb.write("s.cig", "burn { fs.rm(\"t\") }\n");
+    sb.run_ok(&["run", "s.cig"]);
+    assert!(!sb.exists("t"));
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("t/ro.txt"), "frozen\n");
+    assert!(fs::metadata(&ro).unwrap().permissions().readonly());
+    // The same for a single file, and for a file a hop may touch.
+    sb.write(
+        "s2.cig",
+        "burn { fs.write_text(\"t/ro.txt\", \"thawed\") }\n",
+    );
+    let err = sb.run_err(&["run", "s2.cig"], 1);
+    assert!(
+        err.contains("error[E7") || err.contains("Permission denied") || err.contains("permission"),
+        "{err}"
+    );
+}
