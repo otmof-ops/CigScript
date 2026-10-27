@@ -395,7 +395,9 @@ fn scan(root: &Path, max_depth: usize, cap: usize) -> std::collections::BTreeMap
         if !entry.file_type().is_file() {
             continue;
         }
-        let Ok(m) = entry.metadata() else { continue };
+        let Ok(m) = journal::fresh_metadata(&entry) else {
+            continue;
+        };
         let mtime = journal::mtime_ns(&m).unwrap_or(0);
         #[cfg(unix)]
         let mode = {

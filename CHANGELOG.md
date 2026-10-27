@@ -3,6 +3,23 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.3.1 — 2026-10-27
+
+- **`cig unburn` after a run on Windows.** A directory's fingerprint read
+  sizes and times from the directory listing, which NTFS refreshes only when
+  a file's last handle closes, so a run that had just finished could read as
+  changed a moment later and `unburn` refused it (`E704`, the same entry
+  count on both sides). The fingerprint and the tin's scan read each file
+  itself now. Found by cig-orchestrator's suite. (#64)
+- **An apostrophe reaches an MSYS program.** Git's `bash`, `sh` and `perl`
+  parse their own command line, where a bare `it's` loses its quote and `*`
+  globs; an argument with such a character is quoted the way the C runtime
+  reads it, which both parsers agree on. (#63)
+- **A case-only rename is a rename.** `fs.mv("readme.md", "README.md")` on a
+  case-insensitive filesystem (APFS, NTFS) was refused as a move onto itself;
+  it renames now, and only two names for one file that differ in more than
+  case (hard links) stay refused. (#62)
+
 ## 1.3.0 — 2026-10-27
 
 - **One resolver finds a hop's program.** `proc.run`, `proc.which`, every

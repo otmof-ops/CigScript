@@ -409,6 +409,61 @@ pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std:
     }
 }
 
+#[cfg(windows)]
+fn is_batch(p: &std::path::Path) -> bool {
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"))
+}
+
+/// One argument on a Windows command line. The standard library quotes an
+/// argument only when the C runtime's rules need it (a space, a tab, a
+/// quote), and a program built on the MSYS or Cygwin runtime (Git's `bash`,
+/// `sh`, `perl`) parses the line by its own rules instead, where a bare `'`
+/// opens a quoted string and `*`, `?` and `[` glob: `it's` arrived as `its`.
+/// An argument with any of those characters is quoted the way the C runtime
+/// reads it, which both parsers agree on; the rest go as they are.
+#[cfg(windows)]
+fn windows_arg(c: &mut Command, arg: &str) {
+    use std::os::windows::process::CommandExt;
+    if arg
+        .chars()
+        .any(|ch| matches!(ch, ' ' | '\t' | '"' | '\'' | '*' | '?' | '['))
+    {
+        c.raw_arg(quoted_for_crt(arg));
+    } else {
+        c.arg(arg);
+    }
+}
+
+/// `"..."` with the C runtime's escapes: a backslash run before a quote is
+/// doubled and the quote escaped; a run at the end is doubled; any other
+/// backslash is literal.
+#[cfg(windows)]
+fn quoted_for_crt(arg: &str) -> String {
+    let mut out = String::with_capacity(arg.len() + 2);
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.push_str(&"\\".repeat(backslashes * 2 + 1));
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                out.push_str(&"\\".repeat(backslashes));
+                backslashes = 0;
+                out.push(ch);
+            }
+        }
+    }
+    out.push_str(&"\\".repeat(backslashes * 2));
+    out.push('"');
+    out
+}
+
 /// Build a `Command` the same way for every hop: no shell, its own process
 /// group, `NO_COLOR` set, the run id passed down, and either the inherited
 /// environment plus the script's additions or a clean documented one. The
@@ -418,6 +473,8 @@ pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std:
 fn command(cmd: &str, args: &[String], o: &Options) -> Command {
     let program =
         resolve_program(cmd, o.cwd.as_deref()).unwrap_or_else(|| std::path::PathBuf::from(cmd));
+    #[cfg(windows)]
+    let batch = is_batch(&program);
     let mut c = Command::new(program);
     #[cfg(windows)]
     {
@@ -433,8 +490,14 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Command {
             use std::os::windows::process::CommandExt;
             c.args(&args[..3]);
             c.raw_arg(format!("\"{}\"", args[3]));
-        } else {
+        } else if batch {
+            // A .bat or .cmd runs through cmd.exe with the standard
+            // library's own quoting for it.
             c.args(args);
+        } else {
+            for a in args {
+                windows_arg(&mut c, a);
+            }
         }
     }
     #[cfg(not(windows))]

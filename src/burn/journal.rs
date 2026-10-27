@@ -777,6 +777,19 @@ pub enum PathState {
 /// only the count.
 const FINGERPRINT_CAP: u64 = 200_000;
 
+/// An entry's metadata read from the file itself, not from the directory
+/// listing: on NTFS the listing's copy of a size or a time is refreshed only
+/// when the file's last handle closes, so a fingerprint taken from it as a
+/// run ends could differ from one taken a moment later with nothing changed,
+/// and `cig unburn` refused the run (E704). On Unix both reads are `lstat`.
+pub(crate) fn fresh_metadata(entry: &walkdir::DirEntry) -> std::io::Result<fs::Metadata> {
+    if entry.path_is_symlink() {
+        fs::symlink_metadata(entry.path())
+    } else {
+        fs::metadata(entry.path())
+    }
+}
+
 fn dir_fingerprint(dir: &Path) -> (String, u64) {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -799,8 +812,7 @@ fn dir_fingerprint(dir: &Path) -> (String, u64) {
         } else {
             "f"
         };
-        let (len, mtime) = entry
-            .metadata()
+        let (len, mtime) = fresh_metadata(&entry)
             .map(|m| {
                 (
                     m.len(),

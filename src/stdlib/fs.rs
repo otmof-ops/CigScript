@@ -49,16 +49,29 @@ fn same_or_inside(name: &str, from: &Path, to: &Path, s: Span) -> Result<(), Dia
     let a = crate::burn::scope_path(from);
     let b = crate::burn::scope_path(to);
     #[cfg(unix)]
-    let same_inode = {
+    let (same_inode, hard_linked) = {
         use std::os::unix::fs::MetadataExt;
         match (fs::metadata(from), fs::metadata(to)) {
-            (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
-            _ => false,
+            (Ok(x), Ok(y)) => (x.dev() == y.dev() && x.ino() == y.ino(), x.nlink() > 1),
+            _ => (false, false),
         }
     };
     #[cfg(not(unix))]
-    let same_inode = false;
-    if a == b || same_inode {
+    let (same_inode, hard_linked) = (false, false);
+    // On a case-insensitive filesystem (APFS, NTFS) `readme.md` and
+    // `README.md` are one file, and renaming one to the other is a rename
+    // all the same: the name on disk changes. Two names for one file that
+    // differ in more than case are hard links, and stay refused.
+    let case_only = !hard_linked
+        && a.parent() == b.parent()
+        && match (from.file_name(), to.file_name()) {
+            (Some(x), Some(y)) => {
+                let (x, y) = (x.to_string_lossy(), y.to_string_lossy());
+                x != y && x.to_lowercase() == y.to_lowercase()
+            }
+            _ => false,
+        };
+    if (a == b || same_inode) && !case_only {
         return Err(runtime(format!(
             "{name}: {} and {} are the same file",
             from.display(),
@@ -69,7 +82,7 @@ fn same_or_inside(name: &str, from: &Path, to: &Path, s: Span) -> Result<(), Dia
         .with_subject(from.display().to_string())
         .with_hint("give the destination a different name; nothing was changed"));
     }
-    if b.starts_with(&a) && from.is_dir() {
+    if !case_only && b.starts_with(&a) && from.is_dir() {
         return Err(runtime(format!(
             "{name}: {} is inside {}, the directory being {}",
             to.display(),
