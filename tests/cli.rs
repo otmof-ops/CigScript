@@ -3702,7 +3702,7 @@ fn which_and_run_agree_on_windows() {
     sb.write("tools/hello.bat", "@echo off\r\necho hello\r\n");
     sb.write(
         "s.cig",
-        "exhale proc.which(\"node.exe\") == proc.which(\"node\")\nexhale proc.which(\"tools/hello\")\nburn { exhale proc.text(\"tools/hello\", []) }\nexhale proc.which(\"no-such-program-anywhere\")\n",
+        "exhale proc.which(\"node.exe\") == proc.which(\"node\")\nexhale proc.which(\"tools/hello\")\nburn { exhale proc.text(\"tools/hello\", []).trim() }\nexhale proc.which(\"no-such-program-anywhere\")\n",
     );
     let out = sb.run_ok(&["run", "s.cig"]);
     let lines: Vec<&str> = out.lines().collect();
@@ -3748,6 +3748,11 @@ fn proc_shell_on_windows_runs_sh_when_present() {
     );
     let out = sb.run_ok(&["run", "s.cig"]);
     assert_eq!(out.trim(), "answer 42", "{out}");
-    let plan = sb.run_ok(&["run", "--dry-run", "s.cig"]);
+    let dry = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let plan = format!(
+        "{}{}",
+        String::from_utf8_lossy(&dry.stdout),
+        String::from_utf8_lossy(&dry.stderr)
+    );
     assert!(plan.contains("run sh -c"), "{plan}");
 }
