@@ -91,6 +91,14 @@ included; a child that ignores SIGTERM still ends. A Ctrl-C at the terminal
 reaches cig, not a child in its own group, so SIGINT, SIGTERM and SIGHUP are
 forwarded to every live child group before cig ends the default way.
 
+**On Windows the process tree is a Job Object.** There is no process group
+to signal, so every hop's child is put in a job with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: what the child starts joins the job,
+a timeout terminates the job (the grandchild holding the pipe included, so
+`timeout_ms` ends the task when it says), and cig itself dying closes the
+last handle and takes the tree with it. One difference from Unix follows:
+what a hop leaves running in the background ends with the hop.
+
 **No shell by default.** Arguments are a list, never a string handed to `sh
 -c`, so there is nothing to inject into. `proc.shell(command)` exists for the
 honest cases, by name, with the warning in its name. `proc.which(name)`

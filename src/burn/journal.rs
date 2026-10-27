@@ -674,9 +674,9 @@ impl Journal {
                     continue;
                 }
                 match restore(state) {
-                    Ok(()) => {
+                    Ok(note) => {
                         let text = format!(
-                            "{} ({} {})",
+                            "{} ({} {}{})",
                             entry.op.describe(),
                             match state.before {
                                 Before::Absent => "removed",
@@ -685,7 +685,8 @@ impl Journal {
                                 Before::Symlink { .. } => "link restored:",
                                 Before::Moved { .. } => "moved back:",
                             },
-                            state.path.display()
+                            state.path.display(),
+                            note.map(|n| format!(", {n}")).unwrap_or_default()
                         );
                         report.actions.push(("restored".to_string(), text));
                         report.restored.push(format!(
@@ -1010,10 +1011,12 @@ fn first_missing_ancestor(path: &Path) -> PathBuf {
     candidate
 }
 
-fn restore(state: &BeforeState) -> Result<(), io::Error> {
+/// Put one path back. `Ok(Some(note))` says how, when it was not the
+/// ordinary way (a file restored in place because another program held it).
+fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
     let path = &state.path;
     match &state.before {
-        Before::Absent => remove_any(path),
+        Before::Absent => remove_any(path).map(|()| None),
         Before::File {
             snapshot,
             sha256,
@@ -1077,7 +1080,7 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
                         if let Some(ns) = mtime_ns {
                             set_mtime(path, *ns)?;
                         }
-                        return Ok(());
+                        return Ok(None);
                     }
                 }
             }
@@ -1096,11 +1099,11 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
             {
                 remove_any(path)?;
             }
-            fs::rename(&staged, path)?;
+            let note = swap_in(&staged, path)?;
             if let Some(ns) = mtime_ns {
                 set_mtime(path, *ns)?;
             }
-            Ok(())
+            Ok(note)
         }
         Before::Dir { snapshot } => {
             if snapshot.as_os_str().is_empty() {
@@ -1117,14 +1120,14 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
             let staged = staging_path(path);
             copy_tree(snapshot, &staged)?;
             remove_any(path)?;
-            fs::rename(&staged, path)
+            fs::rename(&staged, path).map(|()| None)
         }
         Before::Symlink { target } => {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
             remove_any(path)?;
-            make_symlink(target, path)
+            make_symlink(target, path).map(|()| None)
         }
         Before::Moved { to } => {
             if fs::symlink_metadata(to).is_err() {
@@ -1138,7 +1141,7 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
             }
             remove_any(path)?;
             match fs::rename(to, path) {
-                Ok(()) => Ok(()),
+                Ok(()) => Ok(None),
                 // Across devices (the run moved it with a copy): copy it
                 // back the same way, and only then let go of the copy.
                 Err(e) if e.raw_os_error() == Some(18) => {
@@ -1147,11 +1150,56 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
                     } else {
                         copy_file_with_mode(to, path)?;
                     }
-                    remove_any(to)
+                    remove_any(to).map(|()| None)
                 }
                 Err(e) => Err(e),
             }
         }
+    }
+}
+
+/// Swap a staged before-image over `path`: a rename, which is atomic and
+/// leaves the old content untouched until the new is in place. Windows
+/// refuses to replace a file another program holds open without delete
+/// sharing (an editor, a scanner, an indexer): the swap is retried for a
+/// moment, then the content is written back in place through a handle the
+/// other program's sharing does allow, and the note says so. When even that
+/// is refused, the error names the program's hold and what to do.
+fn swap_in(staged: &Path, path: &Path) -> Result<Option<&'static str>, io::Error> {
+    match fs::rename(staged, path) {
+        Ok(()) => Ok(None),
+        #[cfg(windows)]
+        Err(e) if matches!(e.raw_os_error(), Some(5) | Some(32) | Some(33)) => {
+            for wait_ms in [50u64, 100, 200, 400, 800] {
+                std::thread::sleep(std::time::Duration::from_millis(wait_ms));
+                if fs::rename(staged, path).is_ok() {
+                    return Ok(None);
+                }
+            }
+            let in_place = (|| -> Result<(), io::Error> {
+                let mut src = fs::File::open(staged)?;
+                let mut dst = fs::OpenOptions::new()
+                    .write(true)
+                    .truncate(true)
+                    .open(path)?;
+                io::copy(&mut src, &mut dst)?;
+                dst.sync_all()?;
+                drop(dst);
+                let _ = fs::set_permissions(path, fs::metadata(staged)?.permissions());
+                fs::remove_file(staged)
+            })();
+            match in_place {
+                Ok(()) => Ok(Some("in place: another program held it open")),
+                Err(inner) => Err(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "{} is held open by another program and could not be replaced or rewritten ({inner}); close that program, then `cig unburn <run>` finishes the job",
+                        path.display()
+                    ),
+                )),
+            }
+        }
+        Err(e) => Err(e),
     }
 }
 

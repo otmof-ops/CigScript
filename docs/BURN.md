@@ -141,6 +141,16 @@ the journal is intact), shows it as `interrupted` with its burn count taken
 from the journal, and `cig doctor` reports it with `E706` and, under `--fix`,
 offers `cig unburn <id>`.
 
+
+**A file another program holds open (Windows).** A restore stages the
+before-image beside the path and renames it into place, which Windows
+refuses while another program holds the file without delete sharing (an
+editor, an antivirus scanner, an indexer). The swap is retried for about a
+second and a half, then the content is written back in place through a
+handle the other program's sharing does allow, and the restore line says
+`in place: another program held it open`. When even that is refused, the
+run stays `rollback_incomplete` and the line says to close the program,
+after which `cig unburn <run>` finishes the job.
 ## The pack, hops, and compensations
 
 A **pack** (`pack { "./build" }`, `LANGUAGE.md`) is the declared scope: the
