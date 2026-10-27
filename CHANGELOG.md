@@ -3,8 +3,33 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.3.0 — 2026-10-27
 
+- **One resolver finds a hop's program.** `proc.run`, `proc.which`, every
+  `proc.pipe` stage and the shell behind `proc.shell` agree on what starts:
+  a name with a separator is a path against the hop's `cwd` on every
+  platform; a bare name is searched on `PATH` with `PATHEXT` on Windows,
+  so `npm` is `npm.cmd`; System32's `bash.exe` (the WSL launcher) and
+  `wsl.exe` are never chosen for `bash` or `sh`. (#42)
+- **`proc.shell` on Windows** runs under `sh -c` when an `sh` is on PATH
+  (Git for Windows, MSYS2) and otherwise under `cmd /d /s /c` with the line
+  reaching cmd as written; the plan line names the shell. (#43)
+- **Windows: a file another program holds open comes back.** A restore
+  that cannot rename over a held-open file (an editor, a scanner, an
+  indexer without delete sharing) retries for a moment, then writes the
+  content back in place and says so; when even that is refused the run
+  stays `rollback_incomplete` with the program's hold named and the
+  `cig unburn` that finishes the job. (#44)
+- **Windows: a timeout ends the whole process tree.** Every hop's child is
+  put in a Job Object (`KILL_ON_JOB_CLOSE`); a timeout terminates the job,
+  grandchildren holding the pipes included, and cig dying takes the tree
+  with it, the way the process group does on Unix. (#45)
+- **Windows device names are refused up front.** `con`, `prn`, `aux`,
+  `nul`, `com1` to `com9` and `lpt1` to `lpt9`, with any extension, are
+  devices on Windows: a literal one is `E758` in `cig check`, an error on
+  Windows and a warning elsewhere (the script will not run there), and the
+  kernel refuses a computed one on Windows before it is journaled, where
+  1.2 failed mid-burn with `E702 Incorrect function`. (#48)
 - **The tin keeps what a file is.** A symbolic link a hop retargets,
   replaces or deletes comes back as the link it was, with or without
   `touches` (`(link kept)` in the record); a `chmod` by a hop is seen,
@@ -12,6 +37,15 @@ project follows semantic versioning.
   was in the tin; a modified file comes back with the modification time it
   had, from the tin and from a native snapshot alike. A read-only file
   under `touches` is stashed like any other. (#41)
+- **A dead run never reads as `running` on a reused pid.** The record keeps
+  when its process started (`/proc` ticks on Linux, `ps -o lstart` on macOS
+  and the BSDs, the creation time on Windows), and a run counts as alive
+  only when a cig with that start time holds the pid. (#46)
+- **Durability says what each platform does.** Every flush on macOS is
+  `F_FULLFSYNC`, which reaches the drive where `fsync` stops at its cache;
+  on Windows the directory that gained a snapshot or an entry is flushed
+  through a backup-semantics handle where NTFS allows it. BURN.md has the
+  table. (#47)
 - **Linux assets are static musl builds** (`x86_64`, `aarch64`, and `armv7`
   as `linux-arm`): they run on any glibc, on Alpine, and on Android under
   Termux, where 1.2.1's glibc 2.39 binary would not start. Windows on ARM
@@ -28,52 +62,6 @@ project follows semantic versioning.
   FreeBSD, and says so on Android. (#49)
 - **`cig update` with a `gh` that is not logged in** falls back to the
   public API through curl instead of failing. (#35)
-- **One resolver finds a hop's program.** `proc.run`, `proc.which`, every
-  `proc.pipe` stage and the shell behind `proc.shell` agree on what starts:
-  a name with a separator is a path against the hop's `cwd` on every
-  platform; a bare name is searched on `PATH` with `PATHEXT` on Windows,
-  so `npm` is `npm.cmd`; System32's `bash.exe` (the WSL launcher) and
-  `wsl.exe` are never chosen for `bash` or `sh`. (#42)
-- **`proc.shell` on Windows** runs under `sh -c` when an `sh` is on PATH
-  (Git for Windows, MSYS2) and otherwise under `cmd /d /s /c` with the line
-  reaching cmd as written; the plan line names the shell. (#43)
-
-## Unreleased
-
-- **Windows: a file another program holds open comes back.** A restore
-  that cannot rename over a held-open file (an editor, a scanner, an
-  indexer without delete sharing) retries for a moment, then writes the
-  content back in place and says so; when even that is refused the run
-  stays `rollback_incomplete` with the program's hold named and the
-  `cig unburn` that finishes the job. (#44)
-- **Windows: a timeout ends the whole process tree.** Every hop's child is
-  put in a Job Object (`KILL_ON_JOB_CLOSE`); a timeout terminates the job,
-  grandchildren holding the pipes included, and cig dying takes the tree
-  with it, the way the process group does on Unix. (#45)
-- **A dead run never reads as `running` on a reused pid.** The record keeps
-  when its process started (`/proc` ticks on Linux, `ps -o lstart` on macOS
-  and the BSDs, the creation time on Windows), and a run counts as alive
-  only when a cig with that start time holds the pid. (#46)
-- **Durability says what each platform does.** Every flush on macOS is
-  `F_FULLFSYNC`, which reaches the drive where `fsync` stops at its cache;
-  on Windows the directory that gained a snapshot or an entry is flushed
-  through a backup-semantics handle where NTFS allows it. BURN.md has the
-  table. (#47)
-- **Docs.** LANGUAGE.md describes the pack as it is (scope, since 1.1),
-  not as planned; LEXICON.md says what of the foreign script has landed and
-  what the burn protocol still adds; one word per idea for the tin's next
-  steps, in LEXICON.md and the roadmap: the box is the overlay, the parcel
-  is the export, sealed is encrypted at rest, pressed is write-once. (#51,
-  #52)
-- **Windows device names are refused up front.** `con`, `prn`, `aux`,
-  `nul`, `com1` to `com9` and `lpt1` to `lpt9`, with any extension, are
-  devices on Windows: a literal one is `E758` in `cig check`, an error on
-  Windows and a warning elsewhere (the script will not run there), and the
-  kernel refuses a computed one on Windows before it is journaled, where
-  1.2 failed mid-burn with `E702 Incorrect function`. (#48)
-
-## Unreleased
-
 - **The suite runs where cig runs.** CI tests Ubuntu and macOS on both
   architectures, Windows x86_64 and ARM, Alpine as root (musl, BusyBox),
   and FreeBSD in a VM; the Ubuntu job also runs the suite in release mode,
@@ -82,6 +70,12 @@ project follows semantic versioning.
   a `FAIL` line failing the job. The two tests that lock a directory with
   `chmod` step aside as root and say so; `ps -ww` reaches past the BSDs'
   line cut; the symlink rollback has a Windows port. (#50)
+- **Docs.** LANGUAGE.md describes the pack as it is (scope, since 1.1),
+  not as planned; LEXICON.md says what of the foreign script has landed and
+  what the burn protocol still adds; one word per idea for the tin's next
+  steps, in LEXICON.md and the roadmap: the box is the overlay, the parcel
+  is the export, sealed is encrypted at rest, pressed is write-once. (#51,
+  #52)
 
 ## 1.2.1 — 2026-10-27
 
