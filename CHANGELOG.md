@@ -3,6 +3,15 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+- **A read-only file is snapshotted like any other.** 1.2.0 opened every
+  snapshot for writing to flush it (the Windows fix of #26), which Unix
+  refuses when the copy carries a read-only mode: a tree holding a tin
+  object or a `.git/objects` entry could not be removed or replaced under a
+  burn (`E702`, permission denied). The flush now opens read-only on Unix
+  and lifts the read-only attribute around the flush on Windows.
+
 ## 1.2.0 — 2026-10-27
 
 The pin, the humidor, the tin, and crash reports that put the run back.
