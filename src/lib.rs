@@ -21,9 +21,13 @@ pub mod crash;
 pub mod diagnostics;
 pub mod doctor;
 pub mod errors;
+pub mod humidor;
 pub mod interp;
+pub mod pin;
+pub mod since;
 pub mod stdlib;
 pub mod syntax;
+pub mod trial;
 pub mod update;
 pub mod value;
 

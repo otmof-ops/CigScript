@@ -193,8 +193,18 @@ per step; the journal records the effects.
 ```
 
 Beside `runs/`, the state directory holds `crashes/` (crash reports, yours
-until you send them), `reports/` (`cig report <run>` bundles) and
+until you send them), `reports/` (`cig report <run>` bundles), `humidor/`
+(every other version of cig kept for pinned scripts and old journals, one
+directory per version with `index.json` beside them; see `cig versions`) and
 `update-check.json`.
+
+Every record says what shape it is in: `run.json` and `after.json` carry
+`"format": 1`, and the first line of `journal.jsonl` is `{"format":1}` (a
+marker, so a cig from before formats reads past it). A newer cig reads every
+older format and never rewrites an old record in place; a format it does not
+know is refused by its number with the version that wrote it (`E808`), and
+`cig unburn` hands the run to that version from the humidor instead of
+guessing.
 
 A run's status is one of `running`, `ok`, `failed`, `rolled_back`,
 `unburned`, `unburn_failed`, or `interrupted` (derived when a `running`

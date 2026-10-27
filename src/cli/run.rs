@@ -6,9 +6,15 @@
 use super::{exit, Ctx};
 use cigscript::burn::{runs::RunRecord, Kernel, Mode, PlannedOp};
 use cigscript::check;
+use cigscript::config::Config;
 use cigscript::diagnostics::{Diagnostic, Kind};
+use cigscript::humidor;
 use cigscript::interp::Interp;
+use cigscript::pin::{self, Pin};
+use cigscript::syntax::ast::Program;
 use cigscript::syntax::{parse, parse_expr_src};
+use cigscript::trial;
+use cigscript::update::Version;
 use cigscript::NO_CIGARETTES;
 use std::io::Write;
 use std::path::Path;
@@ -136,7 +142,10 @@ pub fn check(ctx: &Ctx, file: &Path, deny_warnings: bool) -> i32 {
             return exit::SYNTAX_ERROR;
         }
     };
-    let rep = check::check(&program, &[]);
+    let mut rep = check::check(&program, &[]);
+    let pin = pin::pin_for(file, &source).ok().flatten();
+    rep.warnings
+        .extend(pin_warnings(&program, pin.as_ref(), &name));
     let denied = deny_warnings && !rep.warnings.is_empty();
     if ctx.json {
         let obj = serde_json::json!({
@@ -145,6 +154,10 @@ pub fn check(ctx: &Ctx, file: &Path, deny_warnings: bool) -> i32 {
             "errors": diags_json(ctx, &rep.errors, &source),
             "warnings": rep.warnings,
             "warnings_denied": denied,
+            "pin": pin.as_ref().map(|p| p.constraint.to_string()),
+            "needs": cigscript::since::minimum(&program).to_string(),
+            "uses": cigscript::since::uses(&program).iter().map(|u| serde_json::json!({"what": u.what, "since": u.since.to_string()})).collect::<Vec<_>>(),
+            "last_good": cigscript::burn::runs::last_good(&sha256(&source)).map(|(v, _)| v.to_string()),
         });
         outln!("{}", serde_json::to_string(&obj).unwrap_or_default());
         return if rep.ok() && !denied {
@@ -245,8 +258,11 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             return exit::SYNTAX_ERROR;
         }
     };
+    let pin = pin::pin_for(&args.file, &source).ok().flatten();
     if !args.no_check {
-        let rep = check::check(&program, &[]);
+        let mut rep = check::check(&program, &[]);
+        rep.warnings
+            .extend(pin_warnings(&program, pin.as_ref(), &name));
         if !rep.ok() {
             if ctx.json {
                 for e in &rep.errors {
@@ -281,6 +297,29 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             return exit::USAGE;
         }
     }
+    // The trial: on a cig this script has not been proved on, compare plans
+    // with its last good version first, and let that version run it when
+    // they differ.
+    let trial_mode = if args.no_trial {
+        "never".to_string()
+    } else if args.trial {
+        "always".to_string()
+    } else {
+        Config::load().get("trial")
+    };
+    let mut trial_note = None;
+    let last_good = if !args.dry_run && !pin::dispatched() && trial_mode != "never" {
+        let (handed, note, last) =
+            trial_before_run(ctx, &args, &source, &program, &name, &trial_mode);
+        if let Some(code) = handed {
+            return code;
+        }
+        trial_note = note;
+        last
+    } else {
+        None
+    };
+
     let mode = if args.dry_run {
         Mode::DryRun
     } else {
@@ -406,6 +445,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             v["file"] = serde_json::Value::String(name.clone());
             record.diagnostic = Some(v);
         }
+        record.trial = trial_note.clone();
         record.finish(status, error);
         if !record.rolled_back && !interp.kernel.journal().is_empty() {
             if let Err(e) = interp.kernel.journal().write_after_state() {
@@ -422,6 +462,59 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             );
         }
         save_intents(&record, &interp);
+        // The fallback: the run failed on this cig after burns that all came
+        // back, and the script has a last good version on the shelf. Run it
+        // there. Never after an irreversible op: a trial never repeats one.
+        if let (Err(d), Some((last, bin))) = (&result, &last_good) {
+            let clean = rolled_back.as_ref().is_some_and(|r| r.failed.is_empty())
+                || interp.kernel.journal().is_empty();
+            let current = Version::current();
+            if interp.kernel.irreversible == 0 && clean && !args.no_rollback {
+                eprintln!(
+                    "{} {current}: failed ({}); rolled back ({} op{}); trying cig {last}, the last good version for this script",
+                    ctx.bold("trial:"),
+                    truncate_message(&d.message),
+                    interp.kernel.journal().len(),
+                    if interp.kernel.journal().len() == 1 { "" } else { "s" }
+                );
+                record.trial = Some(serde_json::json!({
+                    "fallback": last.to_string(),
+                    "failed_on": current.to_string(),
+                    "rolled_back_ops": interp.kernel.journal().len(),
+                }));
+                let _ = record.save();
+                humidor::touch(last);
+                let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+                let fallback = match humidor::dispatch(bin, &argv) {
+                    Ok(code) => code,
+                    Err(e) => {
+                        eprintln!("{} {e}", ctx.red("error[E807 usage]:"));
+                        exit::USAGE
+                    }
+                };
+                if fallback == exit::OK {
+                    eprintln!(
+                        "{} this script works on cig {last} and not on {current}; cig report {} bundles the failure for an issue",
+                        ctx.bold("trial:"),
+                        record.id
+                    );
+                } else {
+                    eprintln!(
+                        "{} this script failed on cig {last} too (exit {fallback}); cig report {} bundles the failure on {current}",
+                        ctx.bold("trial:"),
+                        record.id
+                    );
+                }
+                return fallback;
+            } else if interp.kernel.irreversible > 0 {
+                eprintln!(
+                    "{} the failed run did {} irreversible op{}; not trying it again on cig {last} (a trial never repeats one)",
+                    ctx.dim("trial:"),
+                    interp.kernel.irreversible,
+                    if interp.kernel.irreversible == 1 { "" } else { "s" }
+                );
+            }
+        }
         if ctx.json {
             let obj = serde_json::json!({
                 "run": record,
@@ -567,4 +660,176 @@ fn light_named_chain(
     interp
         .call(&light, vec![value], Default::default())
         .map(|_| ())
+}
+
+fn sha256(source: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(source.as_bytes()))
+}
+
+fn truncate_message(m: &str) -> String {
+    cigscript::crash::truncate(m, 120)
+}
+
+/// E309: the script uses something newer than its pin allows.
+fn pin_warnings(program: &Program, pin: Option<&Pin>, name: &str) -> Vec<Diagnostic> {
+    let Some(pin) = pin else {
+        return Vec::new();
+    };
+    let floor = pin.constraint.floor();
+    cigscript::since::uses(program)
+        .into_iter()
+        .filter(|u| u.since > floor)
+        .map(|u| {
+            Diagnostic::new(
+                Kind::Check,
+                format!(
+                    "`{}` arrived in cig {}, and the script is pinned to {} (which allows {})",
+                    u.what, u.since, pin.constraint, floor
+                ),
+            )
+            .code("E309")
+            .at(u.span)
+            .with_hint(format!(
+                "cig pin {name} --to >={} raises the pin; the pinned version would refuse this",
+                u.since
+            ))
+        })
+        .collect()
+}
+
+/// Before a real run: find the script's last good version and, when this
+/// cig is newer and that version is on the shelf, compare the two plans.
+/// Returns the exit status when the run was handed to the last good
+/// version, the note for the run record, and the last good version with
+/// its binary for the fallback.
+fn trial_before_run(
+    ctx: &Ctx,
+    args: &super::RunArgs,
+    source: &str,
+    program: &Program,
+    name: &str,
+    mode: &str,
+) -> (
+    Option<i32>,
+    Option<serde_json::Value>,
+    Option<(Version, std::path::PathBuf)>,
+) {
+    let Some((last, run_id)) = cigscript::burn::runs::last_good(&sha256(source)) else {
+        return (None, None, None);
+    };
+    let current = Version::current();
+    if last >= current {
+        return (None, None, None);
+    }
+    let bin = match humidor::binary(&last) {
+        Some(b) => b,
+        None if mode == "always" => {
+            let repo = Config::load().get("issues_repo");
+            eprintln!(
+                "{}",
+                ctx.dim(&format!(
+                    "trial: cig {last}, the last good version for this script, is not in the humidor; fetching it from {repo}"
+                ))
+            );
+            match humidor::add(&repo, &last) {
+                Ok(_) => match humidor::binary(&last) {
+                    Some(b) => b,
+                    None => return (None, None, None),
+                },
+                Err(e) => {
+                    eprintln!("{} {e}", ctx.yellow("trial skipped:"));
+                    return (
+                        None,
+                        Some(serde_json::json!({"last_good": last.to_string(), "skipped": e})),
+                        None,
+                    );
+                }
+            }
+        }
+        None => {
+            eprintln!(
+                "{}",
+                ctx.dim(&format!(
+                    "trial skipped: this script last went through on cig {last} (run {run_id}), which is not in the humidor; cig versions add {last} enables the trial"
+                ))
+            );
+            return (
+                None,
+                Some(
+                    serde_json::json!({"last_good": last.to_string(), "skipped": "not in the humidor"}),
+                ),
+                None,
+            );
+        }
+    };
+    eprintln!(
+        "{}",
+        ctx.dim(&format!(
+            "trial: this script last went through on cig {last} (run {run_id}); comparing its plan with {current}"
+        ))
+    );
+    let mine = match trial::plan_here(program, name, &args.args, args.max_steps) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{} {e}", ctx.yellow("trial skipped:"));
+            return (
+                None,
+                Some(serde_json::json!({"last_good": last.to_string(), "skipped": e})),
+                Some((last, bin)),
+            );
+        }
+    };
+    let theirs = match trial::plan_with(&bin, &args.file, &args.args) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("{} {e}", ctx.yellow("trial skipped:"));
+            return (
+                None,
+                Some(serde_json::json!({"last_good": last.to_string(), "skipped": e})),
+                Some((last, bin)),
+            );
+        }
+    };
+    let diff = trial::diff(&mine, &theirs);
+    if diff.is_empty() {
+        eprintln!(
+            "{}",
+            ctx.dim(&format!(
+                "trial: identical plans ({} op{}) on {last} and {current}; running on {current}",
+                mine.len(),
+                if mine.len() == 1 { "" } else { "s" }
+            ))
+        );
+        let note = serde_json::json!({
+            "compared": [last.to_string(), current.to_string()],
+            "same": true,
+            "ran_on": current.to_string(),
+            "ops": mine.len(),
+        });
+        return (None, Some(note), Some((last, bin)));
+    }
+    eprintln!(
+        "{} cig {last} plans {} op{}; {current} plans {}:",
+        ctx.bold("trial:"),
+        theirs.len(),
+        if theirs.len() == 1 { "" } else { "s" },
+        mine.len()
+    );
+    for line in &diff {
+        eprintln!("  {line}");
+    }
+    eprintln!(
+        "{} running on cig {last}, the version this script was proved on; cig run --no-trial {name} runs it on {current}",
+        ctx.bold("trial:")
+    );
+    humidor::touch(&last);
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    match humidor::dispatch(&bin, &argv) {
+        Ok(code) => (Some(code), None, None),
+        Err(e) => {
+            eprintln!("{} {e}", ctx.red("error[E807 usage]:"));
+            (Some(exit::USAGE), None, None)
+        }
+    }
 }

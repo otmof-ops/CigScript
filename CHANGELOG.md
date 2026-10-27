@@ -19,6 +19,37 @@ project follows semantic versioning.
   default); `always` does it unasked, `never` and a run without a terminal
   print the `cig unburn <run>` line instead. The report records
   `rolled_back`. (#24)
+- **The pin.** A script says which cig it was written for: `# cig 1.1`
+  under the shebang (any 1.1.x; `1.1.2` exactly; `>=1.1.2`), or a
+  `.cig-version` file for a whole project. When the installed cig does not
+  satisfy it, `run`, `--dry-run`, `check`, `light` and `chains` are handed
+  to that version from the humidor and the report says so; with no such
+  version at hand the run is refused (`E807`), never lit on the wrong cig.
+  `cig pin <file>` writes the pin. (#22)
+- **The humidor.** `~/.cigscript/humidor/<version>/cig`: other releases,
+  fetched on demand and verified against their checksum (and the release
+  attestation where `gh` is installed) before they are ever run. `cig
+  versions` lists the shelf, `add`, `remove` and `prune` tend it; a
+  `YANKED` file in the repository keeps a range pin off a bad version. (#22)
+- **The since table and the trial.** Every builtin and clause knows the
+  release it arrived in: `cig check` warns (`E309`) when a pinned script
+  uses something newer than its pin allows, and `cig pin` infers the
+  lowest version a script needs. Before a run on a cig a script has not
+  been proved on, its plan here and its plan on its last good version (the
+  newest run that went through, from the run history) are compared op by
+  op: identical plans run here, different plans run on the proved version
+  with the difference printed, and a run that fails here after burns that
+  all came back is tried once more on the last good version. Never after an
+  irreversible op. `trial = auto | always | never`, `--trial`,
+  `--no-trial`. (#22)
+- **`cig.version()`, `cig.os()`, `cig.arch()`, `cig.run_id()`.** A script
+  can read the cig it runs under and the id of its own run, so a tool
+  written in CigScript (cig-orchestrator) checks the cig it was handed and
+  prints its own `cig unburn` line. (#22, cig-orchestrator FINDINGS)
+- **Records know their format.** `run.json`, `after.json` and the first
+  line of `journal.jsonl` carry `format: 1`. A newer cig reads older
+  formats; an older cig refuses a newer one by its number (`E808`) and
+  `cig unburn` hands the run to the cig that wrote it. (#22)
 
 ## 1.1.2 — 2026-10-24
 

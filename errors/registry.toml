@@ -645,6 +645,21 @@ probe = "source-line"
 remedy = "pass the value as its own argument to the program; the shell never sees it"
 
 [[code]]
+code = "E309"
+title = "newer than the pin"
+meaning = "The script is pinned to a cig older than something it uses: the pinned version would refuse the script, or run it wrong."
+fix = "raise the pin to the version the feature arrived in (cig pin <file> infers it), or drop the feature"
+no = "none"
+arises = ["check", "run"]
+tags = ["ci-likely"]
+since = "1.2.0"
+related = ["E807"]
+[[code.cause]]
+why = "the pin was written before the script started using the feature"
+probe = "source-line"
+remedy = "cig pin <file> rewrites the pin from what the script uses"
+
+[[code]]
 code = "E400"
 title = "type error"
 meaning = "A value of the wrong type reached an operation."
@@ -1623,6 +1638,42 @@ remedy = "retry once; report it if it repeats, since a mismatch means the downlo
 why = "the install directory is not writable, or is group-writable (refused for safety)"
 probe = "path-permissions"
 remedy = "chown or chmod the directory holding cig, or install to a directory only you can write"
+
+[[code]]
+code = "E807"
+title = "pinned version not available"
+meaning = "The script pins a cig version this cig is not, and no cig that satisfies the pin is in the humidor or could be fetched; or the pin itself cannot be read."
+fix = "cig versions add <version> when online, or change the pin"
+no = "dont-have-any"
+arises = ["run", "check", "light", "any"]
+since = "1.2.0"
+related = ["E808"]
+[[code.cause]]
+why = "the pinned version was never fetched and there is no network"
+probe = "none"
+remedy = "cig versions add <version> when online; the humidor keeps it after that"
+[[code.cause]]
+why = "the pin cannot be read: not a version, or a constraint cig does not know"
+probe = "none"
+remedy = "write `# cig 1.1` (any 1.1.x), `# cig 1.1.2` (exactly) or `# cig >=1.1.2` under the shebang; `.cig-version` takes the same"
+[[code.cause]]
+why = "no release of that version exists for this platform"
+probe = "release-manifest"
+remedy = "build it: cargo install --git https://github.com/otmof-ops/CigScript --tag v<version> --root ~/.cigscript/humidor/<version>"
+
+[[code]]
+code = "E808"
+title = "record from a newer cig"
+meaning = "A run record or journal was written in a format this cig does not read; it is never parsed by guess."
+fix = "cig versions add <the version that wrote it>; cig unburn then hands the run to that version"
+no = "dont-have-any"
+arises = ["unburn", "runs"]
+since = "1.2.0"
+related = ["E807"]
+[[code.cause]]
+why = "cig was downgraded after the run was made"
+probe = "none"
+remedy = "cig update, or cig versions add <version> so unburn can hand the run to it"
 
 # --- internal (E9xx) ---
 

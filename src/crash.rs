@@ -52,6 +52,13 @@ pub fn set_active_run(id: Option<String>) {
         .unwrap_or_else(|p| p.into_inner()) = id;
 }
 
+/// The run in progress, as `cig.run_id()` reports it to the script.
+pub fn active_run() -> Option<String> {
+    CONTEXT
+        .get()
+        .and_then(|m| m.lock().ok().and_then(|g| g.clone()))
+}
+
 /// The report written by the most recent panic in this process, if any.
 pub fn last_report() -> Option<PathBuf> {
     LAST.get()

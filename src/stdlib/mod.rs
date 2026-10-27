@@ -9,6 +9,7 @@
 //! world-changing ones outside a `burn` block.
 
 mod chain;
+mod cig;
 mod core;
 mod csv;
 mod env;
@@ -74,6 +75,7 @@ pub fn prelude() -> Vec<(&'static str, Value)> {
     out.push(("proc", module("proc", proc::TABLE, &[])));
     out.push(("time", module("time", time::TABLE, &[])));
     out.push(("hash", module("hash", hash::TABLE, &[])));
+    out.push(("cig", module("cig", cig::TABLE, &[])));
     out.push((
         "math",
         module(
@@ -140,6 +142,7 @@ pub fn catalogue() -> Vec<(&'static str, Vec<CatalogueRow>)> {
         ("proc", rows(proc::TABLE)),
         ("time", rows(time::TABLE)),
         ("hash", rows(hash::TABLE)),
+        ("cig", rows(cig::TABLE)),
         ("math", rows(math::TABLE)),
         ("env", rows(env::TABLE)),
         ("csv", rows(csv::TABLE)),

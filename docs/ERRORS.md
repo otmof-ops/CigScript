@@ -295,6 +295,7 @@ static check (`cig check`): a mistake found before anything runs.
 | [`E306`](#e306-already-declared) | already declared | not one of the four | assign with `name = ...` the second time, or choose another name |
 | [`E307`](#e307-unknown-module-member) | unknown module member | can't see any ciggies bro | use the member the hint suggests; `cig language` lists every one |
 | [`E308`](#e308-shell-through-proc.run) | shell through proc.run | not one of the four | call the program directly with its arguments as a list; proc.pipe for a pipeline; proc.shell if you mean the shell and the string is yours |
+| [`E309`](#e309-newer-than-the-pin) | newer than the pin | not one of the four | raise the pin to the version the feature arrived in (cig pin <file> infers it), or drop the feature |
 
 ### E300 check error
 
@@ -441,6 +442,23 @@ proc.run is handed a shell (`sh -c`, `bash -c`, `cmd /C`) with a command string 
 **Known causes**, ranked; doctor checks them in this order:
 
 1. a value that came from outside the script is spliced into a shell command (probe `source-line`). **Remedy:** pass the value as its own argument to the program; the shell never sees it
+
+
+### E309 newer than the pin
+
+*check · since 1.2.0 · arises in check, run*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The script is pinned to a cig older than something it uses: the pinned version would refuse the script, or run it wrong.
+
+**What to type next:** raise the pin to the version the feature arrived in (cig pin <file> infers it), or drop the feature
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the pin was written before the script started using the feature (probe `source-line`). **Remedy:** cig pin <file> rewrites the pin from what the script uses
+
+Related: `E807`.
 
 
 ## type (`E400`–`E499`)
@@ -1306,7 +1324,7 @@ Related: `E750`, `E752`.
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
-A child process changed files outside the declared pack. The kernel cannot undo them and did not watch them; they are listed so nothing is hidden.
+A child process changed files in its working directory outside the declared pack. The kernel cannot undo them; they are listed so nothing is hidden. Writes elsewhere are not watched at all: the hop's irreversible label is their only record.
 
 **What to type next:** point the program at the pack (its cwd, an output flag), or add the root it wrote to
 
@@ -1394,6 +1412,8 @@ the command line and the environment.
 | [`E804`](#e804-no-such-chain) | no such chain | can't see any ciggies bro | `cig chains <file>` lists them |
 | [`E805`](#e805-network-tool-missing) | network tool missing | don't have any over here | install curl or gh; `cig doctor --fix` offers to |
 | [`E806`](#e806-update-failed) | update failed | one of the four; the message says which | the message says which step; retry, or install from the releases page |
+| [`E807`](#e807-pinned-version-not-available) | pinned version not available | don't have any over here | cig versions add <version> when online, or change the pin |
+| [`E808`](#e808-record-from-a-newer-cig) | record from a newer cig | don't have any over here | cig versions add <the version that wrote it>; cig unburn then hands the run to that version |
 
 ### E800 usage error
 
@@ -1507,6 +1527,42 @@ The release could not be fetched, verified or installed.
 1. no network, or the release host refused (no probe; a suggestion, not a finding). **Remedy:** retry; `cig update --check` shows what it can reach
 2. the checksum did not match: nothing was installed (probe `release-manifest`). **Remedy:** retry once; report it if it repeats, since a mismatch means the download is not what was published
 3. the install directory is not writable, or is group-writable (refused for safety) (probe `path-permissions`). **Remedy:** chown or chmod the directory holding cig, or install to a directory only you can write
+
+
+### E807 pinned version not available
+
+*usage · since 1.2.0 · arises in run, check, light, any*
+
+**Kind of no:** don't have any over here (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result).
+
+The script pins a cig version this cig is not, and no cig that satisfies the pin is in the humidor or could be fetched; or the pin itself cannot be read.
+
+**What to type next:** cig versions add <version> when online, or change the pin
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the pinned version was never fetched and there is no network (no probe; a suggestion, not a finding). **Remedy:** cig versions add <version> when online; the humidor keeps it after that
+2. the pin cannot be read: not a version, or a constraint cig does not know (no probe; a suggestion, not a finding). **Remedy:** write `# cig 1.1` (any 1.1.x), `# cig 1.1.2` (exactly) or `# cig >=1.1.2` under the shebang; `.cig-version` takes the same
+3. no release of that version exists for this platform (probe `release-manifest`). **Remedy:** build it: cargo install --git https://github.com/otmof-ops/CigScript --tag v<version> --root ~/.cigscript/humidor/<version>
+
+Related: `E808`.
+
+
+### E808 record from a newer cig
+
+*usage · since 1.2.0 · arises in unburn, runs*
+
+**Kind of no:** don't have any over here (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result).
+
+A run record or journal was written in a format this cig does not read; it is never parsed by guess.
+
+**What to type next:** cig versions add <the version that wrote it>; cig unburn then hands the run to that version
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. cig was downgraded after the run was made (no probe; a suggestion, not a finding). **Remedy:** cig update, or cig versions add <version> so unburn can hand the run to it
+
+Related: `E807`.
 
 
 ## update (`E850`–`E869`)

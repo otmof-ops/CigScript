@@ -25,9 +25,17 @@ pub fn runs_dir() -> PathBuf {
     home_dir().join("runs")
 }
 
+/// The shape of `run.json` this cig writes. A newer cig reads every older
+/// shape; an older cig refuses a newer one by its number instead of
+/// guessing (E808).
+pub const RECORD_FORMAT: u32 = 1;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RunRecord {
     pub id: String,
+    /// The record's format: 0 for records from before 1.2.0, which carried none.
+    #[serde(default)]
+    pub format: u32,
     pub version: String,
     pub script: String,
     pub script_sha256: String,
@@ -58,6 +66,10 @@ pub struct RunRecord {
     /// Process id of the run, to tell an interrupted run from a live one.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// What the trial found before this run: the versions compared, whether
+    /// their plans agreed, and what was done about it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trial: Option<serde_json::Value>,
     /// The directory this record was read from, which is where its journal
     /// is even when the directory no longer matches the id.
     #[serde(skip)]
@@ -77,6 +89,7 @@ impl RunRecord {
         let salt = hex::encode(salt.finalize());
         Self {
             id: format!("{}-{}", now.format("%Y%m%dT%H%M%S"), &salt[..6]),
+            format: RECORD_FORMAT,
             version: crate::VERSION.to_string(),
             script: script.to_string_lossy().to_string(),
             script_sha256: sha,
@@ -95,6 +108,7 @@ impl RunRecord {
             rolled_back: false,
             rollback_failed: Vec::new(),
             pid: Some(std::process::id()),
+            trial: None,
             loaded_from: None,
         }
     }
@@ -113,6 +127,7 @@ impl RunRecord {
                 .unwrap_or_else(|_| id.to_string());
         Self {
             id: id.to_string(),
+            format: 0,
             version: String::new(),
             script: String::new(),
             script_sha256: String::new(),
@@ -129,6 +144,7 @@ impl RunRecord {
             rolled_back: false,
             rollback_failed: Vec::new(),
             pid: None,
+            trial: None,
             loaded_from: None,
         }
     }
@@ -180,14 +196,44 @@ impl RunRecord {
 
     pub fn load(run_dir: &Path) -> io::Result<Self> {
         let text = fs::read_to_string(run_dir.join("run.json"))?;
+        // The format is read first: a newer cig may have added fields this
+        // one does not know, and that is a newer record, not a damaged one.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            let format = v["format"].as_u64().unwrap_or(0) as u32;
+            if format > RECORD_FORMAT {
+                return Err(newer_format(
+                    "run.json",
+                    format,
+                    v["version"].as_str().unwrap_or(""),
+                ));
+            }
+        }
         let mut rec: Self = serde_json::from_str(&text)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         rec.loaded_from = Some(run_dir.to_path_buf());
         Ok(rec)
     }
+
+    /// The version that wrote this record, for handing the run back to it.
+    pub fn written_by(&self) -> Option<crate::update::Version> {
+        crate::update::Version::parse(&self.version)
+    }
 }
 
-/// All run records, newest first.
+/// The error for a record a newer cig wrote: `io::ErrorKind::Unsupported`,
+/// so a caller can tell it from damage and hand the run to that version.
+pub fn newer_format(what: &str, format: u32, version: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "{what} is format {format}, written by cig {}; this cig ({}) reads up to format {}",
+            if version.is_empty() { "?" } else { version },
+            crate::VERSION,
+            RECORD_FORMAT
+        ),
+    )
+}
+
 /// Is a process with this id still alive? Read-only: no signal is sent.
 pub fn pid_alive(pid: u32) -> bool {
     if pid == std::process::id() {
@@ -243,8 +289,20 @@ pub fn list() -> io::Result<Vec<RunRecord>> {
                 Err(e) => {
                     // A damaged record must not hide a run whose journal
                     // is intact: list it, say so, and let unburn reach it.
+                    // A record from a newer cig is not damaged: it is
+                    // listed as such, and unburn hands it to that cig.
                     if let Some(id) = entry.file_name().to_str() {
                         let mut rec = RunRecord::damaged(id, &e);
+                        if e.kind() == io::ErrorKind::Unsupported {
+                            rec.status = "newer".to_string();
+                            if let Ok(text) = fs::read_to_string(entry.path().join("run.json")) {
+                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                                    rec.version = v["version"].as_str().unwrap_or("").to_string();
+                                    rec.format = v["format"].as_u64().unwrap_or(0) as u32;
+                                    rec.script = v["script"].as_str().unwrap_or("").to_string();
+                                }
+                            }
+                        }
                         rec.loaded_from = Some(entry.path());
                         rec.refresh_from_journal();
                         out.push(rec);
@@ -256,6 +314,16 @@ pub fn list() -> io::Result<Vec<RunRecord>> {
     // Newest first; `started` carries milliseconds, ids only seconds.
     out.sort_by(|a, b| b.started.cmp(&a.started).then_with(|| b.id.cmp(&a.id)));
     Ok(out)
+}
+
+/// The last good version of a script: the cig that lit the newest run of
+/// this exact source (by hash) that went through, with that run's id.
+pub fn last_good(script_sha256: &str) -> Option<(crate::update::Version, String)> {
+    list().ok()?.into_iter().find_map(|r| {
+        (r.script_sha256 == script_sha256 && r.status == "ok" && r.mode == "run")
+            .then(|| r.written_by().map(|v| (v, r.id.clone())))
+            .flatten()
+    })
 }
 
 /// Resolve a full id or a unique prefix to a run directory.

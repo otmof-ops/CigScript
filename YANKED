@@ -1,0 +1,4 @@
+# Versions of cig that must not be picked by a range pin (`# cig 1.1`), one
+# per line with the reason after it. An exact pin to one still runs, with a
+# warning. Releases are never deleted and tags never moved: a yanked version
+# stays available to the scripts that name it. See SECURITY.md.

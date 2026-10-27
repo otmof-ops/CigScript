@@ -42,6 +42,22 @@ another program (`gh`, `curl`, package managers offered by `cig doctor --fix`).
   a rename, never written in place. `cig` makes no network request unless you
   run `cig update` or `cig crash send`.
 
+## What the humidor trusts
+
+`~/.cigscript/humidor/` holds other versions of cig, for scripts pinned to
+them (`# cig 1.1`) and for journals they wrote. A version arrives only through
+the path `cig update` takes: the release's asset for this platform and its
+`.sha256`, verified before the binary is kept, and never run from a failed
+check. Where `gh` is installed the binary is also checked against the
+repository's build attestation (`gh attestation verify`), which proves it
+came from this repository's release workflow; `cig versions` shows each
+version as `attested`, `verified` (checksum only) or `unverified` (put there
+by hand). A dispatched cig runs with `CIG_DISPATCHED=1` and never dispatches
+again. Releases are never deleted and tags never moved, so a pinned script
+can always be lit by the cig it names; a version with a serious bug is listed
+in `YANKED` at the repository root with its reason, and a range pin never
+picks one.
+
 ## What the crash reporter sends
 
 Nothing, unless you say yes. A panic writes a report under
