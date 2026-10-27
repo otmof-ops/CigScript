@@ -811,7 +811,10 @@ fn run_record(d: &Diagnostic) -> (Outcome, String) {
     };
     match runs::find(id) {
         Ok(Some(r)) => {
-            let alive = r.pid.map(runs::pid_alive).unwrap_or(false);
+            let alive = r
+                .pid
+                .map(|p| runs::pid_alive(p, r.pid_started.as_deref()))
+                .unwrap_or(false);
             let evidence = format!(
                 "run {} is `{}`, pid {}{}, {} burn{} in the journal",
                 r.id,

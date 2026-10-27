@@ -66,6 +66,11 @@ pub struct RunRecord {
     /// Process id of the run, to tell an interrupted run from a live one.
     #[serde(default)]
     pub pid: Option<u32>,
+    /// When that process started, as the platform reports it, so a reused
+    /// pid never passes for the run that died: Linux's `/proc` start ticks,
+    /// `ps -o lstart` on macOS and the BSDs, the creation time on Windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pid_started: Option<String>,
     /// What the trial found before this run: the versions compared, whether
     /// their plans agreed, and what was done about it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +113,7 @@ impl RunRecord {
             rolled_back: false,
             rollback_failed: Vec::new(),
             pid: Some(std::process::id()),
+            pid_started: process_started(std::process::id()),
             trial: None,
             loaded_from: None,
         }
@@ -144,6 +150,8 @@ impl RunRecord {
             rolled_back: false,
             rollback_failed: Vec::new(),
             pid: None,
+
+            pid_started: None,
             trial: None,
             loaded_from: None,
         }
@@ -161,7 +169,12 @@ impl RunRecord {
                 self.irreversible = irreversible;
             }
         }
-        if self.status == "running" && !self.pid.map(pid_alive).unwrap_or(false) {
+        if self.status == "running"
+            && !self
+                .pid
+                .map(|pid| pid_alive(pid, self.pid_started.as_deref()))
+                .unwrap_or(false)
+        {
             self.status = "interrupted".to_string();
         }
     }
@@ -235,38 +248,109 @@ pub fn newer_format(what: &str, format: u32, version: &str) -> io::Error {
 }
 
 /// Is a process with this id still alive? Read-only: no signal is sent.
-pub fn pid_alive(pid: u32) -> bool {
-    if pid == std::process::id() {
-        return true;
-    }
+/// The name and start time of a live process, as this platform tells them:
+/// `(name, started)`, or None when there is no such process (or it cannot
+/// be asked). The start time is an opaque string compared for equality.
+fn process_identity(pid: u32) -> Option<(String, String)> {
     #[cfg(target_os = "linux")]
     {
-        // The pid may have been reused by another program since the run
-        // died; it counts as ours only if it is a cig.
-        match fs::read_to_string(format!("/proc/{pid}/comm")) {
-            Ok(comm) => comm.trim().starts_with("cig"),
-            Err(_) => false,
-        }
+        let comm = fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // Field 22 (starttime) comes after the parenthesised name, which may
+        // itself hold spaces and parentheses.
+        let after = stat.rsplit_once(')')?.1;
+        let started = after.split_whitespace().nth(19)?.to_string();
+        Some((comm.trim().to_string(), format!("ticks:{started}")))
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
+        let out = std::process::Command::new("ps")
+            .args(["-o", "lstart=,comm=", "-p", &pid.to_string()])
             .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let line = text.lines().find(|l| !l.trim().is_empty())?.trim();
+        // lstart is five words (Mon Oct 27 11:40:03 2026); comm follows.
+        let mut words = line.split_whitespace();
+        let started: Vec<&str> = words.by_ref().take(5).collect();
+        let comm = words.collect::<Vec<_>>().join(" ");
+        if started.len() < 5 || comm.is_empty() {
+            return None;
+        }
+        Some((
+            std::path::Path::new(&comm)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or(comm.clone()),
+            format!("lstart:{}", started.join(" ")),
+        ))
     }
     #[cfg(windows)]
     {
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+        // PowerShell knows a process's name and start time; tasklist only
+        // its name. Either is better than a bare pid.
+        let script = format!(
+            "$p = Get-Process -Id {pid} -ErrorAction SilentlyContinue; if ($p) {{ $p.ProcessName + '|' + $p.StartTime.ToFileTimeUtc() }}"
+        );
+        let out = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output();
+        if let Ok(o) = out {
+            let text = String::from_utf8_lossy(&o.stdout);
+            let line = text.trim();
+            if let Some((name, started)) = line.split_once('|') {
+                return Some((
+                    name.trim().to_string(),
+                    format!("filetime:{}", started.trim()),
+                ));
+            }
+            if o.status.success() && line.is_empty() {
+                return None;
+            }
+        }
+        let out = std::process::Command::new("tasklist")
+            .args(["/FO", "CSV", "/NH", "/FI", &format!("PID eq {pid}")])
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&pid.to_string()))
-            .unwrap_or(false)
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let line = text.lines().find(|l| l.starts_with('"'))?;
+        let name = line.split('"').nth(1)?.to_string();
+        Some((name, String::new()))
     }
     #[cfg(not(any(unix, windows)))]
     {
-        false
+        let _ = pid;
+        None
+    }
+}
+
+/// The start time of a process, for the run record (see `pid_alive`).
+pub fn process_started(pid: u32) -> Option<String> {
+    process_identity(pid)
+        .map(|(_, started)| started)
+        .filter(|s| !s.is_empty())
+}
+
+/// Is the run that recorded `pid` still running? The pid alone is not
+/// enough on any platform: it is reused, quickly on Windows. The live
+/// process has to be a cig, and when the record kept the start time, the
+/// same start time; otherwise the run died and the record is interrupted.
+pub fn pid_alive(pid: u32, started: Option<&str>) -> bool {
+    if pid == std::process::id() {
+        return true;
+    }
+    let Some((name, live_started)) = process_identity(pid) else {
+        return false;
+    };
+    let is_cig = name.to_ascii_lowercase().starts_with("cig");
+    match started {
+        Some(recorded) if !recorded.is_empty() && !live_started.is_empty() => {
+            is_cig && recorded == live_started
+        }
+        _ => is_cig,
     }
 }
 

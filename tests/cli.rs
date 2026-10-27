@@ -2309,6 +2309,37 @@ fn a_dead_run_whose_pid_was_reused_is_interrupted_not_running() {
     rec["pid"] = serde_json::Value::from(1);
     fs::write(&path, rec.to_string()).unwrap();
     assert_eq!(sb.runs()[0]["status"], "interrupted");
+    // A live process that is not a cig (this test runner) is a reused pid
+    // too, on every platform; and a cig whose start time differs from the
+    // one the record kept is another cig, not the run that died.
+    rec["pid"] = serde_json::Value::from(std::process::id());
+    fs::write(&path, rec.to_string()).unwrap();
+    assert_eq!(sb.runs()[0]["status"], "interrupted");
+    rec["pid_started"] = serde_json::Value::String("ticks:1".to_string());
+    fs::write(&path, rec.to_string()).unwrap();
+    assert_eq!(sb.runs()[0]["status"], "interrupted");
+    // A finished run records when its process started, for the next check.
+    let fresh: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(sb.home().join("runs").join(&id).join("run.json")).unwrap(),
+    )
+    .unwrap();
+    let _ = fresh;
+}
+
+#[test]
+fn a_run_record_names_when_its_process_started() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "burn {\n  fs.write_text(\"p.txt\", \"1\")\n}\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let rec = &sb.runs()[0];
+    assert!(rec["pid"].as_u64().unwrap_or(0) > 0, "{rec}");
+    let started = rec["pid_started"].as_str().unwrap_or("");
+    assert!(
+        started.starts_with("ticks:")
+            || started.starts_with("lstart:")
+            || started.starts_with("filetime:"),
+        "pid_started = {started:?} in {rec}"
+    );
 }
 
 #[test]

@@ -137,7 +137,7 @@ impl Journal {
                 if f.metadata()?.len() == 0 {
                     f.write_all(format!("{{\"format\":{JOURNAL_FORMAT}}}\n").as_bytes())?;
                     f.flush()?;
-                    f.sync_data()?;
+                    full_sync_data(&f)?;
                 }
                 sync_dir(dir)?;
                 Some(f)
@@ -279,7 +279,7 @@ impl Journal {
         if let Some(f) = &mut self.file {
             let _ = f.write_all(markers.as_bytes());
             let _ = f.flush();
-            let _ = f.sync_data();
+            let _ = full_sync_data(f);
         }
         report
     }
@@ -288,7 +288,7 @@ impl Journal {
         if let Some(f) = &mut self.file {
             let _ = f.write_all(marker.as_bytes());
             let _ = f.flush();
-            let _ = f.sync_data();
+            let _ = full_sync_data(f);
         }
     }
 
@@ -371,7 +371,7 @@ impl Journal {
             line.push('\n');
             f.write_all(line.as_bytes())?;
             f.flush()?;
-            f.sync_data()?;
+            full_sync_data(f)?;
         }
         self.entries.push(entry);
         Ok(())
@@ -1369,10 +1369,45 @@ pub(crate) fn set_mtime(path: &Path, ns: u64) -> Result<(), io::Error> {
 /// object, a `.git/objects` entry): Unix flushes a read-only handle, while
 /// Windows refuses to ("access is denied") and needs the read-only
 /// attribute lifted around the flush.
+/// Flush one file to the disk itself. On macOS `fsync` stops at the drive's
+/// cache; `F_FULLFSYNC` asks the drive to write it out, and falls back to
+/// `fsync` on a filesystem that does not take it. Everywhere else
+/// `sync_all` is the platform's full flush.
+#[cfg_attr(windows, allow(dead_code))]
+pub(crate) fn full_sync(f: &fs::File) -> Result<(), io::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: fcntl on a file descriptor this handle owns.
+        let rc = unsafe { libc::fcntl(f.as_raw_fd(), libc::F_FULLFSYNC) };
+        if rc == 0 {
+            return Ok(());
+        }
+        f.sync_all()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        f.sync_all()
+    }
+}
+
+/// Flush a file's data for an append: `sync_data` everywhere `fsync` reaches
+/// the disk, the full flush on macOS where it does not.
+pub(crate) fn full_sync_data(f: &fs::File) -> Result<(), io::Error> {
+    #[cfg(target_os = "macos")]
+    {
+        full_sync(f)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        f.sync_data()
+    }
+}
+
 pub(crate) fn sync_file(path: &Path) -> Result<(), io::Error> {
     #[cfg(not(windows))]
     {
-        fs::File::open(path)?.sync_all()
+        full_sync(&fs::File::open(path)?)
     }
     #[cfg(windows)]
     {
@@ -1402,12 +1437,35 @@ fn sync_dir(dir: &Path) -> Result<(), io::Error> {
     #[cfg(unix)]
     {
         match fs::File::open(dir) {
-            Ok(f) => f.sync_all(),
+            Ok(f) => full_sync(&f),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e),
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        // A directory handle needs FILE_FLAG_BACKUP_SEMANTICS and write
+        // access for FlushFileBuffers to flush its entries on NTFS. Where
+        // the open is refused (a filesystem without it), the entry is left
+        // to the filesystem's own journal, as it was before.
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+        match fs::OpenOptions::new()
+            .write(true)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(dir)
+        {
+            Ok(f) => match f.sync_all() {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == io::ErrorKind::PermissionDenied => Ok(()),
+                Err(e) if e.raw_os_error() == Some(1) => Ok(()),
+                Err(e) => Err(e),
+            },
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Ok(()),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = dir;
         Ok(())
