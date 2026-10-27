@@ -1,0 +1,61 @@
+name: portability-probe
+# Throwaway: runs the kernel probe, CigScript's own tests and cig-orchestrator's
+# suite on every OS GitHub hosts, plus FreeBSD and Alpine. Nothing here gates
+# anything; every step continues so the whole matrix reports.
+on:
+  push:
+    branches: [probe/portability]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  hosted:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: environment
+        run: |
+          uname -a; echo "shell: $BASH_VERSION"; for p in sh bash git python3 python py node npm make sed readlink realpath mktemp; do printf '%-9s %s\n' "$p" "$(command -v $p || echo MISSING)"; done
+          sed --version 2>&1 | head -1 || true; readlink -f . 2>&1 | head -1 || true
+      - name: build
+        run: cargo build --release
+      - name: kernel probe
+        continue-on-error: true
+        run: |
+          bin=target/release/cig; [ -f "$bin.exe" ] && bin="$bin.exe"
+          CIG="$PWD/$bin" bash .github/probe/probe.sh
+      - name: cargo test
+        continue-on-error: true
+        run: cargo test --release --no-fail-fast 2>&1 | grep -av ' ok$' | grep -av '^\s*Compiling\|^\s*Running\|^running [0-9]' | head -400
+      - name: cig-orchestrator suite
+        continue-on-error: true
+        run: |
+          export PATH="$PWD/target/release:$PATH"
+          git clone -q --depth 1 https://github.com/otmof-ops/cig-orchestrator ../cigo
+          cd ../cigo
+          cig run tests/run.cig 2>&1 | grep -av '^ok ' | head -300
+      - name: native Windows probe (PowerShell)
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: pwsh -NoProfile -File .github/probe/probe.ps1 "$PWD\target\release\cig.exe"
+      - name: cig-orchestrator suite from PowerShell
+        if: runner.os == 'Windows'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $env:PATH = "$PWD\target\release;$env:PATH"
+          Set-Location ..\cigo
+          cig run tests/run.cig 2>&1 | Where-Object { $_ -notmatch '^ok ' } | Select-Object -First 300
+
+
