@@ -24,6 +24,10 @@ pub enum Before {
         snapshot: PathBuf,
         sha256: String,
         bytes: u64,
+        /// The file's own mode, when the snapshot is a shared tin object
+        /// whose mode is not the file's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
     },
     Dir {
         snapshot: PathBuf,
@@ -334,6 +338,19 @@ impl Journal {
         compensated: bool,
     ) -> Result<(), io::Error> {
         let before = self.capture_before(seq, &op)?;
+        self.record_with_before(seq, op, before, compensation, compensated)
+    }
+
+    /// `record_with` for an op whose before-state was captured earlier: a
+    /// file the tin kept before a hop changed it.
+    pub fn record_with_before(
+        &mut self,
+        seq: u64,
+        op: Op,
+        before: Vec<BeforeState>,
+        compensation: Option<Compensation>,
+        compensated: bool,
+    ) -> Result<(), io::Error> {
         let entry = Entry {
             seq,
             at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -456,6 +473,7 @@ impl Journal {
                         snapshot: PathBuf::new(),
                         sha256: String::new(),
                         bytes: meta.len(),
+                        mode: None,
                     }
                 },
             });
@@ -487,6 +505,7 @@ impl Journal {
                     snapshot: snap,
                     sha256,
                     bytes: meta.len(),
+                    mode: None,
                 },
             })
         }
@@ -991,7 +1010,12 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
     let path = &state.path;
     match &state.before {
         Before::Absent => remove_any(path),
-        Before::File { snapshot, .. } => {
+        Before::File {
+            snapshot,
+            sha256,
+            mode,
+            ..
+        } => {
             if snapshot.as_os_str().is_empty() {
                 return Err(io::Error::other(
                     "no snapshot was taken (in-memory journal)",
@@ -1003,6 +1027,22 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
                     format!("snapshot {} is missing", snapshot.display()),
                 ));
             }
+            if super::tin::holds(snapshot) && !sha256.is_empty() {
+                // A shared object is checked against its name every time it
+                // is read back: a corrupt tin never writes garbage.
+                let actual = sha256_file(snapshot)?;
+                if actual != *sha256 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "tin object {} is corrupt (sha256 {} on disk); refusing to restore from it",
+                            snapshot.display(),
+                            &actual[..12]
+                        ),
+                    ));
+                }
+            }
+            let _ = mode;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -1031,6 +1071,11 @@ fn restore(state: &BeforeState) -> Result<(), io::Error> {
             // half-way leaves whatever is there untouched.
             let staged = staging_path(path);
             copy_file_with_mode(snapshot, &staged)?;
+            #[cfg(unix)]
+            if let Some(m) = mode {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&staged, fs::Permissions::from_mode(*m))?;
+            }
             if fs::symlink_metadata(path)
                 .map(|m| m.is_dir())
                 .unwrap_or(false)
@@ -1283,6 +1328,7 @@ mod tests {
                 cmd: "true".into(),
                 args: vec![],
                 cwd: None,
+                touches: Vec::new(),
             },
         )
         .unwrap();

@@ -12,6 +12,7 @@
 pub mod ghost;
 pub mod journal;
 pub mod runs;
+pub mod tin;
 
 use crate::diagnostics::{burn as burn_error, Diagnostic};
 use journal::Journal;
@@ -46,6 +47,10 @@ pub enum Op {
         cmd: String,
         args: Vec<String>,
         cwd: Option<PathBuf>,
+        /// Globs of the files the hop may change; their before-bytes go
+        /// to the tin first, so a change under them can be undone.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        touches: Vec<String>,
     },
     EnvSet {
         key: String,
@@ -57,11 +62,14 @@ pub enum Op {
     HopCreated {
         path: PathBuf,
     },
-    /// A file a hop modified or deleted inside the pack (observed; the
-    /// kernel has no before-image, so it cannot be undone).
+    /// A file a hop modified or deleted inside the pack. Observed after the
+    /// hop; undone only when the hop said it might touch the path, which
+    /// put the before-bytes in the tin first (`tinned`).
     HopChanged {
         path: PathBuf,
         change: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        tinned: bool,
     },
     /// The compensation recorded when a `burn { } unburn { }` block ends.
     Compensate {
@@ -91,10 +99,11 @@ impl Op {
     /// changes cannot be watched or restored by the kernel, so they are
     /// irreversible and the plan says so.
     pub fn reversible(&self) -> bool {
-        !matches!(
-            self,
-            Op::Proc { .. } | Op::HopChanged { .. } | Op::EnvSet { .. } | Op::EnvUnset { .. }
-        )
+        match self {
+            Op::Proc { .. } | Op::EnvSet { .. } | Op::EnvUnset { .. } => false,
+            Op::HopChanged { tinned, .. } => *tinned,
+            _ => true,
+        }
     }
 
     pub fn describe(&self) -> String {
@@ -105,7 +114,12 @@ impl Op {
             Op::Move { from, to } => format!("move {} -> {}", from.display(), to.display()),
             Op::Copy { from, to } => format!("copy {} -> {}", from.display(), to.display()),
             Op::Mkdir { path } => format!("mkdir {}", path.display()),
-            Op::Proc { cmd, args, cwd } => {
+            Op::Proc {
+                cmd,
+                args,
+                cwd,
+                touches,
+            } => {
                 let mut s = format!("run {}", shell_quote(cmd));
                 for a in args {
                     s.push(' ');
@@ -114,12 +128,23 @@ impl Op {
                 if let Some(c) = cwd {
                     s.push_str(&format!("  (in {})", c.display()));
                 }
+                if !touches.is_empty() {
+                    s.push_str(&format!("  (touches {})", touches.join(", ")));
+                }
                 s
             }
             Op::EnvSet { key } => format!("set env {key}"),
             Op::EnvUnset { key } => format!("unset env {key}"),
             Op::HopCreated { path } => format!("hop created {}", path.display()),
-            Op::HopChanged { path, change } => format!("hop {change} {}", path.display()),
+            Op::HopChanged {
+                path,
+                change,
+                tinned,
+            } => format!(
+                "hop {change} {}{}",
+                path.display(),
+                if *tinned { "  (tin)" } else { "" }
+            ),
             Op::Compensate { line } => format!("compensation for the burn at line {line}"),
         }
     }
@@ -207,11 +232,16 @@ pub struct HopWrites {
     pub outside: Vec<PathBuf>,
 }
 
-/// A snapshot of mtimes and sizes, cheap enough to take around every hop.
+/// A snapshot of mtimes and sizes, cheap enough to take around every hop,
+/// plus the before-bytes of the files the hop said it may touch.
 pub struct PackWatch {
     inside: std::collections::BTreeMap<PathBuf, (u64, u64)>,
     outside: std::collections::BTreeMap<PathBuf, (u64, u64)>,
     outside_root: Option<PathBuf>,
+    /// Files stashed in the tin before the hop, by path.
+    tinned: std::collections::BTreeMap<PathBuf, tin::Stashed>,
+    /// What could not be stashed, one line each, for the hop to report.
+    pub warnings: Vec<String>,
 }
 
 /// Expand `~`, make absolute against the working directory, and normalise
@@ -295,6 +325,7 @@ fn scan(
     let mut out = std::collections::BTreeMap::new();
     // Links are followed: a directory linked from inside the pack is part
     // of what a child can write through, and a loop is skipped by walkdir.
+    let ignore = tin::ignore_set(root);
     for entry in walkdir::WalkDir::new(root)
         .min_depth(1)
         .max_depth(max_depth)
@@ -302,7 +333,13 @@ fn scan(
         .into_iter()
         .filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
-            n != ".git" && n != "node_modules" && n != "target" && n != ".cigscript"
+            if tin::SKIPPED_ALWAYS.contains(&n.as_ref()) {
+                return false;
+            }
+            match (&ignore, e.path().strip_prefix(root)) {
+                (Some(set), Ok(rel)) => !set.is_match(rel),
+                _ => true,
+            }
         })
     {
         let Ok(entry) = entry else { continue };
@@ -439,7 +476,7 @@ impl Kernel {
 
     /// Before a hop: remember the pack's files (and the child's working
     /// directory, when it is outside the pack) by mtime and size.
-    pub fn pack_watch_begin(&self, cwd: Option<&Path>) -> Option<PackWatch> {
+    pub fn pack_watch_begin(&self, cwd: Option<&Path>, touches: &[String]) -> Option<PackWatch> {
         let roots = self.pack.as_ref()?;
         if self.mode == Mode::DryRun {
             return None;
@@ -447,6 +484,38 @@ impl Kernel {
         let mut inside = std::collections::BTreeMap::new();
         for r in roots {
             inside.extend(scan(r, 64, 50_000));
+        }
+        // The before-bytes of what the hop may touch go to the tin first.
+        let mut tinned = std::collections::BTreeMap::new();
+        let mut warnings = Vec::new();
+        if !touches.is_empty() {
+            match tin::globs(touches) {
+                Ok(set) => {
+                    for (path, meta) in &inside {
+                        if *meta == DIR_MARK {
+                            continue;
+                        }
+                        let hit = roots.iter().any(|r| {
+                            path.strip_prefix(r)
+                                .map(|rel| set.is_match(rel))
+                                .unwrap_or(false)
+                        });
+                        if !hit {
+                            continue;
+                        }
+                        match tin::stash(path) {
+                            Ok(st) => {
+                                tinned.insert(path.clone(), st);
+                            }
+                            Err(e) => warnings.push(format!(
+                                "{} could not be kept in the tin ({e}); a change to it stays irreversible",
+                                path.display()
+                            )),
+                        }
+                    }
+                }
+                Err(e) => warnings.push(e),
+            }
         }
         let work = cwd
             .map(Path::to_path_buf)
@@ -461,6 +530,8 @@ impl Kernel {
             inside,
             outside,
             outside_root,
+            tinned,
+            warnings,
         })
     }
 
@@ -484,7 +555,14 @@ impl Kernel {
             match watch.inside.get(p) {
                 None => writes.created.push(p.clone()),
                 Some(before) if before != meta => writes.modified.push(p.clone()),
-                Some(_) => {}
+                // Same mtime and size: a tinned file is told by its hash.
+                Some(_) => {
+                    if let Some(st) = watch.tinned.get(p) {
+                        if journal::sha256_file(p).ok().as_deref() != Some(st.sha256.as_str()) {
+                            writes.modified.push(p.clone());
+                        }
+                    }
+                }
             }
         }
         for (p, meta) in &watch.inside {
@@ -529,6 +607,30 @@ impl Kernel {
         {
             self.seq += 1;
             self.executed += 1;
+            if let Some(st) = watch.tinned.get(p) {
+                // The before-bytes are in the tin: this one can be undone.
+                let before = vec![journal::BeforeState {
+                    path: p.clone(),
+                    before: journal::Before::File {
+                        snapshot: st.object.clone(),
+                        sha256: st.sha256.clone(),
+                        bytes: st.bytes,
+                        mode: st.mode,
+                    },
+                }];
+                let _ = self.journal.record_with_before(
+                    self.seq,
+                    Op::HopChanged {
+                        path: p.clone(),
+                        change: change.to_string(),
+                        tinned: true,
+                    },
+                    before,
+                    None,
+                    compensated,
+                );
+                continue;
+            }
             if !compensated {
                 self.irreversible += 1;
             }
@@ -537,6 +639,7 @@ impl Kernel {
                 Op::HopChanged {
                     path: p.clone(),
                     change: change.to_string(),
+                    tinned: false,
                 },
                 None,
                 compensated,

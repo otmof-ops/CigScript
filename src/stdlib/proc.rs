@@ -75,6 +75,8 @@ struct Options {
     encoding: Encoding,
     header: bool,
     sep: char,
+    /// Globs of the files the hop may change, kept in the tin first.
+    touches: Vec<String>,
 }
 
 impl Options {
@@ -96,6 +98,7 @@ impl Options {
             encoding: Encoding::Utf8,
             header: true,
             sep: ',',
+            touches: Vec::new(),
         };
         let Some(opts) = opt_map(a, index, name, s)? else {
             return Ok(o);
@@ -107,6 +110,21 @@ impl Options {
         for (k, v) in opts.borrow().iter() {
             match (k.as_str(), v) {
                 ("cwd", Value::Str(p)) => o.cwd = Some(PathBuf::from(p.to_string())),
+                ("touches", Value::Str(g)) => o.touches = vec![g.to_string()],
+                ("touches", Value::List(l)) => {
+                    for item in l.borrow().iter() {
+                        match item {
+                            Value::Str(g) => o.touches.push(g.to_string()),
+                            other => {
+                                return Err(type_error(format!(
+                                    "{name}: `touches` holds a {}; want globs as strings",
+                                    other.type_name()
+                                ))
+                                .at(s))
+                            }
+                        }
+                    }
+                }
                 ("env", Value::Map(m)) => {
                     for (ek, ev) in m.borrow().iter() {
                         o.env.push((ek.clone(), ev.display()));
@@ -168,7 +186,7 @@ impl Options {
                         }
                     }
                 }
-                ("cwd" | "env" | "timeout_ms" | "grace_ms" | "stdin" | "ok" | "encoding" | "sep", other) => {
+                ("cwd" | "env" | "timeout_ms" | "grace_ms" | "stdin" | "ok" | "encoding" | "sep" | "touches", other) => {
                     return Err(type_error(format!(
                         "{name}: option `{k}` has the wrong type ({})",
                         other.type_name()
@@ -178,7 +196,7 @@ impl Options {
                 (other, _) => {
                     return Err(runtime(format!("{name}: unknown option `{other}`"))
                         .at(s)
-                        .with_hint("use one of cwd, env, clean_env, timeout_ms, grace_ms, stdin, check, ok, encoding, header, sep"))
+                        .with_hint("use one of cwd, env, clean_env, timeout_ms, grace_ms, stdin, check, ok, encoding, header, sep, touches"))
                 }
             }
         }
@@ -738,13 +756,25 @@ fn hop(
         cmd: cmd.to_string(),
         args: args.to_vec(),
         cwd: o.cwd.clone(),
+        touches: o.touches.clone(),
     };
+    if !o.touches.is_empty() && i.kernel.pack().is_none() {
+        return Err(cigscript_burn(format!(
+            "{name}: `touches` was given, but the script declares no pack {{ }}; the kernel has nothing to watch"
+        ))
+        .code("E757")
+        .at(s)
+        .with_hint("declare pack { \".\" } (or the roots the hop writes under) as the first statement"));
+    }
     if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
     }
-    let watch = i.kernel.pack_watch_begin(o.cwd.as_deref());
+    let watch = i.kernel.pack_watch_begin(o.cwd.as_deref(), &o.touches);
     let ran = run_child(name, cmd, args, o, s);
     if let Some(w) = watch {
+        for warning in &w.warnings {
+            let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
+        }
         let writes = i.kernel.pack_watch_end(w);
         if !writes.outside.is_empty() {
             let shown: Vec<String> = writes
@@ -966,6 +996,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         cmd: "pipe:".to_string(),
         args: summary_args,
         cwd: o.cwd.clone(),
+        touches: o.touches.clone(),
     };
     if i.effect("proc.pipe", op, s)? == Decision::Simulate {
         return Ok(result_map(0, "", "", 0, true));
@@ -1190,4 +1221,8 @@ fn which(_: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         }
     }
     Ok(Value::Null)
+}
+
+fn cigscript_burn(msg: String) -> Diagnostic {
+    crate::diagnostics::burn(msg)
 }

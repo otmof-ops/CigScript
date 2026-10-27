@@ -195,8 +195,27 @@ per step; the journal records the effects.
 Beside `runs/`, the state directory holds `crashes/` (crash reports, yours
 until you send them), `reports/` (`cig report <run>` bundles), `humidor/`
 (every other version of cig kept for pinned scripts and old journals, one
-directory per version with `index.json` beside them; see `cig versions`) and
-`update-check.json`.
+directory per version with `index.json` beside them; see `cig versions`),
+`tin/` (below) and `update-check.json`.
+
+## The tin
+
+`~/.cigscript/tin/objects/<sha256>` holds the before-bytes of files a hop
+may change, outside the project where `git clean` or a task gone wrong
+cannot reach them. A hop with `touches` has every existing file under its
+globs stashed there before it runs, one object per distinct content, so a
+formatter that changes three lines of a file stores that file about once
+and fifty runs of the same chain store it once. On rollback a modified or
+deleted file comes back from its object, which is re-hashed against its
+name first: a corrupt object is refused, never written. The file's own mode
+travels in the journal. `cig tin` says what the tin holds, `cig tin verify`
+re-hashes every object, and `cig tin gc` removes the objects no run in the
+history refers to (`cig runs --prune N` frees more).
+
+A `.cigignore` at a pack root (one glob per line, `#` comments) lists what
+hop watching and the tin never look into; `.git`, `node_modules`, `target`,
+`.venv`, `venv`, `__pycache__`, `.gradle`, `.terraform` and `.cigscript` are
+skipped everywhere. Those trees are rebuilt, not restored.
 
 Every record says what shape it is in: `run.json` and `after.json` carry
 `"format": 1`, and the first line of `journal.jsonl` is `{"format":1}` (a
@@ -230,9 +249,11 @@ rollback report ("cannot undo"). What the label covers:
   performed them itself; it does not confine untrusted code.
 - **No rollback of what processes did, unless you say how.** A hop is
   journaled as irreversible; inside a pack the files it created are removed
-  on rollback and the rest is listed; inside a `burn { } unburn { }` block
-  the compensation is the undo and the label says `compensated`. Prefer
-  `fs.rm`, which the kernel can undo on its own.
+  on rollback. What it modified or deleted comes back too when the hop said
+  it might touch them (`touches: ["src/**"]`): those files' before-bytes
+  went to the tin first. The rest is listed; inside a `burn { } unburn { }`
+  block the compensation is the undo and the label says `compensated`.
+  Prefer `fs.rm`, which the kernel can undo on its own.
 - **Cross-run consistency is checked, not guaranteed.** When a run finishes,
   the kernel records what it left behind (`after.json`: the state of every
   path it touched; a file by hash and size, a directory by a fingerprint of

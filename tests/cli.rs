@@ -3288,3 +3288,140 @@ fn a_script_reads_its_cig_version_platform_and_run_id() {
     // And `check` sees the namespace.
     sb.run_ok(&["check", "v.cig"]);
 }
+
+// ----- the tin (cig-orchestrator #18, the kernel side): a hop's modified and deleted files come back
+
+#[cfg(unix)]
+#[test]
+fn a_modified_file_comes_back_byte_for_byte() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write("p/config.ini", "cfg=1\n");
+    sb.write("p/gone.txt", "doomed\n");
+    sb.write("p/sub/d.txt", "deep\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo HACKED > p/keep.txt; printf 'cfg=999\\\\n' > p/config.ini; rm p/gone.txt; rm -r p/sub\"], {touches: [\"**\"]})\n  cough \"a later task failed\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/keep.txt"), "original\n", "{err}");
+    assert_eq!(sb.read("p/config.ini"), "cfg=1\n");
+    assert_eq!(sb.read("p/gone.txt"), "doomed\n");
+    assert_eq!(sb.read("p/sub/d.txt"), "deep\n");
+    assert!(
+        err.contains("restored hop modified") && err.contains("restored hop deleted"),
+        "{err}"
+    );
+    assert!(!err.contains("cannot undo hop"), "{err}");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(shown.contains("(tin)"), "{shown}");
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    assert_eq!(du["objects"], 4, "{du}");
+    assert_eq!(du["referenced"], 4);
+    sb.run_ok(&["tin", "verify"]);
+    // The same content stashed again costs nothing: one object per distinct bytes.
+    sb.run_err(&["run", "s.cig"], 1);
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    assert_eq!(du["objects"], 4, "{du}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_same_size_edit_inside_touches_is_seen() {
+    let sb = Sandbox::new();
+    sb.write("p/a.txt", "aaaa\n");
+    let pin_time = |sb: &Sandbox| {
+        assert!(Command::new("touch")
+            .args(["-t", "202001010000", "p/a.txt"])
+            .current_dir(sb.path())
+            .status()
+            .unwrap()
+            .success());
+    };
+    pin_time(&sb);
+    // The edit keeps the size and puts the mtime back: invisible to a watch
+    // that compares those, visible to the hash of the tinned file.
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"printf 'bbbb\\\\n' > p/a.txt; touch -t 202001010000 p/a.txt\"], {touches: [\"*\"]})\n  cough \"x\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/a.txt"), "aaaa\n", "{err}");
+    assert!(err.contains("restored hop modified"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_venv_inside_the_pack_is_not_journaled() {
+    let sb = Sandbox::new();
+    sb.write("p/.cigignore", "# rebuilt, not restored\ncache/\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"mkdir -p p/cache p/__pycache__; echo x > p/cache/x; echo y > p/__pycache__/m.pyc; echo z > p/keep.txt\"])\n  cough \"x\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(!sb.exists("p/keep.txt"), "{err}");
+    assert!(sb.exists("p/cache/x"), "an ignored tree is left alone");
+    assert!(
+        sb.exists("p/__pycache__/m.pyc"),
+        "a built-in skip is left alone"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert_eq!(shown.matches("hop created").count(), 1, "{shown}");
+}
+
+#[cfg(unix)]
+#[test]
+fn gc_keeps_every_chunk_a_live_run_needs() {
+    let sb = Sandbox::new();
+    sb.write("p/f.txt", "one\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo two > p/f.txt\"], {touches: [\"f.txt\"]})\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(sb.read("p/f.txt"), "two\n");
+    let gc: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "gc"])).unwrap();
+    assert_eq!(gc["removed"], 0, "a run still refers to it: {gc}");
+    assert_eq!(gc["kept"], 1);
+    // Corruption is seen before anything is restored from it.
+    let objects = sb.home().join("tin").join("objects");
+    let mut found = None;
+    for bucket in fs::read_dir(&objects).unwrap().flatten() {
+        for obj in fs::read_dir(bucket.path()).unwrap().flatten() {
+            found = Some(obj.path());
+        }
+    }
+    let object = found.expect("an object");
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&object, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(&object, "garbage").unwrap();
+    let err = sb.run_err(&["tin", "verify"], 1);
+    assert!(err.contains("does not hash to its name"), "{err}");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E703") && err.contains("corrupt"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/f.txt"), "two\n", "nothing was restored");
+    // Once no run needs it, gc lets it go.
+    sb.run_ok(&["runs", "--prune", "0"]);
+    let gc: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "gc"])).unwrap();
+    assert_eq!(gc["removed"], 1, "{gc}");
+    assert_eq!(gc["kept"], 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn touches_without_a_pack_is_refused() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        "burn { proc.run(\"true\", [], {touches: [\"**\"]}) }\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("error[E757 burn]"), "{err}");
+}
