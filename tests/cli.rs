@@ -53,6 +53,9 @@ impl Sandbox {
             .current_dir(self.path())
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
+            // No test reaches the releases page: a pin that needs a fetch
+            // finds no network here, as a machine offline would.
+            .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .output()
             .expect("run cig")
     }
@@ -87,6 +90,7 @@ impl Sandbox {
             .current_dir(self.path())
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
+            .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .envs(envs.iter().copied())
             .output()
             .expect("run cig")
@@ -1141,7 +1145,10 @@ fn usage_layer_errors_carry_their_codes() {
     let err = sb.run_err(&["unburn", "zzz"], 3);
     assert!(err.contains("error[E803 usage]"), "{err}");
     // No transport at all is E805, distinct from a transport that failed (E806).
-    let out = sb.cig_env(&["update", "--check"], &[("PATH", "")]);
+    let out = sb.cig_env(
+        &["update", "--check"],
+        &[("PATH", ""), ("CIG_UPDATE_MANIFEST", "")],
+    );
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(
         err.contains("error[E805 usage]") && err.contains("neither `gh` nor `curl`"),
@@ -2772,4 +2779,269 @@ fn the_crash_rollback_reads_the_journal_not_the_panicked_state() {
     assert_eq!(journal.len(), 2, "{journal:?}");
     assert_eq!(sb.read("old.txt"), "old\n");
     assert!(!sb.exists("a.txt"));
+
+// ----- pins and the humidor (#22): a script runs on the cig it was written for
+
+fn write_run(sb: &Sandbox, id: &str, run: serde_json::Value, journal: &str) -> PathBuf {
+    let dir = sb.home().join("runs").join(id);
+    fs::create_dir_all(dir.join("snapshots")).unwrap();
+    fs::write(dir.join("run.json"), run.to_string()).unwrap();
+    fs::write(dir.join("journal.jsonl"), journal).unwrap();
+    dir
+}
+
+#[test]
+fn a_run_from_1_1_1_reads_on_the_current_version() {
+    let sb = Sandbox::new();
+    // A record and a journal as 1.1.x wrote them: no format anywhere.
+    let target = sb.path().join("made.txt");
+    fs::write(&target, "by the old run").unwrap();
+    let id = "20260101T000000-abc123";
+    write_run(
+        &sb,
+        id,
+        serde_json::json!({"id": id, "version": "1.1.1", "script": "old.cig", "script_sha256": "", "args": [],
+            "cwd": sb.path(), "mode": "run", "started": "2026-01-01T00:00:00.000Z",
+            "finished": "2026-01-01T00:00:01.000Z", "status": "ok", "burns": 1, "irreversible": 0}),
+        &format!(
+            "{}\n",
+            serde_json::json!({"seq": 1, "at": "2026-01-01T00:00:00.500Z", "reversible": true,
+                "op": {"kind": "write", "path": target}, "before": [{"path": target, "state": "absent"}]})
+        ),
+    );
+    let runs = sb.runs();
+    assert_eq!(runs[0]["format"], 0, "{}", runs[0]);
+    assert_eq!(runs[0]["status"], "ok");
+    let shown = sb.run_ok(&["unburn", id, "--dry-run"]);
+    assert!(shown.contains("would restore 1 entry"), "{shown}");
+    sb.run_ok(&["unburn", id]);
+    assert!(!target.exists(), "the old journal was replayed");
+
+    // A record this cig writes says its format, and a newer one is refused
+    // by its number, naming the cig that wrote it.
+    sb.write("s.cig", "burn { fs.write_text(\"n.txt\", \"1\") }\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let runs = sb.runs();
+    assert_eq!(runs[0]["format"], 1);
+    let journal = sb.read(&format!(
+        "home/runs/{}/journal.jsonl",
+        runs[0]["id"].as_str().unwrap()
+    ));
+    assert!(journal.starts_with("{\"format\":1}\n"), "{journal}");
+    let id2 = "20260102T000000-def456";
+    write_run(
+        &sb,
+        id2,
+        serde_json::json!({"id": id2, "format": 1, "version": "9.9.9", "script": "new.cig", "script_sha256": "",
+            "args": [], "cwd": "", "mode": "run", "started": "2026-01-02T00:00:00.000Z", "status": "ok",
+            "burns": 1, "irreversible": 0}),
+        "{\"format\":99}\n{\"seq\":1,\"at\":\"x\",\"reversible\":true,\"op\":{\"kind\":\"mkdir\",\"path\":\"nowhere\"},\"before\":[]}\n",
+    );
+    let err = sb.run_err(&["unburn", id2], 3);
+    assert!(
+        err.contains("error[E808 usage]")
+            && err.contains("9.9.9")
+            && err.contains("cig versions add 9.9.9"),
+        "{err}"
+    );
+    let id3 = "20260103T000000-aaa999";
+    write_run(
+        &sb,
+        id3,
+        serde_json::json!({"id": id3, "format": 7, "version": "9.9.9", "script": "newer.cig"}),
+        "{\"format\":7}\n",
+    );
+    let runs = sb.runs();
+    let rec = runs.iter().find(|r| r["id"] == id3).unwrap();
+    assert_eq!(rec["status"], "newer", "{rec}");
+}
+
+#[test]
+fn a_pinned_script_names_the_version_it_needs() {
+    let sb = Sandbox::new();
+    // Satisfied: this cig is 1.1.x.
+    sb.write("ok.cig", "#!/usr/bin/env cig\n# cig 1.1\nexhale \"hi\"\n");
+    assert_eq!(sb.run_ok(&["run", "ok.cig"]), "hi\n");
+    // A usage line in a comment is not a pin.
+    sb.write("usage.cig", "# cig run usage.cig -- x\nexhale \"hi\"\n");
+    assert_eq!(sb.run_ok(&["run", "usage.cig"]), "hi\n");
+    // Not satisfied, nothing on the shelf, no network: refused, never run.
+    sb.write("old.cig", "# cig 1.0.0\nexhale \"never\"\n");
+    let err = sb.run_err(&["run", "old.cig"], 3);
+    assert!(
+        err.contains("error[E807 usage]")
+            && err.contains("1.0.0")
+            && err.contains("cig versions add 1.0.0"),
+        "{err}"
+    );
+    let err = sb.run_err(&["check", "old.cig"], 3);
+    assert!(
+        err.contains("error[E807 usage]"),
+        "check dispatches too: {err}"
+    );
+    // A project file pins every script; a header wins over it.
+    fs::write(sb.path().join(".cig-version"), "1.0.0\n").unwrap();
+    sb.write("plain.cig", "exhale \"file-pinned\"\n");
+    let err = sb.run_err(&["run", "plain.cig"], 3);
+    assert!(
+        err.contains("pinned by") && err.contains(".cig-version"),
+        "{err}"
+    );
+    assert_eq!(sb.run_ok(&["run", "ok.cig"]), "hi\n", "the header wins");
+    fs::remove_file(sb.path().join(".cig-version")).unwrap();
+    // A pin that cannot be read is an error, not a guess.
+    sb.write("bad.cig", "# cig 1.x\nexhale \"never\"\n");
+    let err = sb.run_err(&["run", "bad.cig"], 3);
+    assert!(
+        err.contains("error[E807 usage]") && err.contains("cannot be read"),
+        "{err}"
+    );
+    // A dispatched cig never dispatches again: it runs, and says so.
+    let out = sb.cig_env(&["run", "old.cig"], &[("CIG_DISPATCHED", "1")]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "never\n");
+    assert!(String::from_utf8_lossy(&out.stderr).contains("running anyway"));
+}
+
+#[test]
+fn a_pin_is_written_under_the_shebang_by_cig_pin() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "#!/usr/bin/env cig\nexhale 1\n");
+    sb.run_ok(&["pin", "s.cig"]);
+    assert_eq!(
+        sb.read("s.cig"),
+        "#!/usr/bin/env cig\n# cig 1.1\nexhale 1\n"
+    );
+    sb.run_ok(&["pin", "s.cig", "--to", ">=1.1.2"]);
+    assert_eq!(
+        sb.read("s.cig"),
+        "#!/usr/bin/env cig\n# cig >=1.1.2\nexhale 1\n"
+    );
+    assert_eq!(sb.run_ok(&["run", "s.cig"]), "1\n");
+    let err = sb.run_err(&["pin", "s.cig", "--to", "banana"], 3);
+    assert!(err.contains("error[E807 usage]"), "{err}");
+}
+
+#[test]
+fn a_humidor_binary_with_the_wrong_hash_is_never_run() {
+    let sb = Sandbox::new();
+    let version = cigscript::update::Version(1, 0, 0);
+    let name = cigscript::update::asset_name(&version);
+    let asset = sb.write("asset.bin", "not a real cig, but bytes");
+    let sidecar = sb.write("asset.sha256", &format!("{}  {name}\n", "0".repeat(64)));
+    let manifest = serde_json::json!([{
+        "tag_name": "v1.0.0", "prerelease": false, "draft": false, "html_url": "u", "published_at": "",
+        "assets": [
+            {"name": name, "browser_download_url": format!("file://{}", asset.display())},
+            {"name": format!("{name}.sha256"), "browser_download_url": format!("file://{}", sidecar.display())}
+        ]
+    }]);
+    let manifest_path = sb.write("manifest.json", &manifest.to_string());
+    let envs = [("CIG_UPDATE_MANIFEST", manifest_path.to_str().unwrap())];
+    let out = sb.cig_env(&["versions", "add", "1.0.0"], &envs);
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("checksum mismatch") && err.contains("nothing was kept"),
+        "{err}"
+    );
+    assert!(
+        !sb.exists("home/humidor/1.0.0"),
+        "a failed check left a binary on the shelf"
+    );
+    // With the right checksum it is kept, listed, and a pin can use it.
+    let sum = cigscript::burn::journal::sha256_file(&asset).unwrap();
+    fs::write(&sidecar, format!("{sum}  {name}\n")).unwrap();
+    let out = sb.cig_env(&["versions", "add", "1.0.0"], &envs);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(sb.exists("home/humidor/1.0.0"));
+    let v: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "versions"])).unwrap();
+    assert_eq!(v["humidor"][0]["version"], "1.0.0");
+    assert_eq!(v["humidor"][0]["trust"], "verified");
+    assert_eq!(v["humidor"][0]["sha256"], sum);
+    // A yanked version is marked, and a range pin steps over it.
+    let yanked = sb.write("YANKED", "1.0.0 the test says so\n");
+    let out = sb.cig_env(
+        &["--json", "versions"],
+        &[("CIG_YANKED_FILE", yanked.to_str().unwrap())],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["humidor"][0]["yanked"], true);
+    sb.run_ok(&["versions", "remove", "1.0.0"]);
+    assert!(!sb.exists("home/humidor/1.0.0"));
+}
+
+#[cfg(unix)]
+fn shelf_fake(sb: &Sandbox, version: &str, exit: i32) {
+    use std::os::unix::fs::PermissionsExt;
+    let home = sb.home().join("humidor").join(version);
+    fs::create_dir_all(&home).unwrap();
+    let fake = home.join("cig");
+    fs::write(
+        &fake,
+        format!("#!/bin/sh\necho \"fake cig {version}: $* (dispatched=${{CIG_DISPATCHED:-no}})\"\nexit {exit}\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pinned_script_is_lit_by_its_version_and_says_so() {
+    let sb = Sandbox::new();
+    shelf_fake(&sb, "1.0.0", 7);
+    sb.write("s.cig", "# cig 1.0.0\nexhale \"never here\"\n");
+    let out = sb.cig(&["run", "s.cig", "--", "a", "b"]);
+    assert_eq!(
+        out.status.code(),
+        Some(7),
+        "the dispatched cig's exit status is the exit status"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stdout, "fake cig 1.0.0: run s.cig -- a b (dispatched=1)\n");
+    assert!(
+        stderr.contains("run lit by cig 1.0.0 (pinned in s.cig (line 1)); installed is"),
+        "{stderr}"
+    );
+    let out = sb.cig(&["--json", "check", "s.cig"]);
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        "fake cig 1.0.0: --json check s.cig (dispatched=1)\n"
+    );
+    let v: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "versions"])).unwrap();
+    assert_eq!(v["humidor"][0]["version"], "1.0.0");
+    assert!(v["humidor"][0]["last_lit"].is_string(), "{v}");
+}
+
+#[cfg(unix)]
+#[test]
+fn unburn_hands_an_old_journal_to_the_cig_that_wrote_it() {
+    let sb = Sandbox::new();
+    shelf_fake(&sb, "9.9.9", 0);
+    let id = "20260102T000000-def456";
+    write_run(
+        &sb,
+        id,
+        serde_json::json!({"id": id, "format": 1, "version": "9.9.9", "script": "new.cig", "script_sha256": "",
+            "args": [], "cwd": "", "mode": "run", "started": "2026-01-02T00:00:00.000Z", "status": "ok",
+            "burns": 1, "irreversible": 0}),
+        "{\"format\":99}\n",
+    );
+    let out = sb.cig(&["unburn", id]);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("fake cig 9.9.9: unburn {id} (dispatched=1)\n")
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("unburn handed to cig 9.9.9"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

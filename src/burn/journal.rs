@@ -76,10 +76,17 @@ pub struct Compensation {
     pub line: u32,
 }
 
+/// The shape of `journal.jsonl` and `after.json` this cig writes. The
+/// journal's first line says which; a cig that reads an older format reads
+/// it as it always did, and a newer one is refused by its number (E808).
+pub const JOURNAL_FORMAT: u32 = 1;
+
 pub struct Journal {
     run_dir: Option<PathBuf>,
     file: Option<fs::File>,
     entries: Vec<Entry>,
+    /// The format the journal on disk declares; 0 for one from before 1.2.0.
+    format: u32,
     /// The last line on disk was cut short (a crash mid-append); what came
     /// before it loaded.
     truncated: bool,
@@ -113,10 +120,17 @@ impl Journal {
         let file = match &run_dir {
             Some(dir) => {
                 fs::create_dir_all(dir.join("snapshots"))?;
-                let f = fs::OpenOptions::new()
+                let mut f = fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(dir.join("journal.jsonl"))?;
+                // The first line names the format. It has no `op`, so a cig
+                // from before formats reads it as a marker and goes on.
+                if f.metadata()?.len() == 0 {
+                    f.write_all(format!("{{\"format\":{JOURNAL_FORMAT}}}\n").as_bytes())?;
+                    f.flush()?;
+                    f.sync_data()?;
+                }
                 sync_dir(dir)?;
                 Some(f)
             }
@@ -126,6 +140,7 @@ impl Journal {
             run_dir,
             file,
             entries: Vec::new(),
+            format: JOURNAL_FORMAT,
             truncated: false,
         })
     }
@@ -135,6 +150,7 @@ impl Journal {
         let text = fs::read_to_string(run_dir.join("journal.jsonl"))?;
         let mut entries: Vec<Entry> = Vec::new();
         let mut truncated = false;
+        let mut format = 0;
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         for (i, line) in lines.iter().enumerate() {
             let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
@@ -153,6 +169,22 @@ impl Journal {
             // `{"seq": N, "compensated": true}` says its block completed and
             // the compensation recorded after it covers the op.
             if v.get("op").is_none() {
+                if let Some(f) = v.get("format").and_then(|f| f.as_u64()) {
+                    if f > u64::from(JOURNAL_FORMAT) {
+                        let version = fs::read_to_string(run_dir.join("run.json"))
+                            .ok()
+                            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                            .and_then(|r| r["version"].as_str().map(str::to_string))
+                            .unwrap_or_default();
+                        return Err(super::runs::newer_format(
+                            "journal.jsonl",
+                            f as u32,
+                            &version,
+                        ));
+                    }
+                    format = f as u32;
+                    continue;
+                }
                 let seq = v.get("seq").and_then(|n| n.as_u64());
                 let target = seq.and_then(|seq| entries.iter_mut().find(|e| e.seq == seq));
                 if let Some(e) = target {
@@ -173,8 +205,14 @@ impl Journal {
             run_dir: Some(run_dir.to_path_buf()),
             file: None,
             entries,
+            format,
             truncated,
         })
+    }
+
+    /// The format the journal on disk declared (0: from before 1.2.0).
+    pub fn format(&self) -> u32 {
+        self.format
     }
 
     /// True when the journal on disk ended mid-line (a crash while appending)
@@ -834,6 +872,9 @@ impl PathState {
 /// `after.json`: every path the run touched, as the run left it.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct AfterState {
+    /// The record's format; 0 for one from before 1.2.0.
+    #[serde(default)]
+    pub format: u32,
     pub recorded: String,
     pub paths: std::collections::BTreeMap<PathBuf, PathState>,
 }
@@ -884,6 +925,7 @@ impl Journal {
             return Ok(());
         };
         let mut after = AfterState {
+            format: JOURNAL_FORMAT,
             recorded: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             paths: Default::default(),
         };

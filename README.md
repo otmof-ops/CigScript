@@ -360,6 +360,9 @@ for.
 | `fs.mv` over an existing file, then `unburn` | both files back | 1.0.0 | `mv_over_an_existing_file_then_unburn_brings_both_back` |
 | `fs.rm` on a non-empty dir, then rollback | tree and modes restored | 1.0.0 | `rm_on_a_non_empty_dir_then_rollback_restores_tree_and_modes` |
 | killed by a signal mid-burn | journal intact, `unburn` restored everything | 1.0.0 | `killed_mid_burn_leaves_the_journal_intact_and_unburn_restores_everything` |
+| a script pinned to a cig that is neither installed nor on the shelf | refused with the version and the command that fetches it, never run on the wrong cig | 1.2.0 | `a_pinned_script_names_the_version_it_needs` |
+| a journal from a newer cig, unburned by an older one | refused by its format number, or handed to the cig that wrote it | 1.2.0 | `unburn_hands_an_old_journal_to_the_cig_that_wrote_it` |
+| a release asset whose checksum does not match | never kept, never run | 1.2.0 | `a_humidor_binary_with_the_wrong_hash_is_never_run` |
 | unbounded recursion | clean `E506` at depth 4000 | 1.0.0 | `unbounded_recursion_is_a_clean_e506` |
 | `MAX + 1`, `(MAX + MAX) / 2`, `1.0 / 0.0`, `0.0 / 0.0` | diagnostics, never silent | 1.0.0 | `arithmetic_edges_are_diagnostics_never_silent` |
 | delete a symlink, `unburn` | **came back as a regular file**; now a symlink, dangling or not, inside restored trees too | fixed 1.1.0 | `symlinks_roll_back_as_symlinks` |
@@ -440,6 +443,8 @@ Add a row. The rules for reporting one are in
 | `cig report <run> [--out file]` | one redacted file for a bug report: plan, journal, diagnostic, diagnosis, install facts |
 | `cig update [--check]` | install the newest release, verified |
 | `cig crash [list\|show\|send\|delete]` | crash reports, under your control |
+| `cig versions [add\|remove\|prune]` | the humidor: every other version of cig, for pinned scripts and old journals |
+| `cig pin <file> [--to 1.2]` | write `# cig 1.2` into a script, so a newer cig hands it to that version |
 | `cig config [key [value]]` | the few settings there are |
 | `cig language` | the legend and the standard library |
 

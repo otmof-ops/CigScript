@@ -17,11 +17,13 @@ mod crash;
 mod doctor;
 mod explain;
 mod language;
+mod pin;
 mod repl;
 mod report;
 mod run;
 mod runs;
 mod update;
+mod versions;
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -145,6 +147,19 @@ pub enum Command {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// The humidor: every version of cig kept for pinned scripts and old journals; list, add, remove, prune.
+    Versions {
+        #[command(subcommand)]
+        command: Option<versions::VersionsCommand>,
+    },
+    /// Write the version a script was written for into its header (`# cig 1.2`), so a newer cig hands it to that version.
+    Pin {
+        /// The script to pin.
+        file: PathBuf,
+        /// The constraint to write: 1.2 (any 1.2.x), 1.2.0 (exactly), >=1.2.0; default the installed major.minor.
+        #[arg(long, value_name = "CONSTRAINT")]
+        to: Option<String>,
+    },
     /// Get the newer binary from the repo, verified before it is installed (self-update).
     Update {
         /// Only report whether a newer release exists.
@@ -227,6 +242,19 @@ pub fn main() -> i32 {
         doctor: !cli.no_doctor && cigscript::doctor::enabled_by_env(),
         plain: cli.plain || plain_by_env(),
     };
+    // A pinned script is lit by the cig it asks for, whatever is installed.
+    let pinned_file = match &cli.command {
+        Command::Run(a) => Some((a.file.clone(), if a.dry_run { "dry run" } else { "run" })),
+        Command::Light(a) => Some((a.file.clone(), "light")),
+        Command::Check { file, .. } => Some((file.clone(), "check")),
+        Command::Chains { file } => Some((file.clone(), "chains")),
+        _ => None,
+    };
+    if let Some((file, verb)) = pinned_file {
+        if let Some(code) = pin::dispatch_if_pinned(&ctx, &file, verb) {
+            return code;
+        }
+    }
     match cli.command {
         Command::Run(args) => run::run(&ctx, args, None),
         Command::Light(a) => run::run(
@@ -264,6 +292,8 @@ pub fn main() -> i32 {
             allow_downgrade,
             to,
         } => update::update(&ctx, check, allow_downgrade, to),
+        Command::Versions { command } => versions::versions(&ctx, command),
+        Command::Pin { file, to } => pin::pin_cmd(&ctx, &file, to),
     }
 }
 

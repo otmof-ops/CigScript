@@ -200,6 +200,9 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     };
     let mut journal = match Journal::load(&rec.dir()) {
         Ok(j) => j,
+        Err(e) if e.kind() == std::io::ErrorKind::Unsupported || rec.status == "newer" => {
+            return hand_back(ctx, &rec, &e);
+        }
         Err(e) => {
             eprintln!(
                 "{} cannot load the journal for {}: {e}",
@@ -475,6 +478,50 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     } else {
         exit::SCRIPT_ERROR
     }
+}
+
+/// A run journaled by a newer cig is put back by that cig: the whole
+/// `unburn` is handed to its version from the humidor, or refused with
+/// the command that fetches it. Nothing is parsed by guess.
+fn hand_back(ctx: &Ctx, rec: &RunRecord, e: &std::io::Error) -> i32 {
+    let wrote = rec.written_by();
+    if cigscript::pin::dispatched() {
+        eprintln!("{} {e}", ctx.red("error[E808 usage]:"));
+        eprintln!("  = explain: cig explain E808");
+        return exit::USAGE;
+    }
+    if let Some(v) = &wrote {
+        if let Some(bin) = cigscript::humidor::binary(v) {
+            if !ctx.json {
+                eprintln!(
+                    "{}",
+                    ctx.dim(&format!(
+                        "unburn handed to cig {v}, which wrote this journal; installed is {}",
+                        cigscript::VERSION
+                    ))
+                );
+            }
+            let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+            cigscript::humidor::touch(v);
+            return match cigscript::humidor::dispatch(&bin, &args) {
+                Ok(code) => code,
+                Err(e) => {
+                    eprintln!("{} {e}", ctx.red("error[E808 usage]:"));
+                    exit::USAGE
+                }
+            };
+        }
+    }
+    eprintln!("{} {e}", ctx.red("error[E808 usage]:"));
+    match wrote {
+        Some(v) => eprintln!(
+            "  = hint: cig versions add {v} puts that cig in the humidor; cig unburn {} then hands the run to it",
+            rec.id
+        ),
+        None => eprintln!("  = hint: the record does not say which cig wrote it; cig update to the newest release and try again"),
+    }
+    eprintln!("  = explain: cig explain E808");
+    exit::USAGE
 }
 
 /// The colour for a rollback action's label.

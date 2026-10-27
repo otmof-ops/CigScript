@@ -1306,7 +1306,7 @@ Related: `E750`, `E752`.
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
-A child process changed files outside the declared pack. The kernel cannot undo them and did not watch them; they are listed so nothing is hidden.
+A child process changed files in its working directory outside the declared pack. The kernel cannot undo them; they are listed so nothing is hidden. Writes elsewhere are not watched at all: the hop's irreversible label is their only record.
 
 **What to type next:** point the program at the pack (its cwd, an output flag), or add the root it wrote to
 
@@ -1394,6 +1394,8 @@ the command line and the environment.
 | [`E804`](#e804-no-such-chain) | no such chain | can't see any ciggies bro | `cig chains <file>` lists them |
 | [`E805`](#e805-network-tool-missing) | network tool missing | don't have any over here | install curl or gh; `cig doctor --fix` offers to |
 | [`E806`](#e806-update-failed) | update failed | one of the four; the message says which | the message says which step; retry, or install from the releases page |
+| [`E807`](#e807-pinned-version-not-available) | pinned version not available | don't have any over here | cig versions add <version> when online, or change the pin |
+| [`E808`](#e808-record-from-a-newer-cig) | record from a newer cig | don't have any over here | cig versions add <the version that wrote it>; cig unburn then hands the run to that version |
 
 ### E800 usage error
 
@@ -1507,6 +1509,42 @@ The release could not be fetched, verified or installed.
 1. no network, or the release host refused (no probe; a suggestion, not a finding). **Remedy:** retry; `cig update --check` shows what it can reach
 2. the checksum did not match: nothing was installed (probe `release-manifest`). **Remedy:** retry once; report it if it repeats, since a mismatch means the download is not what was published
 3. the install directory is not writable, or is group-writable (refused for safety) (probe `path-permissions`). **Remedy:** chown or chmod the directory holding cig, or install to a directory only you can write
+
+
+### E807 pinned version not available
+
+*usage · since 1.2.0 · arises in run, check, light, any*
+
+**Kind of no:** don't have any over here (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result).
+
+The script pins a cig version this cig is not, and no cig that satisfies the pin is in the humidor or could be fetched; or the pin itself cannot be read.
+
+**What to type next:** cig versions add <version> when online, or change the pin
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the pinned version was never fetched and there is no network (no probe; a suggestion, not a finding). **Remedy:** cig versions add <version> when online; the humidor keeps it after that
+2. the pin cannot be read: not a version, or a constraint cig does not know (no probe; a suggestion, not a finding). **Remedy:** write `# cig 1.1` (any 1.1.x), `# cig 1.1.2` (exactly) or `# cig >=1.1.2` under the shebang; `.cig-version` takes the same
+3. no release of that version exists for this platform (probe `release-manifest`). **Remedy:** build it: cargo install --git https://github.com/otmof-ops/CigScript --tag v<version> --root ~/.cigscript/humidor/<version>
+
+Related: `E808`.
+
+
+### E808 record from a newer cig
+
+*usage · since 1.2.0 · arises in unburn, runs*
+
+**Kind of no:** don't have any over here (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result).
+
+A run record or journal was written in a format this cig does not read; it is never parsed by guess.
+
+**What to type next:** cig versions add <the version that wrote it>; cig unburn then hands the run to that version
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. cig was downgraded after the run was made (no probe; a suggestion, not a finding). **Remedy:** cig update, or cig versions add <version> so unburn can hand the run to it
+
+Related: `E807`.
 
 
 ## update (`E850`–`E869`)

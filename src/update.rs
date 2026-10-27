@@ -137,7 +137,7 @@ pub fn find(repo: &str, tag: &str) -> Result<Release, String> {
 }
 
 fn releases_json(repo: &str) -> Result<String, String> {
-    if let Some(path) = std::env::var_os("CIG_UPDATE_MANIFEST") {
+    if let Some(path) = std::env::var_os("CIG_UPDATE_MANIFEST").filter(|p| !p.is_empty()) {
         return fs::read_to_string(&path).map_err(|e| format!("CIG_UPDATE_MANIFEST: {e}"));
     }
     if has_tool("gh") {
@@ -210,6 +210,22 @@ fn pick(json: &str, prerelease_ok: bool) -> Result<Release, String> {
         }
     }
     best.ok_or_else(|| "no usable release found".to_string())
+}
+
+/// Every version the repository has released (drafts and prereleases
+/// left out), for the humidor to pick from.
+pub fn released(repo: &str) -> Result<Vec<Version>, String> {
+    let text = releases_json(repo)?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("releases response is not JSON: {e}"))?;
+    let items = v.as_array().ok_or("releases response is not a list")?;
+    Ok(items
+        .iter()
+        .filter(|i| {
+            !i["draft"].as_bool().unwrap_or(false) && !i["prerelease"].as_bool().unwrap_or(false)
+        })
+        .filter_map(|i| Version::parse(i["tag_name"].as_str().unwrap_or("")))
+        .collect())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

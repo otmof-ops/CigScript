@@ -3,6 +3,38 @@
 This is the contract for CigScript 1.x. `cig language` prints the short
 version.
 
+## The pin
+
+A script says which cig it was written for, in a comment before its first
+statement (after the shebang, if there is one):
+
+```cig
+#!/usr/bin/env cig
+# cig 1.1
+```
+
+`# cig 1.1` means any 1.1.x, `# cig 1.1.2` exactly that one, `# cig >=1.1.2`
+that or newer within 1.x; a pin never crosses a major version, because a
+major version may change this contract. A project pins every script at once
+with a `.cig-version` file beside them or in a directory above, holding the
+same constraint; a header in the script wins over the file. A comment is
+the pin so that every cig ever shipped reads past it; `# cig run s.cig` and
+other usage lines in comments are not pins, because a pin starts like a
+version.
+
+An unpinned script runs on whatever cig is installed, as it always did. A
+pinned script runs on the cig it asks for: when the installed cig does not
+satisfy the pin, it hands the whole run (`run`, `--dry-run`, `check`,
+`light`, `chains`) to that version from the humidor, `~/.cigscript/humidor/`,
+fetching and verifying the release first when it is not there, and says so
+(`run lit by cig 1.1.1 (pinned in s.cig); installed is 1.2.0`). No network
+and nothing on the shelf is a refusal (`E807`) with the command that fetches
+it, never a silent run on the wrong version. `cig versions` lists the
+shelf, `cig versions add 1.1.1` stocks it, `cig pin s.cig` writes a pin for
+the installed version. A run is put back by the cig that wrote its journal:
+`cig unburn` reads the record's version and hands over the same way
+(`E808` when that cig is not on the shelf).
+
 ## The levels, in one line each
 
 A **stick** is one step. A **chain** is order: sticks that light from each

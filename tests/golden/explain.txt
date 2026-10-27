@@ -102,6 +102,8 @@ E800-E849  the command line and the environment
   E804  no such chain                      usage
   E805  network tool missing               usage
   E806  update failed                      usage
+  E807  pinned version not available       usage
+  E808  record from a newer cig            usage
 
 E850-E869  the updater and doctor
   reserved; nothing emitted yet
@@ -1544,6 +1546,44 @@ E806 update failed  (usage, usage family, since 1.0.0)
      remedy: chown or chmod the directory holding cig, or install to a directory only you can write
 
   arises in: update
+
+======== E807 ========
+E807 pinned version not available  (usage, usage family, since 1.2.0)
+
+  kind of no: don't have any over here  (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result)
+
+  The script pins a cig version this cig is not, and no cig that satisfies the pin is in the humidor or could be fetched; or the pin itself cannot be read.
+
+  what to type next: cig versions add <version> when online, or change the pin
+
+  known causes, ranked; doctor checks them in this order
+  1. the pinned version was never fetched and there is no network
+     probe: none; a suggestion, not a finding
+     remedy: cig versions add <version> when online; the humidor keeps it after that
+  2. the pin cannot be read: not a version, or a constraint cig does not know
+     probe: none; a suggestion, not a finding
+     remedy: write `# cig 1.1` (any 1.1.x), `# cig 1.1.2` (exactly) or `# cig >=1.1.2` under the shebang; `.cig-version` takes the same
+  3. no release of that version exists for this platform
+     probe: release-manifest (the cached release manifest and the checksum file for the asset)
+     remedy: build it: cargo install --git https://github.com/otmof-ops/CigScript --tag v<version> --root ~/.cigscript/humidor/<version>
+
+  arises in: run, check, light, any  ·  related: E808
+
+======== E808 ========
+E808 record from a newer cig  (usage, usage family, since 1.2.0)
+
+  kind of no: don't have any over here  (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result)
+
+  A run record or journal was written in a format this cig does not read; it is never parsed by guess.
+
+  what to type next: cig versions add <the version that wrote it>; cig unburn then hands the run to that version
+
+  known causes, ranked; doctor checks them in this order
+  1. cig was downgraded after the run was made
+     probe: none; a suggestion, not a finding
+     remedy: cig update, or cig versions add <version> so unburn can hand the run to it
+
+  arises in: unburn, runs  ·  related: E807
 
 ======== E900 ========
 E900 internal error  (internal, internal family, since 1.0.0)
