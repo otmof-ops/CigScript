@@ -1283,6 +1283,7 @@ folds and packs: refusals when automation is composed.
 | [`E754`](#e754-compensation-reaches-outside-its-state) | compensation reaches outside its state | not one of the four | put the value in the state map inside the burn block (burn (s) { s.sha = ... }) and read s.sha in unburn { } |
 | [`E755`](#e755-bad-pack-root) | bad pack root | not one of the four | name the directory the script may write in, pack { "./build" } |
 | [`E756`](#e756-fold-shape-mismatch) | fold shape mismatch *(planned)* | not one of the four | match the declaration |
+| [`E757`](#e757-touches-without-a-pack) | touches without a pack | can't see any ciggies bro | declare pack { "." } (or the roots the hop writes under) as the first statement |
 
 ### E750 literal path outside the pack
 
@@ -1397,6 +1398,24 @@ A folded unit is lit with the wrong number or names of arguments; the error name
 **Known causes**, ranked; doctor checks them in this order:
 
 1. the caller and the folded unit disagree on parameters (probe `source-line`). **Remedy:** match the declaration
+
+
+### E757 touches without a pack
+
+*burn · since 1.2.0 · arises in run, light*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+A hop was given `touches` (the files it may change, to be kept in the tin first), but the script declares no pack, so the kernel has nothing to watch; or a path under `touches` could not be kept.
+
+**What to type next:** declare pack { "." } (or the roots the hop writes under) as the first statement
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the script has no pack { } statement (no probe; a suggestion, not a finding). **Remedy:** add pack { "." } above everything else; hop watching and the tin work inside it
+2. a file under touches could not be copied into the tin (permissions, a full disk, a pipe) (probe `path-permissions`). **Remedy:** the hop still ran; the change to that file is irreversible this time, as the warning says
+
+Related: `E750`, `E752`.
 
 
 ## usage (`E800`–`E849`)

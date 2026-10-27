@@ -1518,6 +1518,24 @@ remedy = "match the declaration"
 # --- usage (E80x) ---
 
 [[code]]
+code = "E757"
+title = "touches without a pack"
+meaning = "A hop was given `touches` (the files it may change, to be kept in the tin first), but the script declares no pack, so the kernel has nothing to watch; or a path under `touches` could not be kept."
+fix = "declare pack { \".\" } (or the roots the hop writes under) as the first statement"
+no = "cant-see-any"
+arises = ["run", "light"]
+since = "1.2.0"
+related = ["E750", "E752"]
+[[code.cause]]
+why = "the script has no pack { } statement"
+probe = "none"
+remedy = "add pack { \".\" } above everything else; hop watching and the tin work inside it"
+[[code.cause]]
+why = "a file under touches could not be copied into the tin (permissions, a full disk, a pipe)"
+probe = "path-permissions"
+remedy = "the hop still ran; the change to that file is irreversible this time, as the warning says"
+
+[[code]]
 code = "E800"
 title = "usage error"
 meaning = "The command line or the environment is wrong."

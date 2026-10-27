@@ -94,6 +94,7 @@ E750-E769  folds and packs: refusals when automation is composed
   E754  compensation reaches outside its state burn
   E755  bad pack root                      burn
   E756  fold shape mismatch                burn  (planned)
+  E757  touches without a pack             burn
 
 E800-E849  the command line and the environment
   E800  usage error                        usage
@@ -1430,6 +1431,25 @@ E756 fold shape mismatch  (burn, fold family, since 1.1.0)
      remedy: match the declaration
 
   arises in: check
+
+======== E757 ========
+E757 touches without a pack  (burn, fold family, since 1.2.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A hop was given `touches` (the files it may change, to be kept in the tin first), but the script declares no pack, so the kernel has nothing to watch; or a path under `touches` could not be kept.
+
+  what to type next: declare pack { "." } (or the roots the hop writes under) as the first statement
+
+  known causes, ranked; doctor checks them in this order
+  1. the script has no pack { } statement
+     probe: none; a suggestion, not a finding
+     remedy: add pack { "." } above everything else; hop watching and the tin work inside it
+  2. a file under touches could not be copied into the tin (permissions, a full disk, a pipe)
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: the hop still ran; the change to that file is irreversible this time, as the warning says
+
+  arises in: run, light  ·  related: E750, E752
 
 ======== E800 ========
 E800 usage error  (usage, usage family, since 1.0.0)

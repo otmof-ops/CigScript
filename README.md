@@ -366,6 +366,10 @@ for.
 | a script that uses a builtin newer than its pin | caught by `cig check` before anything runs | 1.2.0 | `a_script_pinned_below_a_builtin_it_calls_is_caught_before_it_runs` |
 | an upgrade that changes what a script would do | the plans are compared first; the proved version runs it | 1.2.0 | `identical_plans_run_on_the_new_version` |
 | a run that fails on the new cig after an irreversible op | not tried again on the old one | 1.2.0 | `a_failed_reversible_run_falls_back_and_an_irreversible_one_stops` |
+| a hop edits and deletes files it said it might touch, then the run fails | every one of them back, byte for byte, from the tin | 1.2.0 | `a_modified_file_comes_back_byte_for_byte` |
+| an edit that keeps a file's size and puts its mtime back | seen by the hash, restored | 1.2.0 | `a_same_size_edit_inside_touches_is_seen` |
+| a virtualenv or a cache inside the pack | not journaled, not restored, left to be rebuilt | 1.2.0 | `a_venv_inside_the_pack_is_not_journaled` |
+| a tin object edited after the run | refused before anything is restored from it; `gc` keeps what a run still needs | 1.2.0 | `gc_keeps_every_chunk_a_live_run_needs` |
 | unbounded recursion | clean `E506` at depth 4000 | 1.0.0 | `unbounded_recursion_is_a_clean_e506` |
 | `MAX + 1`, `(MAX + MAX) / 2`, `1.0 / 0.0`, `0.0 / 0.0` | diagnostics, never silent | 1.0.0 | `arithmetic_edges_are_diagnostics_never_silent` |
 | delete a symlink, `unburn` | **came back as a regular file**; now a symlink, dangling or not, inside restored trees too | fixed 1.1.0 | `symlinks_roll_back_as_symlinks` |
@@ -448,6 +452,7 @@ Add a row. The rules for reporting one are in
 | `cig crash [list\|show\|send\|delete]` | crash reports, under your control |
 | `cig versions [add\|remove\|prune]` | the humidor: every other version of cig, for pinned scripts and old journals |
 | `cig pin <file> [--to 1.2]` | write `# cig 1.2` into a script, so a newer cig hands it to that version |
+| `cig tin [du\|verify\|gc]` | the tin: the before-bytes of files hops may change, outside the project |
 | `cig config [key [value]]` | the few settings there are |
 | `cig language` | the legend and the standard library |
 

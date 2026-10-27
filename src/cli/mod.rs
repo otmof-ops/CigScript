@@ -22,6 +22,7 @@ mod repl;
 mod report;
 mod run;
 mod runs;
+mod tin;
 mod update;
 mod versions;
 
@@ -159,6 +160,11 @@ pub enum Command {
         /// The constraint to write: 1.2 (any 1.2.x), 1.2.0 (exactly), >=1.2.0; default the installed major.minor.
         #[arg(long, value_name = "CONSTRAINT")]
         to: Option<String>,
+    },
+    /// The tin: the before-bytes of files hops may change; du, verify, gc.
+    Tin {
+        #[command(subcommand)]
+        command: Option<tin::TinCommand>,
     },
     /// Get the newer binary from the repo, verified before it is installed (self-update).
     Update {
@@ -308,6 +314,7 @@ pub fn main() -> i32 {
         } => update::update(&ctx, check, allow_downgrade, to),
         Command::Versions { command } => versions::versions(&ctx, command),
         Command::Pin { file, to } => pin::pin_cmd(&ctx, &file, to),
+        Command::Tin { command } => tin::tin_cmd(&ctx, command),
     }
 }
 

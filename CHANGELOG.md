@@ -50,6 +50,14 @@ project follows semantic versioning.
   line of `journal.jsonl` carry `format: 1`. A newer cig reads older
   formats; an older cig refuses a newer one by its number (`E808`) and
   `cig unburn` hands the run to the cig that wrote it. (#22)
+- **The tin.** A hop can say which files it may change (`proc.run(cmd,
+  args, {touches: ["src/**"]})`); their before-bytes are kept outside the
+  project, one object per distinct content, before the child runs, and a
+  file it modified or deleted comes back on rollback, byte for byte and
+  hash-verified, where it was listed as irreversible before. A same-size
+  edit that puts the mtime back is seen by the hash. `cig tin [du|verify|gc]`.
+  A `.cigignore` at a pack root, and the usual build and dependency trees,
+  are never watched. `touches` without a pack is `E757`. (cig-orchestrator #18)
 
 ## 1.1.2 — 2026-10-24
 
