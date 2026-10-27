@@ -393,6 +393,8 @@ for.
 | `proc.run("npm", ...)` on Windows | `npm.cmd` is found through `PATHEXT` and started; `proc.which` names the same file | 1.3.0 | `npm_resolves_to_npm_cmd_on_windows` |
 | `proc.run("bash", ...)` on Windows with WSL installed | Git's bash runs, never System32's WSL launcher | 1.3.0 | `bash_on_windows_is_not_the_wsl_launcher` |
 | `proc.shell("x=$((6*7)); echo $x")` on Windows | runs under `sh` when one is on PATH, and the plan says so | 1.3.0 | `proc_shell_on_windows_runs_sh_when_present` |
+| a file an editor holds open on Windows, changed by a hop, then the run fails | put back in place through the sharing the editor allows, and the line says so | 1.3.0 | `a_file_held_open_without_share_delete_is_restored_in_place_on_windows` |
+| `cmd /c powershell Start-Sleep 40` with `timeout_ms: 1500` on Windows | the whole tree ends at the timeout; the hop does not wait on the grandchild's pipe | 1.3.0 | `a_timeout_kills_the_grandchild_on_windows` |
 | unbounded recursion | clean `E506` at depth 4000 | 1.0.0 | `unbounded_recursion_is_a_clean_e506` |
 | `MAX + 1`, `(MAX + MAX) / 2`, `1.0 / 0.0`, `0.0 / 0.0` | diagnostics, never silent | 1.0.0 | `arithmetic_edges_are_diagnostics_never_silent` |
 | delete a symlink, `unburn` | **came back as a regular file**; now a symlink, dangling or not, inside restored trees too | fixed 1.1.0 | `symlinks_roll_back_as_symlinks` |

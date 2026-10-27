@@ -658,9 +658,102 @@ fn spawn_error(name: &str, cmd: &str, e: std::io::Error, s: Span) -> Diagnostic 
     .with_hint(hint)
 }
 
+/// A Windows Job Object around a hop: every process the child starts joins
+/// it, so a timeout ends the whole tree the way the process group does on
+/// Unix, and closing the last handle (cig itself dying) takes what is left
+/// with it (`KILL_ON_JOB_CLOSE`). On other platforms there is no job, and
+/// `new` says so.
+#[cfg_attr(not(windows), allow(dead_code))]
+struct Job {
+    #[cfg(windows)]
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+impl Job {
+    fn new() -> Option<Job> {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::JobObjects::{
+                CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            };
+            // SAFETY: plain Win32 calls with valid arguments; the handle is
+            // owned by the Job and closed in Drop.
+            unsafe {
+                let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if handle.is_null() {
+                    return None;
+                }
+                let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let ok = SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    &info as *const _ as *const std::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                );
+                if ok == 0 {
+                    windows_sys::Win32::Foundation::CloseHandle(handle);
+                    return None;
+                }
+                Some(Job { handle })
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    /// Put a freshly spawned child in the job. A child that already exited
+    /// is not an error.
+    fn assign(&self, child: &Child) {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+            // SAFETY: both handles are valid for the duration of the call.
+            unsafe {
+                AssignProcessToJobObject(self.handle, child.as_raw_handle() as _);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+        }
+    }
+
+    /// End every process in the job.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    fn terminate(&self) {
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            // SAFETY: the handle is valid; the exit code is ours to pick.
+            unsafe {
+                TerminateJobObject(self.handle, 1);
+            }
+        }
+    }
+}
+
+impl Drop for Job {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        {
+            // SAFETY: closing a handle this struct owns, once.
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
 /// Kill a child and everything in its process group: SIGTERM, a grace
-/// period, then SIGKILL. Returns once the group is gone.
-fn kill_group(child: &mut Child, grace_ms: u64) {
+/// period, then SIGKILL. Returns once the group is gone. On Windows the
+/// job the child was put in is terminated, which reaches the grandchildren
+/// a plain kill would leave running and holding the pipes.
+fn kill_group(child: &mut Child, grace_ms: u64, job: Option<&Job>) {
     #[cfg(unix)]
     {
         let pid = child.id() as libc::pid_t;
@@ -690,9 +783,14 @@ fn kill_group(child: &mut Child, grace_ms: u64) {
     #[cfg(not(unix))]
     {
         let _ = grace_ms;
+        if let Some(j) = job {
+            j.terminate();
+        }
         let _ = child.kill();
         let _ = child.wait();
     }
+    #[cfg(unix)]
+    let _ = job;
 }
 
 /// Run one child to completion under the rules. `Err` for anything that
@@ -710,6 +808,10 @@ fn run_child(
     let mut child = command(cmd, args, o)
         .spawn()
         .map_err(|e| spawn_error(name, cmd, e, s))?;
+    let job = Job::new();
+    if let Some(j) = &job {
+        j.assign(&child);
+    }
     let _guard = ChildGuard::register(child.id());
     // Readers first, then a writer thread for stdin: writing before reading
     // deadlocks as soon as the child fills a pipe while waiting for its input.
@@ -730,7 +832,7 @@ fn run_child(
         .map_err(|e| runtime(format!("{name}: {e}")).code("E550").at(s))?;
     match waited {
         None => {
-            kill_group(&mut child, o.grace_ms);
+            kill_group(&mut child, o.grace_ms, job.as_ref());
             let out = out_thread.join().unwrap_or_default();
             let err = err_thread.join().unwrap_or_default();
             if let Some(t) = stdin_thread {
@@ -1212,6 +1314,8 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     install_signal_forwarding();
     let started = Instant::now();
     let mut children: Vec<Child> = Vec::new();
+    // Every stage joins one job on Windows, so one timeout ends them all.
+    let job = Job::new();
     // Registered with the signal forwarder for as long as the pipeline runs.
     let mut _group_guard: Option<ChildGuard> = None;
     let mut err_readers: Vec<Reader> = Vec::new();
@@ -1239,10 +1343,13 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         }
         let mut child = c.spawn().map_err(|e| {
             for mut earlier in children.drain(..) {
-                kill_group(&mut earlier, 0);
+                kill_group(&mut earlier, 0, job.as_ref());
             }
             spawn_error(&format!("proc.pipe (stage {})", n + 1), cmd, e, s)
         })?;
+        if let Some(j) = &job {
+            j.assign(&child);
+        }
         if n == 0 {
             if let (Some(text), Some(mut pipe_in)) = (&o.stdin, child.stdin.take()) {
                 let _ = pipe_in.write_all(text.as_bytes());
@@ -1307,7 +1414,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     }
     if timed_out {
         for child in children.iter_mut() {
-            kill_group(child, o.grace_ms);
+            kill_group(child, o.grace_ms, job.as_ref());
         }
         let _ = out_reader.join();
         for r in err_readers {

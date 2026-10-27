@@ -3756,3 +3756,58 @@ fn proc_shell_on_windows_runs_sh_when_present() {
     );
     assert!(plan.contains("run sh -c"), "{plan}");
 }
+
+// ----- Windows: a held-open file comes back (#44); a timeout ends the whole tree (#45)
+
+#[cfg(windows)]
+#[test]
+fn a_file_held_open_without_share_delete_is_restored_in_place_on_windows() {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    let sb = Sandbox::new();
+    sb.write("p/a.txt", "before\n");
+    // An editor, a scanner or an indexer: read and write may be shared,
+    // delete is not, so the file cannot be renamed over while it is open.
+    let held = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .open(sb.path().join("p/a.txt"))
+        .unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"cmd\", [\"/c\", \"echo changed> p\\\\a.txt\"], {touches: [\"a.txt\"]})\n  cough \"x\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    drop(held);
+    assert_eq!(sb.read("p/a.txt"), "before\n", "{err}");
+    assert!(
+        err.contains("in place: another program held it open"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("rollback_incomplete") && !err.contains("failed write"),
+        "{err}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn a_timeout_kills_the_grandchild_on_windows() {
+    let sb = Sandbox::new();
+    // cmd starts powershell, which would sleep well past the timeout while
+    // holding the hop's stdout; the job ends it with cmd, so the hop
+    // returns at its timeout, not forty seconds later.
+    sb.write(
+        "s.cig",
+        "burn { proc.run(\"cmd\", [\"/c\", \"powershell -NoProfile -Command Start-Sleep 40\"], {timeout_ms: 1500}) }\n",
+    );
+    let started = std::time::Instant::now();
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    let took = started.elapsed();
+    assert!(err.contains("error[E554 runtime]"), "{err}");
+    assert!(
+        took < std::time::Duration::from_secs(20),
+        "the hop took {took:?}: the grandchild outlived the timeout\n{err}"
+    );
+}

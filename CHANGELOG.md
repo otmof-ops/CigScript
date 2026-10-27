@@ -38,6 +38,19 @@ project follows semantic versioning.
   (Git for Windows, MSYS2) and otherwise under `cmd /d /s /c` with the line
   reaching cmd as written; the plan line names the shell. (#43)
 
+## Unreleased
+
+- **Windows: a file another program holds open comes back.** A restore
+  that cannot rename over a held-open file (an editor, a scanner, an
+  indexer without delete sharing) retries for a moment, then writes the
+  content back in place and says so; when even that is refused the run
+  stays `rollback_incomplete` with the program's hold named and the
+  `cig unburn` that finishes the job. (#44)
+- **Windows: a timeout ends the whole process tree.** Every hop's child is
+  put in a Job Object (`KILL_ON_JOB_CLOSE`); a timeout terminates the job,
+  grandchildren holding the pipes included, and cig dying takes the tree
+  with it, the way the process group does on Unix. (#45)
+
 ## 1.2.1 — 2026-10-27
 
 - **A read-only file is snapshotted like any other.** 1.2.0 opened every
