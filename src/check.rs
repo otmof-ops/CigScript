@@ -184,6 +184,35 @@ impl Checker {
         }
     }
 
+    /// A literal path whose name is a Windows device (`nul`, `con`,
+    /// `com1`...): the script will not run there. An error where it is a
+    /// device, a warning where it is only unportable. E758.
+    fn device_check(&mut self, qualified: &str, args: &[Expr]) {
+        let positions: &[usize] = match qualified {
+            "fs.write_text" | "fs.append_text" | "fs.mkdir" | "fs.rm" | "json.save"
+            | "csv.write" => &[0],
+            "fs.cp" => &[1],
+            "fs.mv" => &[0, 1],
+            _ => return,
+        };
+        for &pos in positions {
+            let Some(text) = args.get(pos).and_then(literal_text) else {
+                continue;
+            };
+            let Some(device) = crate::burn::reserved_device_name(std::path::Path::new(&text))
+            else {
+                continue;
+            };
+            let msg = format!("`{text}` is the {device} device on Windows, not a file");
+            let hint = "name the file something else; con, prn, aux, nul, com1-9 and lpt1-9 are devices on Windows whatever the extension";
+            if cfg!(windows) {
+                self.error_code("E758", msg, args[pos].span).hint = Some(hint.to_string());
+            } else {
+                self.warn_code("E758", msg, args[pos].span).hint = Some(hint.to_string());
+            }
+        }
+    }
+
     /// A literal path handed to a write, outside the declared pack: E750.
     fn pack_check(&mut self, qualified: &str, args: &[Expr]) {
         if self.pack_roots.is_empty() {
@@ -601,6 +630,7 @@ impl Checker {
                     {
                         let qualified = format!("{module}.{name}");
                         self.pack_check(&qualified, args);
+                        self.device_check(&qualified, args);
                         if let Some(items) = self.modules.get(module) {
                             if !items.contains(name) {
                                 let hint =

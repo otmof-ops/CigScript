@@ -95,6 +95,7 @@ E750-E769  folds and packs: refusals when automation is composed
   E755  bad pack root                      burn
   E756  fold shape mismatch                burn  (planned)
   E757  touches without a pack             burn
+  E758  a Windows device name used as a file burn
 
 E800-E849  the command line and the environment
   E800  usage error                        usage
@@ -1450,6 +1451,22 @@ E757 touches without a pack  (burn, fold family, since 1.2.0)
      remedy: the hop still ran; the change to that file is irreversible this time, as the warning says
 
   arises in: run, light  ·  related: E750, E752
+
+======== E758 ========
+E758 a Windows device name used as a file  (burn, fold family, since 1.3.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A write names a path whose base name is a Windows device (con, prn, aux, nul, com1-9, lpt1-9, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows.
+
+  what to type next: name the file something else
+
+  known causes, ranked; doctor checks them in this order
+  1. the path's base name, before its first dot, is a reserved device name
+     probe: source-line (the source line under the caret)
+     remedy: rename the file; on Unix the warning can be denied with --deny-warnings
+
+  arises in: check, run, light  ·  related: E750, E702  ·  tags: kernel
 
 ======== E800 ========
 E800 usage error  (usage, usage family, since 1.0.0)

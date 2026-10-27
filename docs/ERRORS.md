@@ -1284,6 +1284,7 @@ folds and packs: refusals when automation is composed.
 | [`E755`](#e755-bad-pack-root) | bad pack root | not one of the four | name the directory the script may write in, pack { "./build" } |
 | [`E756`](#e756-fold-shape-mismatch) | fold shape mismatch *(planned)* | not one of the four | match the declaration |
 | [`E757`](#e757-touches-without-a-pack) | touches without a pack | can't see any ciggies bro | declare pack { "." } (or the roots the hop writes under) as the first statement |
+| [`E758`](#e758-a-Windows-device-name-used-as-a-file) | a Windows device name used as a file | can't see any ciggies bro | name the file something else |
 
 ### E750 literal path outside the pack
 
@@ -1416,6 +1417,23 @@ A hop was given `touches` (the files it may change, to be kept in the tin first)
 2. a file under touches could not be copied into the tin (permissions, a full disk, a pipe) (probe `path-permissions`). **Remedy:** the hop still ran; the change to that file is irreversible this time, as the warning says
 
 Related: `E750`, `E752`.
+
+
+### E758 a Windows device name used as a file
+
+*burn · since 1.3.0 · arises in check, run, light*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+A write names a path whose base name is a Windows device (con, prn, aux, nul, com1-9, lpt1-9, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows.
+
+**What to type next:** name the file something else
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the path's base name, before its first dot, is a reserved device name (probe `source-line`). **Remedy:** rename the file; on Unix the warning can be denied with --deny-warnings
+
+Related: `E750`, `E702`.
 
 
 ## usage (`E800`–`E849`)

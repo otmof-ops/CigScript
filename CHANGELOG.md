@@ -65,6 +65,12 @@ project follows semantic versioning.
   steps, in LEXICON.md and the roadmap: the box is the overlay, the parcel
   is the export, sealed is encrypted at rest, pressed is write-once. (#51,
   #52)
+- **Windows device names are refused up front.** `con`, `prn`, `aux`,
+  `nul`, `com1` to `com9` and `lpt1` to `lpt9`, with any extension, are
+  devices on Windows: a literal one is `E758` in `cig check`, an error on
+  Windows and a warning elsewhere (the script will not run there), and the
+  kernel refuses a computed one on Windows before it is journaled, where
+  1.2 failed mid-burn with `E702 Incorrect function`. (#48)
 
 ## 1.2.1 — 2026-10-27
 
