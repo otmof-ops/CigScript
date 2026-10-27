@@ -264,29 +264,31 @@ fn process_identity(pid: u32) -> Option<(String, String)> {
     }
     #[cfg(all(unix, not(target_os = "linux")))]
     {
-        let out = std::process::Command::new("ps")
-            .args(["-o", "lstart=,comm=", "-p", &pid.to_string()])
-            .output()
-            .ok()?;
-        if !out.status.success() {
-            return None;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        let line = text.lines().find(|l| !l.trim().is_empty())?.trim();
-        // lstart is five words (Mon Oct 27 11:40:03 2026); comm follows.
-        let mut words = line.split_whitespace();
-        let started: Vec<&str> = words.by_ref().take(5).collect();
-        let comm = words.collect::<Vec<_>>().join(" ");
-        if started.len() < 5 || comm.is_empty() {
-            return None;
-        }
-        Some((
-            std::path::Path::new(&comm)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or(comm.clone()),
-            format!("lstart:{}", started.join(" ")),
-        ))
+        // Two questions, two answers: the name and the start time each on
+        // a line of their own, whatever ps's column layout on this BSD.
+        let ask = |column: &str| -> Option<String> {
+            let out = std::process::Command::new("ps")
+                .args(["-p", &pid.to_string(), "-o", column])
+                .output()
+                .ok()?;
+            if !out.status.success() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&out.stdout);
+            let line = text.lines().find(|l| !l.trim().is_empty())?.trim().to_string();
+            if line.is_empty() {
+                None
+            } else {
+                Some(line)
+            }
+        };
+        let comm = ask("comm=")?;
+        let name = std::path::Path::new(&comm)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or(comm.clone());
+        let started = ask("lstart=").unwrap_or_default();
+        Some((name, if started.is_empty() { String::new() } else { format!("lstart:{started}") }))
     }
     #[cfg(windows)]
     {
