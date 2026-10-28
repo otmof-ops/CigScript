@@ -125,6 +125,13 @@ pub struct Compensation {
     /// The burn's name (`burn (s, "deploy")`), used in place of the line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
+    /// A command instead of source: what a hop said undoes it, through the
+    /// burn protocol (`docs/PROTOCOL.md`). Run with no shell.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    /// Where that command runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<PathBuf>,
 }
 
 /// The shape of `journal.jsonl` and `after.json` this cig writes. The

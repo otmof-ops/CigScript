@@ -37,6 +37,8 @@ fastcdc = { version = "3", default-features = false }
 chacha20poly1305 = { version = "0.10", features = ["stream", "getrandom"] }
 getrandom = "0.2"
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
+tar = "0.4"
+flate2 = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

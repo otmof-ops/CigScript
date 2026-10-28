@@ -13,6 +13,7 @@ pub mod ghost;
 pub mod git;
 pub mod journal;
 pub mod lock;
+pub mod protocol;
 pub mod runs;
 pub mod seal;
 pub mod tin;
@@ -220,6 +221,7 @@ impl Op {
                     (true, Some("dir")) => "  (directory)",
                     (true, Some("git")) => "  (git)",
                     (true, Some("sealed")) => "  (sealed)",
+                    (true, Some("reported")) => "  (reported by the hop)",
                     (true, _) => "  (tin)",
                     (false, _) => "",
                 }
@@ -229,6 +231,30 @@ impl Op {
                 None => format!("compensation for the burn at line {line}"),
             },
         }
+    }
+}
+
+/// The copy of the before-bytes a file claim points at, with the hash it
+/// claims for them, when it gave one.
+fn saved_of(c: &protocol::Claim) -> Option<(&Path, Option<&String>)> {
+    match c {
+        protocol::Claim::Write {
+            saved: Some(s),
+            before,
+            ..
+        }
+        | protocol::Claim::Delete {
+            saved: Some(s),
+            before,
+            ..
+        } => Some((
+            s.as_path(),
+            match before {
+                protocol::Claimed::Hash(h) => Some(h),
+                _ => None,
+            },
+        )),
+        _ => None,
     }
 }
 
@@ -317,6 +343,8 @@ pub struct Kernel {
     lock: Option<lock::PackLock>,
     /// Warnings the end of a hop's watch produced, waiting to be printed.
     late_warnings: Vec<String>,
+    /// What a hop's report (the burn protocol) could not be used for.
+    late_claims: Vec<String>,
     /// The git blobs this run refers to instead of copying, by repository:
     /// pinned under `refs/cig/runs/<id>` as one tree, rebuilt as it grows.
     git_pins: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
@@ -899,6 +927,7 @@ impl Kernel {
             compensating_marks: Vec::new(),
             lock: None,
             late_warnings: Vec::new(),
+            late_claims: Vec::new(),
             git_pins: std::collections::BTreeMap::new(),
         })
     }
@@ -1307,10 +1336,53 @@ impl Kernel {
     /// ones as irreversible with the detail, or reversible when the tin kept
     /// them; a directory it deleted or replaced is made again on rollback;
     /// changes outside the pack are returned for the caller to report (E752).
-    pub fn pack_watch_end(&mut self, mut watch: PackWatch) -> HopWrites {
+    pub fn pack_watch_end(
+        &mut self,
+        mut watch: PackWatch,
+        claims: Vec<protocol::Claim>,
+        hop_cwd: Option<&Path>,
+        mark: usize,
+    ) -> HopWrites {
         let Some(roots) = self.pack.clone() else {
             return HopWrites::default();
         };
+        // The hop's report: each claim is resolved against the hop's working
+        // directory and judged. Outside the pack it is refused; a file claim
+        // is kept by path for the loop below; compensations wait their turn.
+        let here = hop_cwd
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        let resolve = |p: &Path| -> PathBuf {
+            if p.is_absolute() {
+                normalize_root(&p.to_string_lossy())
+            } else {
+                normalize_root(&here.join(p).to_string_lossy())
+            }
+        };
+        let mut claimed: std::collections::BTreeMap<PathBuf, protocol::Claim> =
+            std::collections::BTreeMap::new();
+        let mut claimed_created: Vec<PathBuf> = Vec::new();
+        let mut compensations: Vec<protocol::Claim> = Vec::new();
+        let mut claim_warnings: Vec<String> = Vec::new();
+        let mut outside_claims: Vec<PathBuf> = Vec::new();
+        for c in claims {
+            match &c {
+                protocol::Claim::Compensate { .. } => compensations.push(c),
+                _ => {
+                    let p = resolve(c.path().expect("a file claim has a path"));
+                    if !inside_roots(&p, &roots) {
+                        outside_claims.push(p);
+                        continue;
+                    }
+                    if let protocol::Claim::Create { .. } = &c {
+                        claimed_created.push(p);
+                    } else {
+                        claimed.insert(p, c);
+                    }
+                }
+            }
+        }
         let cap = watch_cap();
         let mut after = std::collections::BTreeMap::new();
         let mut partial = watch.partial;
@@ -1335,8 +1407,8 @@ impl Kernel {
                 None => {
                     // A scan that stopped at the cap cannot tell a file the
                     // hop made from one it never reached: nothing is removed
-                    // on a guess.
-                    if partial {
+                    // on a guess, unless the hop itself reported making it.
+                    if partial && !claimed_created.contains(p) {
                         unseen_created += 1;
                         continue;
                     }
@@ -1435,6 +1507,33 @@ impl Kernel {
                 }
             }
         }
+        // A `create` the scan did not see at all (past the cap it may not
+        // have reached the path) counts when the file is there now and the
+        // scan before the hop did not have it; one the scan saw before the
+        // hop is a false claim.
+        for p in &claimed_created {
+            if writes.created.contains(p) {
+                continue;
+            }
+            if watch.inside.contains_key(p) {
+                claim_warnings.push(format!(
+                    "the hop reported creating {}, which existed before it ran; the claim is dropped",
+                    p.display()
+                ));
+            } else if std::fs::symlink_metadata(p).is_ok()
+                && !after.contains_key(p)
+                && entry_inside(p, &Seen::Dir { mode: 0 }, &roots)
+            {
+                writes.created.push(p.clone());
+            }
+        }
+        for p in outside_claims {
+            claim_warnings.push(format!(
+                "the hop reported a change to {}, which is outside the pack; nothing is journaled for it",
+                p.display()
+            ));
+            writes.outside.push(p);
+        }
         writes.outside.sort();
         writes.outside.dedup();
         if unseen_created > 0 {
@@ -1475,6 +1574,29 @@ impl Kernel {
             self.executed += 1;
             // The before-state the journal can restore from: a link's
             // target, or a file's bytes in the tin with its mode and time.
+            // The hop's own word about this path, when it gave one.
+            let claim = claimed.remove(p);
+            if let (
+                Some(
+                    protocol::Claim::Write {
+                        before: protocol::Claimed::Hash(h),
+                        ..
+                    }
+                    | protocol::Claim::Delete {
+                        before: protocol::Claimed::Hash(h),
+                        ..
+                    },
+                ),
+                Some(st),
+            ) = (&claim, watch.tinned.get(p))
+            {
+                if st.link.is_none() && *h != st.sha256 {
+                    claim_warnings.push(format!(
+                        "the hop's claim about the bytes of {} before it ran does not match what the tin kept; the tin's copy is used",
+                        p.display()
+                    ));
+                }
+            }
             let kept = match (links.get(p), watch.tinned.get(p)) {
                 (Some(target), _) => Some((
                     journal::Before::Symlink {
@@ -1499,6 +1621,56 @@ impl Kernel {
                         "tin"
                     },
                 )),
+                // Not under touches: reversible all the same when the hop
+                // kept the bytes before and they hash as it claims.
+                (None, None) => match claim.as_ref().and_then(saved_of) {
+                    Some((saved, before_hash)) => {
+                        // The copy is named as the tool wrote it: relative
+                        // to the hop's working directory, or absolute.
+                        let saved = resolve(saved);
+                        let stashed = if seal::should_seal_here(p) {
+                            tin::prepare_sealed(&saved).and_then(tin::Staged::commit)
+                        } else {
+                            tin::stash(&saved)
+                        };
+                        match stashed {
+                            Ok(st) if before_hash.is_none_or(|h| *h == st.sha256) => Some((
+                                journal::Before::File {
+                                    snapshot: st.object.clone(),
+                                    sha256: st.sha256.clone(),
+                                    bytes: st.bytes,
+                                    mode: None,
+                                    mtime_ns: None,
+                                    git: None,
+                                },
+                                "reported",
+                            )),
+                            Ok(_) => {
+                                claim_warnings.push(format!(
+                                    "the hop reported its change to {} with a copy of the bytes before, but the copy does not hash to the before it claims; the change stays irreversible",
+                                    p.display()
+                                ));
+                                None
+                            }
+                            Err(e) => {
+                                claim_warnings.push(format!(
+                                    "the hop reported its change to {} with a copy of the bytes before, which could not be kept ({e}); the change stays irreversible",
+                                    p.display()
+                                ));
+                                None
+                            }
+                        }
+                    }
+                    None => {
+                        if claim.is_some() {
+                            claim_warnings.push(format!(
+                                "the hop reported its change to {} but kept no copy of the bytes before it; the change stays irreversible",
+                                p.display()
+                            ));
+                        }
+                        None
+                    }
+                },
                 _ => None,
             };
             let left = after.get(p).and_then(Seen::left);
@@ -1586,18 +1758,72 @@ impl Kernel {
                 compensated,
             );
         }
+        // The hop's own undo, when it gave one: journaled as a compensation
+        // like a block's, and the hop's irreversible ops it covers are
+        // stamped compensated the same way.
+        if !compensations.is_empty() {
+            for c in compensations {
+                let protocol::Claim::Compensate {
+                    label, undo, cwd, ..
+                } = c
+                else {
+                    continue;
+                };
+                let cwd = cwd.map(|d| resolve(&d)).or_else(|| Some(here.clone()));
+                let comp = journal::Compensation {
+                    source: String::new(),
+                    state_name: None,
+                    state: serde_json::Value::Null,
+                    line: 0,
+                    label: Some(label.clone()),
+                    command: Some(undo),
+                    cwd,
+                };
+                self.seq += 1;
+                let _ = self.journal.record_with(
+                    self.seq,
+                    Op::Compensate {
+                        line: 0,
+                        label: Some(label),
+                    },
+                    Some(comp),
+                    false,
+                );
+            }
+            let stamped = self.journal.mark_compensated_since(mark);
+            self.irreversible = self.irreversible.saturating_sub(stamped);
+        }
         // The journal refers to the tin's objects now: the pending list
         // has done its work.
         if let Some(dir) = self.journal.run_dir() {
             let _ = std::fs::remove_file(dir.join(tin::PENDING));
         }
         self.late_warnings = std::mem::take(&mut watch.warnings);
+        self.late_claims = claim_warnings;
         writes
     }
 
     /// Warnings the end of a hop's watch produced, for the hop to print.
     pub fn take_late_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.late_warnings)
+    }
+
+    /// What a hop's report could not be used for, for the hop to print.
+    pub fn take_claim_warnings(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.late_claims)
+    }
+
+    /// Where the hop about to run may report what it changes (the burn
+    /// protocol): `hops/<seq>.jsonl` in the run directory, for the hop
+    /// just journaled. None in a dry run.
+    pub fn hop_journal(&self) -> Option<PathBuf> {
+        if self.mode == Mode::DryRun {
+            return None;
+        }
+        let dir = self.journal.run_dir()?;
+        let hops = dir.join("hops");
+        std::fs::create_dir_all(&hops).ok()?;
+        Some(hops.join(format!("{}.jsonl", self.seq)))
     }
 
     /// The ghost filesystem, when this is a dry-run.

@@ -1589,6 +1589,25 @@ probe = "none"
 remedy = "the record cannot be trusted as it is; look at the files themselves before restoring anything"
 
 [[code]]
+code = "E761"
+title = "a hop's report could not be used"
+meaning = "The hop spoke the burn protocol (it appended to the file CIG_JOURNAL names), and a line of what it said could not be taken at its word: it was not JSON, named a path outside the pack, claimed a before-state that does not match what the tin kept, or reported a change without a copy of the bytes before it. The kernel never trusts a hop's word about bytes it can check; the change stays as the scan saw it, irreversible where the tin has nothing."
+fix = "docs/PROTOCOL.md has the line shapes; report paths inside the pack, and keep a copy of the before-bytes (`saved`) or give an `undo` command"
+no = "cant-see-any"
+arises = ["run", "light"]
+tags = ["kernel"]
+since = "1.6.0"
+related = ["E752", "E757"]
+[[code.cause]]
+why = "the tool reported a write or delete without `saved`, or with a copy that does not hash to the `before` it claims"
+probe = "none"
+remedy = "save the before-bytes before writing and name the copy in `saved`; or report a `compensate` line, which undoes the change by command"
+[[code.cause]]
+why = "the tool reported a path outside the pack, or a line that is not JSON"
+probe = "none"
+remedy = "widen pack { } if the path is the pack's; one JSON object per line, with `op` and `path`"
+
+[[code]]
 code = "E800"
 title = "usage error"
 meaning = "The command line or the environment is wrong."

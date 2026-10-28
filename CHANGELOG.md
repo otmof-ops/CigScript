@@ -3,6 +3,25 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.6.0 — unreleased
+
+- **The burn protocol** (#89). Every hop a real run starts gets
+  `CIG_JOURNAL`, a file it may append JSON lines to: `write`, `delete` and
+  `create` say what it changed (with the hash of the bytes before, and where
+  it kept a copy of them), `compensate` says how to undo it (a command, no
+  shell). The kernel never trusts a hop's word about bytes it can check: a
+  reported path outside the pack is refused (`E752`), a `create` the scan
+  saw before the hop is dropped, a claim about a file the tin kept is
+  checked against the tin, and a change not under `touches` becomes
+  reversible only when the tool kept the bytes and they hash as claimed
+  (`(reported by the hop)` in the record); the rest stays irreversible with
+  the reason (`E761`). A reported compensation is journaled like a block's
+  and runs on rollback and `cig unburn`, from the directory it names, with
+  `CIG_RUN_ID` set. cig is the first speaker: a `cig run` a hop started
+  appends its own undo, `cig unburn <its run>`, so the parent's rollback
+  puts it back through its own exact journal. `docs/PROTOCOL.md` is the
+  contract, with the lines in Python, Node and bash.
+
 ## 1.5.0 — 2026-10-28
 
 - **The tin in chunks** (#82). A file of 64 KiB or more under `touches` is

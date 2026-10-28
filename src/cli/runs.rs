@@ -805,7 +805,10 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         };
     }
     // Compensations run in a fresh interpreter, effects allowed, nothing
-    // journaled: they are the undo. They run from the run's directory.
+    // journaled: they are the undo. They run from the run's directory, and a
+    // command among them (a hop's own undo) sees this run's id, so a cig it
+    // starts may enter the pack this unburn holds.
+    std::env::set_var("CIG_RUN_ID", &rec.id);
     let kernel = cigscript::burn::Kernel::ephemeral(cigscript::burn::Mode::Run);
     let mut interp = cigscript::interp::Interp::new(kernel);
     // The compensation sees the run's own arguments, as it did in the run.

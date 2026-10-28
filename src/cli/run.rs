@@ -469,6 +469,29 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             );
         }
         save_intents(&record, &interp);
+        // A run that a hop of another cig started reports to its parent
+        // (the burn protocol): the parent's rollback puts this run back
+        // through this run's own journal, which is exact.
+        if result.is_ok() && !interp.kernel.journal().is_empty() {
+            if let Some(report) = std::env::var_os(cigscript::burn::protocol::ENV) {
+                let me = std::env::current_exe()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| "cig".to_string());
+                let line = serde_json::json!({
+                    "op": "compensate",
+                    "label": format!("cig run {name} (run {})", record.id),
+                    "undo": [me, "unburn", record.id],
+                });
+                use std::io::Write as _;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(report)
+                {
+                    let _ = writeln!(f, "{line}");
+                }
+            }
+        }
         // The fallback: the run failed on this cig after burns that all came
         // back, and the script has a last good version on the shelf. Run it
         // there. Never after an irreversible op: a trial never repeats one.

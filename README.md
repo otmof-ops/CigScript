@@ -472,6 +472,9 @@ for.
 | a hop under `touches: ["**"]` rewrites `id_rsa` and deletes `.env`, then the run fails | both come back byte for byte, and not a byte of either is in the clear anywhere under the state directory | 1.5.0 | `a_private_key_under_touches_is_never_stored_in_the_clear` |
 | flip one byte of a sealed object, then `unburn` | refused before anything is touched; the tag does not fit | 1.5.0 | `a_tampered_sealed_object_refuses_the_restore` |
 | the key is gone (a wiped keyring, a new machine), then `unburn` | refused, naming the file; `cig tin gc --sealed-orphans` clears what nothing can open | 1.5.0 | `without_the_key_a_restore_refuses_and_names_the_file` |
+| a tool rewrites a file no `touches` named, keeps the bytes before and reports both through `CIG_JOURNAL` | reversible all the same: the copy is hashed, kept, and put back on rollback | 1.6.0 | `a_tool_that_reports_its_write_is_reversible_without_touches` |
+| a tool reports a path outside the pack, or a before-hash its copy does not match | refused with the reason (`E761`); nothing journaled on its word | 1.6.0 | `a_reported_path_outside_the_pack_is_refused` |
+| a hop starts a `cig run` of its own, then the parent fails | the child reported its undo; the parent's rollback unburns the child through its own journal | 1.6.0 | `a_nested_cig_run_is_undone_by_the_parents_rollback` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

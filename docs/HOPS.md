@@ -243,11 +243,25 @@ it may use only its state map `s`, modules and builtins (`E754` otherwise);
 hops inside the block show as `compensated` in the plan. `LANGUAGE.md` has
 the shape.
 
+## The burn protocol
+
+A tool that knows what it changed can say so. Every hop a real run starts
+gets `CIG_JOURNAL`, a file it may append JSON lines to: `write`, `delete`
+and `create` with the path, the hash of the bytes before and where a copy
+of them was kept; `compensate` with the command that undoes the work. The
+kernel checks every word it can (a path outside the pack is refused, a copy
+that does not hash as claimed is not used, a `create` the scan saw before
+is dropped) and journals what holds: a change the tool kept the bytes for
+is reversible without `touches`, a compensation runs on rollback and
+`cig unburn` like a block's. [PROTOCOL.md](PROTOCOL.md) is the contract,
+with the lines in Python, Node and bash. A `cig run` started by a hop
+speaks it itself, so a parent's rollback undoes the child through the
+child's own journal.
+
 ## What a hop cannot do yet
 
-The burn protocol (a child that speaks `CIG_DRY_RUN=1` and reports its own
-effects so the kernel can plan and journal them), adapters for `git`, `gh`,
-`docker` and friends as subtools, and shape assertions at the boundary are
-the next seams of `HAMMER.md` (sections 4 and 7). Until then a hop is honest about being opaque: the plan
-shows it, the label says irreversible, and the ghost filesystem does not
-pretend to know what it would have written.
+Adapters for `git`, `gh`, `docker` and friends as subtools, and shape
+assertions at the boundary, are the next seams of `HAMMER.md` (sections 4
+and 7). Until then a hop that speaks no protocol is honest about being
+opaque: the plan shows it, the label says irreversible, and the ghost
+filesystem does not pretend to know what it would have written.

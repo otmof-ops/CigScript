@@ -223,7 +223,10 @@ journaled. Hops inside such a block are labelled `compensated` in the plan,
 the journal and the rollback report, never `irreversible`; a block that
 fails half-way records no compensation, so its hops stay honestly
 irreversible. No pack reverses `git push`; that is what the compensation is
-for, and the pack and the compensation are two halves of one feature.
+for, and the pack and the compensation are two halves of one feature. A
+hop can supply the compensation itself through the burn protocol
+([PROTOCOL.md](PROTOCOL.md)): a `compensate` line in `CIG_JOURNAL` is
+journaled like a block's `unburn` and runs the same way, as a command.
 
 ## Chains
 

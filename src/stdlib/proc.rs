@@ -580,7 +580,12 @@ fn quoted_for_crt(arg: &str) -> String {
 /// fails as not found (E551) rather than let the platform search again by
 /// rules of its own (the current directory among them). A path nothing
 /// resolves is handed over as written, so the platform's reason is told.
-fn command(cmd: &str, args: &[String], o: &Options) -> Option<Command> {
+fn command(
+    cmd: &str,
+    args: &[String],
+    o: &Options,
+    journal: Option<&std::path::Path>,
+) -> Option<Command> {
     let resolved = resolve_program_on(cmd, o.cwd.as_deref(), child_path(o));
     let is_path = cmd.contains('/') || cmd.contains(std::path::MAIN_SEPARATOR);
     if resolved.is_none() && !is_path {
@@ -682,6 +687,15 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Option<Command> {
         c.env("CIG_RUN_ID", id);
     } else if let Ok(id) = std::env::var("CIG_RUN_ID") {
         c.env("CIG_RUN_ID", id);
+    }
+    // The burn protocol: where a tool that knows what it changes may say so.
+    match journal {
+        Some(p) => {
+            c.env(crate::burn::protocol::ENV, p);
+        }
+        None => {
+            c.env_remove(crate::burn::protocol::ENV);
+        }
     }
     for (k, v) in &o.env {
         c.env(k, v);
@@ -1123,12 +1137,13 @@ fn run_child(
     args: &[String],
     o: &Options,
     s: Span,
+    journal: Option<&std::path::Path>,
 ) -> Result<Raw, Diagnostic> {
     let started = Instant::now();
     let deadline = started + Duration::from_millis(o.timeout_ms);
     check_cwd(name, o, s)?;
     install_signal_forwarding();
-    let mut c = command(cmd, args, o).ok_or_else(|| {
+    let mut c = command(cmd, args, o, journal).ok_or_else(|| {
         spawn_error(
             name,
             cmd,
@@ -1474,21 +1489,36 @@ fn hop(
         .at(s)
         .with_hint("declare pack { \".\" } (or the roots the hop writes under) as the first statement"));
     }
+    let mark = i.kernel.mark();
     if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
     }
+    let report = i.kernel.hop_journal();
     let watch = i
         .kernel
         .pack_watch_begin(o.cwd.as_deref(), &o.touches, &o.touches_sealed);
-    let ran = run_child(name, cmd, args, o, s);
+    let ran = run_child(name, cmd, args, o, s, report.as_deref());
+    // What the hop said it changed (the burn protocol), read once it is over.
+    let claims = report
+        .as_deref()
+        .map(crate::burn::protocol::read)
+        .unwrap_or_default();
+    for warning in &claims.warnings {
+        let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
+    }
     if let Some(mut w) = watch {
         // Printed here and taken out, so the watch's end does not say them again.
         for warning in std::mem::take(&mut w.warnings) {
             let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
         }
-        let writes = i.kernel.pack_watch_end(w);
+        let writes = i
+            .kernel
+            .pack_watch_end(w, claims.claims, o.cwd.as_deref(), mark);
         for warning in i.kernel.take_late_warnings() {
             let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
+        }
+        for warning in i.kernel.take_claim_warnings() {
+            let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
         }
         if !writes.outside.is_empty() {
             let shown: Vec<String> = writes
@@ -1753,7 +1783,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let mut stdin_thread: Option<std::thread::JoinHandle<()>> = None;
     let mut previous_out: Option<std::process::ChildStdout> = None;
     for (n, (cmd, args)) in stages.iter().enumerate() {
-        let Some(mut c) = command(cmd, args, &o) else {
+        let Some(mut c) = command(cmd, args, &o, None) else {
             for mut earlier in children.drain(..) {
                 kill_group(&mut earlier, 0, job.as_ref());
             }

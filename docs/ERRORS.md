@@ -1287,6 +1287,7 @@ folds and packs: refusals when automation is composed.
 | [`E758`](#e758-a-Windows-device-name-used-as-a-file) | a Windows device name used as a file | can't see any ciggies bro | name the file something else |
 | [`E759`](#e759-the-pack-is-in-use-by-another-run) | the pack is in use by another run | can't see any ciggies bro | wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap |
 | [`E760`](#e760-the-journal's-chain-is-broken) | the journal's chain is broken | can't see any ciggies bro | cig runs <id> --verify names the first line that does not fit; cig unburn <id> --force restores from the journal as it is |
+| [`E761`](#e761-a-hop's-report-could-not-be-used) | a hop's report could not be used | can't see any ciggies bro | docs/PROTOCOL.md has the line shapes; report paths inside the pack, and keep a copy of the before-bytes (`saved`) or give an `undo` command |
 
 ### E750 literal path outside the pack
 
@@ -1472,6 +1473,24 @@ Every line of a run's journal carries the hash of the line before it (format 2, 
 2. lines were removed, or the journal was replaced with another run's (no probe; a suggestion, not a finding). **Remedy:** the record cannot be trusted as it is; look at the files themselves before restoring anything
 
 Related: `E703`, `E704`.
+
+
+### E761 a hop's report could not be used
+
+*burn · since 1.6.0 · arises in run, light*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+The hop spoke the burn protocol (it appended to the file CIG_JOURNAL names), and a line of what it said could not be taken at its word: it was not JSON, named a path outside the pack, claimed a before-state that does not match what the tin kept, or reported a change without a copy of the bytes before it. The kernel never trusts a hop's word about bytes it can check; the change stays as the scan saw it, irreversible where the tin has nothing.
+
+**What to type next:** docs/PROTOCOL.md has the line shapes; report paths inside the pack, and keep a copy of the before-bytes (`saved`) or give an `undo` command
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the tool reported a write or delete without `saved`, or with a copy that does not hash to the `before` it claims (no probe; a suggestion, not a finding). **Remedy:** save the before-bytes before writing and name the copy in `saved`; or report a `compensate` line, which undoes the change by command
+2. the tool reported a path outside the pack, or a line that is not JSON (no probe; a suggestion, not a finding). **Remedy:** widen pack { } if the path is the pack's; one JSON object per line, with `op` and `path`
+
+Related: `E752`, `E757`.
 
 
 ## usage (`E800`–`E849`)
