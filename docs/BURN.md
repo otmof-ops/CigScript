@@ -428,10 +428,13 @@ any other and the record reads as native ops. The plan says `(boxed)`, and
 says before the run when the box cannot be made here. It cannot where
 unprivileged user namespaces are off (Ubuntu's AppArmor restricts them
 since 23.10: `sysctl kernel.apparmor_restrict_unprivileged_userns=0`), on
-a kernel before 5.11, on a filesystem overlayfs cannot layer over, and on
-macOS, Windows and the BSDs, which have no overlayfs; there the hop runs on
-the tin as usual, with `touches` keeping what it may change, and the run
-says so (`E763`). A hop's own undo (the burn protocol) is journaled for a
+a kernel before 5.11, on a filesystem overlayfs cannot layer over, where the
+state directory itself sits on an overlay (a container's layer, or another
+box: overlayfs refuses an upper directory there, so the box does not nest;
+a `CIGSCRIPT_HOME` on a plain filesystem lets it be made), and on macOS,
+Windows and the BSDs, which have no overlayfs; there the hop runs on the
+tin as usual, with `touches` keeping what it may change, and the run says
+so (`E763`). A hop's own undo (the burn protocol) is journaled for a
 boxed hop too. The layers live under the run directory while the hop runs
 and are removed once applied or dropped, so the record prunes as any other.
 The trees hop watching never looks into (`.git`, `node_modules`, `target`,

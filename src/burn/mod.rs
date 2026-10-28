@@ -1774,7 +1774,7 @@ impl Kernel {
         let roots = self.pack.as_ref()?;
         let dir = self.journal.run_dir()?;
         if let Err(why) = overlay::possible() {
-            return Some(Err(why.to_string()));
+            return Some(Err(why));
         }
         Some(
             overlay::prepare(dir, self.seq, roots)

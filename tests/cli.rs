@@ -6739,3 +6739,51 @@ fn the_layers_a_dead_run_left_are_swept_when_the_next_run_starts() {
     assert!(!layers.exists(), "the layers stayed under the dead run");
     assert_eq!(sb.read("p/a.txt"), "v2");
 }
+
+// ----- 1.6.3: the box does not nest, and says so before the run -----------------------
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_box_inside_a_box_is_refused_in_the_plan_with_the_reason() {
+    let sb = Sandbox::new();
+    sb.write("p/q/f.txt", "v1\n");
+    sb.write(
+        "p/inner.cig",
+        "pack { \"./q\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > f.txt\"], {cwd: \"q\", box: true})\n}\n",
+    );
+    // The inner cig's home sits inside the outer box's layer: its own layers
+    // would be an upper directory on an overlay.
+    let home2 = sb.path().join("p/home2");
+    let path = format!(
+        "{}:{}",
+        Path::new(env!("CARGO_BIN_EXE_cig"))
+            .parent()
+            .unwrap()
+            .display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let outer = String::from("pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"cig run --dry-run inner.cig > plan.txt 2>&1; cig run inner.cig > run.txt 2>&1\"], {cwd: \"p\", box: true, env: {CIGSCRIPT_HOME: \"HOME2\", CIG_SEAL_KEY: \"file\", NO_COLOR: \"1\", PATH: \"PATH2\"}})\n}\n")
+        .replace("HOME2", &home2.display().to_string())
+        .replace("PATH2", &path);
+    sb.write("outer.cig", &outer);
+    let out = sb.cig(&["run", "outer.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    let plan = sb.read("p/plan.txt");
+    assert!(
+        plan.contains("the box cannot be made here")
+            && plan.contains("on an overlay filesystem")
+            && plan.contains("another box"),
+        "{plan}"
+    );
+    let run = sb.read("p/run.txt");
+    assert!(
+        run.contains("warning[E763 burn]") && run.contains("on an overlay filesystem"),
+        "{run}"
+    );
+    assert_eq!(sb.read("p/q/f.txt"), "v2\n");
+}
