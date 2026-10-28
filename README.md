@@ -477,6 +477,8 @@ for.
 | a hop starts a `cig run` of its own, then the parent fails | the child reported its undo; the parent's rollback unburns the child through its own journal | 1.6.0 | `a_nested_cig_run_is_undone_by_the_parents_rollback` |
 | `cig parcel` a run, carry the file to a machine with a different home and the pack at another path, `cig unparcel --root`, `cig unburn` | every file checked against the manifest, the paths read through the map, the chain still intact; the run is undone there, the original machine untouched | 1.6.0 | `a_parcel_unburns_on_another_machine` |
 | change one byte inside a parcel, then `cig unparcel` | the whole parcel refused (`E762`); nothing placed | 1.6.0 | `a_parcel_with_a_wrong_hash_is_refused_whole` |
+| a hop creates a file in a 60,000-entry pack, where 1.4 stopped scanning at 50,000 | removed on rollback like any other; the scan has no point past which a change goes irreversible | 1.6.0 | `a_created_file_past_the_old_cap_is_removed_on_rollback` |
+| a hop creates, edits and deletes among 500,000 entries | everything undone, under five minutes (heavy; `cargo test --release -- --ignored`) | 1.6.0 | `a_hop_in_a_500k_entry_pack_is_fully_reversible` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

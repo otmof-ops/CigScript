@@ -1,0 +1,364 @@
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-License-Identifier: Apache-2.0
+
+//! The box: a hop run over a copy-on-write layer on the pack, so a failing
+//! hop's changes never land. On Linux the hop runs in its own user and
+//! mount namespaces with each pack root mounted as overlayfs over itself
+//! (the real root the read-only lower layer, an upper directory in the run
+//! directory taking every write); a hop that succeeds has its upper layer
+//! applied to the real pack through the journal, as native burns, so the
+//! run is unburnable; a hop that fails has it deleted, and nothing was ever
+//! written to the pack. Where the box cannot be made (no user namespaces,
+//! a kernel before 5.11, another operating system), the hop runs on the tin
+//! as usual and the plan says so.
+
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+/// Where a boxed hop's layers live: one directory per hop under the run.
+pub fn layers_dir(run_dir: &Path, seq: u64) -> PathBuf {
+    run_dir.join("box").join(seq.to_string())
+}
+
+/// The layers of one hop: per root, an upper and a work directory.
+#[derive(Debug)]
+pub struct Layers {
+    pub dir: PathBuf,
+    /// (root, upper, work), outer roots first.
+    pub roots: Vec<(PathBuf, PathBuf, PathBuf)>,
+}
+
+/// Make the directories a boxed hop needs. Outer roots come first so an
+/// overlay over a parent is mounted before one over a child inside it.
+pub fn prepare(run_dir: &Path, seq: u64, roots: &[PathBuf]) -> io::Result<Layers> {
+    let dir = layers_dir(run_dir, seq);
+    let mut ordered: Vec<PathBuf> = roots.to_vec();
+    ordered.sort_by_key(|r| r.components().count());
+    let mut out = Vec::new();
+    for (i, root) in ordered.iter().enumerate() {
+        let upper = dir.join(i.to_string()).join("upper");
+        let work = dir.join(i.to_string()).join("work");
+        fs::create_dir_all(&upper)?;
+        fs::create_dir_all(&work)?;
+        out.push((root.clone(), upper, work));
+    }
+    Ok(Layers { dir, roots: out })
+}
+
+/// Why the box could not be made, as the child wrote it before giving up.
+pub fn why(layers: &Layers) -> Option<String> {
+    fs::read_to_string(layers.dir.join("why"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Throw the layers away: nothing of the hop lands.
+pub fn discard(layers: &Layers) {
+    let _ = fs::remove_dir_all(&layers.dir);
+}
+
+/// Can this platform make a box at all? Linux, with a kernel that lets an
+/// unprivileged user namespace mount overlayfs (5.11 and later). The real
+/// answer comes when the mount is tried; this only rules out what cannot
+/// work, so the plan can say so before the run.
+pub fn possible() -> Result<(), &'static str> {
+    #[cfg(target_os = "linux")]
+    {
+        if fs::read_to_string("/proc/filesystems")
+            .map(|t| t.lines().any(|l| l.trim_end().ends_with("overlay")))
+            .unwrap_or(false)
+            || Path::new("/sys/module/overlay").exists()
+        {
+            Ok(())
+        } else {
+            Err("this kernel has no overlayfs")
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err("the box is made with overlayfs in a user namespace, which only Linux has")
+    }
+}
+
+/// What the child does before it becomes the hop's program: new user and
+/// mount namespaces, the user mapped to itself, every root mounted as an
+/// overlay over itself, then into the working directory again (the
+/// directory it stood in is the real root; the mount hid it). Only async-
+/// signal-safe calls, since this runs between fork and exec. On any failure
+/// the reason is written to `why` and the exec is refused, so the parent
+/// runs the hop again without the box.
+#[cfg(target_os = "linux")]
+pub struct Setup {
+    pub uid_map: Vec<u8>,
+    pub gid_map: Vec<u8>,
+    /// (mount point, overlay options), each NUL-terminated.
+    pub mounts: Vec<(std::ffi::CString, std::ffi::CString)>,
+    pub cwd: std::ffi::CString,
+    pub why: std::ffi::CString,
+}
+
+#[cfg(target_os = "linux")]
+impl Setup {
+    pub fn new(layers: &Layers, cwd: &Path) -> io::Result<Setup> {
+        use std::os::unix::ffi::OsStrExt;
+        let uid = unsafe { libc::geteuid() };
+        let gid = unsafe { libc::getegid() };
+        let cstr = |p: &Path| -> io::Result<std::ffi::CString> {
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| io::Error::other("a path holds a NUL byte"))
+        };
+        let mut mounts = Vec::new();
+        for (root, upper, work) in &layers.roots {
+            let opts = format!(
+                "lowerdir={},upperdir={},workdir={},userxattr",
+                escape(root),
+                escape(upper),
+                escape(work)
+            );
+            mounts.push((
+                cstr(root)?,
+                std::ffi::CString::new(opts).map_err(|_| io::Error::other("NUL in options"))?,
+            ));
+        }
+        Ok(Setup {
+            uid_map: format!("{uid} {uid} 1\n").into_bytes(),
+            gid_map: format!("{gid} {gid} 1\n").into_bytes(),
+            mounts,
+            cwd: cstr(cwd)?,
+            why: cstr(&layers.dir.join("why"))?,
+        })
+    }
+
+    /// Run in the child, between fork and exec.
+    pub unsafe fn apply(&self) -> io::Result<()> {
+        if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
+            return self.fail(b"unshare(CLONE_NEWUSER|CLONE_NEWNS) refused");
+        }
+        if !write_file(b"/proc/self/uid_map\0", &self.uid_map) {
+            return self.fail(b"writing /proc/self/uid_map refused");
+        }
+        write_file(b"/proc/self/setgroups\0", b"deny\n");
+        if !write_file(b"/proc/self/gid_map\0", &self.gid_map) {
+            return self.fail(b"writing /proc/self/gid_map refused");
+        }
+        // Nothing mounted here must reach the parent's namespace.
+        if libc::mount(
+            std::ptr::null(),
+            b"/\0".as_ptr() as *const libc::c_char,
+            std::ptr::null(),
+            libc::MS_REC | libc::MS_PRIVATE,
+            std::ptr::null(),
+        ) != 0
+        {
+            return self.fail(b"making the mount tree private refused");
+        }
+        for (at, opts) in &self.mounts {
+            if libc::mount(
+                b"overlay\0".as_ptr() as *const libc::c_char,
+                at.as_ptr(),
+                b"overlay\0".as_ptr() as *const libc::c_char,
+                0,
+                opts.as_ptr() as *const libc::c_void,
+            ) != 0
+            {
+                return self.fail(b"mounting overlayfs over a root refused (a kernel before 5.11, or a filesystem overlayfs cannot layer over)");
+            }
+        }
+        // Into the working directory again, through the overlay this time.
+        if libc::chdir(self.cwd.as_ptr()) != 0 {
+            return self.fail(b"entering the working directory through the overlay refused");
+        }
+        Ok(())
+    }
+
+    /// Write the reason with the errno, then refuse the exec.
+    unsafe fn fail(&self, what: &[u8]) -> io::Result<()> {
+        let errno = *libc::__errno_location();
+        let fd = libc::open(
+            self.why.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC,
+            0o644,
+        );
+        if fd >= 0 {
+            let _ = libc::write(fd, what.as_ptr() as *const libc::c_void, what.len());
+            let mut buf = [0u8; 32];
+            let n = itoa(errno, &mut buf);
+            let _ = libc::write(fd, b" (errno ".as_ptr() as *const libc::c_void, 8);
+            let _ = libc::write(fd, buf.as_ptr() as *const libc::c_void, n);
+            let _ = libc::write(fd, b")\n".as_ptr() as *const libc::c_void, 2);
+            libc::close(fd);
+        }
+        Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+    }
+}
+
+/// Overlayfs options separate directories with `,` and `:`, so those are
+/// escaped with a backslash in a path that holds them.
+#[cfg(target_os = "linux")]
+fn escape(p: &Path) -> String {
+    p.to_string_lossy()
+        .replace('\\', "\\\\")
+        .replace(',', "\\,")
+        .replace(':', "\\:")
+}
+
+#[cfg(target_os = "linux")]
+unsafe fn write_file(path: &[u8], bytes: &[u8]) -> bool {
+    let fd = libc::open(
+        path.as_ptr() as *const libc::c_char,
+        libc::O_WRONLY | libc::O_CLOEXEC,
+    );
+    if fd < 0 {
+        return false;
+    }
+    let n = libc::write(fd, bytes.as_ptr() as *const libc::c_void, bytes.len());
+    libc::close(fd);
+    n == bytes.len() as isize
+}
+
+#[cfg(target_os = "linux")]
+fn itoa(mut n: i32, buf: &mut [u8; 32]) -> usize {
+    if n == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+    let neg = n < 0;
+    if neg {
+        n = -n;
+    }
+    let mut digits = [0u8; 16];
+    let mut k = 0;
+    while n > 0 {
+        digits[k] = b'0' + (n % 10) as u8;
+        n /= 10;
+        k += 1;
+    }
+    let mut len = 0;
+    if neg {
+        buf[0] = b'-';
+        len = 1;
+    }
+    for i in (0..k).rev() {
+        buf[len] = digits[i];
+        len += 1;
+    }
+    len
+}
+
+/// One change the upper layer holds, in the order it is applied.
+#[derive(Debug)]
+pub enum Change {
+    /// A directory the hop made (or wrote into): made if missing.
+    Dir { real: PathBuf, mode: u32 },
+    /// A directory the hop replaced whole (overlayfs marks it opaque): the
+    /// real one goes, the upper's contents come.
+    Replaced { real: PathBuf },
+    /// A file the hop wrote: the real one takes the upper's bytes.
+    File { real: PathBuf, upper: PathBuf },
+    /// A link the hop made or retargeted.
+    Link { real: PathBuf, target: PathBuf },
+    /// A path the hop removed (a whiteout).
+    Removed { real: PathBuf },
+}
+
+impl Change {
+    pub fn real(&self) -> &Path {
+        match self {
+            Change::Dir { real, .. }
+            | Change::Replaced { real }
+            | Change::File { real, .. }
+            | Change::Link { real, .. }
+            | Change::Removed { real } => real,
+        }
+    }
+}
+
+/// Is this entry overlayfs's whiteout: a character device 0/0?
+#[cfg(target_os = "linux")]
+fn is_whiteout(meta: &fs::Metadata) -> bool {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    meta.file_type().is_char_device() && meta.rdev() == 0
+}
+
+/// Does overlayfs mark this upper directory opaque (the lower hidden)?
+#[cfg(target_os = "linux")]
+fn is_opaque(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut buf = [0u8; 8];
+    let n = unsafe {
+        libc::getxattr(
+            c.as_ptr(),
+            b"user.overlay.opaque\0".as_ptr() as *const libc::c_char,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len(),
+        )
+    };
+    n > 0 && buf[0] == b'y'
+}
+
+/// Read one root's upper layer into the changes to apply, parents before
+/// children, in path order.
+pub fn changes(root: &Path, upper: &Path) -> io::Result<Vec<Change>> {
+    let mut out = Vec::new();
+    walk_upper(root, upper, upper, &mut out)?;
+    Ok(out)
+}
+
+fn walk_upper(root: &Path, upper: &Path, dir: &Path, out: &mut Vec<Change>) -> io::Result<()> {
+    let mut entries: Vec<fs::DirEntry> = fs::read_dir(dir)?.collect::<Result<_, _>>()?;
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let p = e.path();
+        let rel = p.strip_prefix(upper).unwrap_or(&p);
+        let real = root.join(rel);
+        let meta = fs::symlink_metadata(&p)?;
+        #[cfg(target_os = "linux")]
+        if is_whiteout(&meta) {
+            out.push(Change::Removed { real });
+            continue;
+        }
+        if meta.file_type().is_symlink() {
+            out.push(Change::Link {
+                real,
+                target: fs::read_link(&p)?,
+            });
+        } else if meta.is_dir() {
+            #[cfg(target_os = "linux")]
+            let opaque = is_opaque(&p);
+            #[cfg(not(target_os = "linux"))]
+            let opaque = false;
+            if opaque {
+                out.push(Change::Replaced { real: real.clone() });
+            } else {
+                out.push(Change::Dir {
+                    real: real.clone(),
+                    mode: mode_of(&meta),
+                });
+            }
+            walk_upper(root, upper, &p, out)?;
+        } else if meta.is_file() {
+            out.push(Change::File { real, upper: p });
+        }
+        // Anything else (a socket, a pipe) a hop left in its layer is not a
+        // file of the pack and is dropped.
+    }
+    Ok(())
+}
+
+fn mode_of(meta: &fs::Metadata) -> u32 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o7777
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        0o755
+    }
+}

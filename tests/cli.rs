@@ -5928,3 +5928,109 @@ fn a_parcel_carries_only_the_objects_its_run_needs() {
     );
     assert!(!names.contains("run/hops/"), "{names}");
 }
+
+// ----- hop watching that scales (#84): no cap past which changes go irreversible
+
+/// Makes `n` small files under `p`, a thousand to a directory.
+#[cfg(unix)]
+fn big_pack(sb: &Sandbox, n: usize) {
+    for d in 0..n.div_ceil(1000) {
+        let dir = sb.path().join(format!("p/d{d:04}"));
+        fs::create_dir_all(&dir).unwrap();
+        let count = (n - d * 1000).min(1000);
+        for i in 0..count {
+            fs::write(dir.join(format!("f{i:04}.txt")), "x").unwrap();
+        }
+    }
+}
+
+/// 1.4 stopped reading a pack at 50,000 entries and left what a hop created
+/// past that point in place. The scan has no such point now.
+#[cfg(unix)]
+#[test]
+fn a_created_file_past_the_old_cap_is_removed_on_rollback() {
+    let sb = Sandbox::new();
+    big_pack(&sb, 60_000);
+    sb.write("p/config.ini", "original\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo CHANGED > config.ini; echo new > d0059/made.txt; rm d0030/f0007.txt\"], {cwd: \"p\", touches: [\"config.ini\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(!err.contains("saw only part of it"), "{err}");
+    assert_eq!(sb.read("p/config.ini"), "original\n", "{err}");
+    assert!(
+        !sb.exists("p/d0059/made.txt"),
+        "the created file survived: {err}"
+    );
+    assert!(err.contains("restored hop created"), "{err}");
+    assert!(
+        err.contains("d0030/f0007.txt is not under touches"),
+        "{err}"
+    );
+    assert!(
+        sb.exists("p/d0030/f0006.txt"),
+        "a file that existed was removed"
+    );
+}
+
+/// Half a million entries, a hop that creates, edits and deletes among
+/// them, everything undone. Heavy: `cargo test --release -- --ignored`.
+#[cfg(unix)]
+#[test]
+#[ignore = "heavy: makes 500,000 files; run with --ignored, in release mode"]
+fn a_hop_in_a_500k_entry_pack_is_fully_reversible() {
+    let sb = Sandbox::new();
+    big_pack(&sb, 500_000);
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo new > d0400/made.txt; echo changed > d0200/f0500.txt; rm d0100/f0001.txt\"], {cwd: \"p\", touches: [\"d0200/**\", \"d0100/**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let started = std::time::Instant::now();
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    let took = started.elapsed();
+    assert!(!err.contains("saw only part of it"), "{err}");
+    assert!(!sb.exists("p/d0400/made.txt"), "{err}");
+    assert_eq!(sb.read("p/d0200/f0500.txt"), "x", "{err}");
+    assert_eq!(sb.read("p/d0100/f0001.txt"), "x", "{err}");
+    assert!(
+        took < std::time::Duration::from_secs(300),
+        "a run over 500k entries took {took:?}"
+    );
+}
+
+/// The scan of a million entries, before and after a hop, stays under the
+/// memory budget: the whole run under 400 MB of resident memory on Linux.
+/// Heavy: `cargo test --release -- --ignored`.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "heavy: makes 1,000,000 files; run with --ignored, in release mode"]
+fn scan_memory_stays_under_the_budget_for_a_million_entries() {
+    let sb = Sandbox::new();
+    big_pack(&sb, 1_000_000);
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo new > d0999/made.txt\"], {cwd: \"p\"})\n  cough \"boom\"\n}\n",
+    );
+    let out = Command::new("/usr/bin/time")
+        .args(["-f", "MAXRSS=%M", env!("CARGO_BIN_EXE_cig"), "run", "s.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .output()
+        .expect("time");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let rss_kb: u64 = err
+        .lines()
+        .find_map(|l| l.strip_prefix("MAXRSS="))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(!err.contains("saw only part of it"), "{err}");
+    assert!(!sb.exists("p/d0999/made.txt"), "{err}");
+    assert!(
+        rss_kb < 400 * 1024,
+        "a million entries took {} MB of resident memory",
+        rss_kb / 1024
+    );
+}

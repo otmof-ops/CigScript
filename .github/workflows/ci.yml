@@ -30,6 +30,10 @@ jobs:
       # crash tests read them: run the suite once as users run cig.
       - if: matrix.os == 'ubuntu-latest'
         run: cargo test --release
+      # The heavy tests (half a million and a million files) once, where
+      # the disk is fast enough for them to be a measurement.
+      - if: matrix.os == 'ubuntu-latest'
+        run: cargo test --release --test cli -- --ignored
       - run: cargo run --release -- run examples/hello.cig -- ci
       - run: cargo run --release -- chains examples/tasks.cig
       # The portability probe: the kernel's promises checked on disk the way

@@ -215,10 +215,13 @@ most here:
   first runs. A cig that a hop starts is the exception: it sees the run's
   id as `CIG_RUN_ID` (every hop does) and works inside the parent's pack,
   since the parent waits for it.
-- **The scan has a cap** (`watch_cap`, 50,000 entries). Past it the kernel
-  cannot tell a file the hop made from one it never reached, so it warns
-  up front, journals nothing as created, and asks the disk before it calls
-  a file deleted. A `.cigignore` at the pack root keeps a big tree out.
+- **The scan is compact and parallel, with a memory guard** (`watch_cap`,
+  five million entries). It reads the pack on every core into a sorted list
+  of about 60 bytes an entry, and the scan after the hop reuses it for
+  every directory whose modification time has not moved. Past the guard the
+  kernel cannot tell a file the hop made from one it never reached, so it
+  warns up front, journals nothing as created, and asks the disk before it
+  calls a file deleted. A `.cigignore` at the pack root keeps a big tree out.
 - **A link that leads out of the pack is a door.** What lies behind it is
   not walked and never journaled; a write through it is reported as
   outside the pack (`E752`); a rollback never removes a path whose real

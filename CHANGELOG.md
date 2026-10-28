@@ -5,6 +5,16 @@ project follows semantic versioning.
 
 ## 1.6.0 — unreleased
 
+- **Hop watching that scales** (#84). The scan of a pack is read on every
+  core (up to eight threads), kept compact (one arena of relative paths and
+  entries of a few dozen bytes, sorted by path, about 60 bytes an entry),
+  and compared with the scan after the hop in one merge walk; the scan after
+  reads no directory whose modification time is unchanged and old enough
+  for that to mean something, it only stats what is in it. `watch_cap` is a
+  memory guard now, five million entries by default (where 1.4 stopped at
+  50,000 and left what a hop created past that point in place); the rule at
+  the cap is unchanged, nothing that existed is removed. Measured in
+  `docs/FINDINGS.md`.
 - **The parcel** (#86). `cig parcel <run>` writes `<run>.cigparcel`: the
   run's record, journal and after-state, every snapshot, tin object, recipe,
   chunk and sealed object its journal refers to, the bytes of every blob

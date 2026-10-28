@@ -16,6 +16,7 @@ pub mod lock;
 pub mod parcel;
 pub mod protocol;
 pub mod runs;
+pub mod scan;
 pub mod seal;
 pub mod tin;
 
@@ -399,62 +400,14 @@ pub struct HopWrites {
     pub outside: Vec<PathBuf>,
 }
 
-/// What hop watching sees of one path: enough to notice a change without
-/// reading the file. A link is its target, and the time and size of the
-/// file it leads to when it leads to one, so a write through it is seen; a
-/// directory is watched for being made, deleted or replaced, and its mode
-/// is kept so a deleted one comes back as it was.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Seen {
-    File {
-        mtime: u64,
-        len: u64,
-        mode: u32,
-    },
-    Dir {
-        mode: u32,
-    },
-    Link {
-        target: PathBuf,
-        through: Option<(u64, u64)>,
-    },
-}
-
-impl Seen {
-    fn is_dir(&self) -> bool {
-        matches!(self, Seen::Dir { .. })
-    }
-
-    /// The (mtime, len) of a regular file, for the `left` a journal entry
-    /// records.
-    fn left(&self) -> Option<Left> {
-        match self {
-            Seen::File { mtime, len, .. } => Some(Left {
-                mtime_ns: *mtime,
-                len: *len,
-            }),
-            _ => None,
-        }
-    }
-}
-
-/// One pass over a tree: what was seen, whether the pass saw everything,
-/// and the directory links it did not walk into.
-struct Scan {
-    seen: std::collections::BTreeMap<PathBuf, Seen>,
-    /// False when the walk stopped at the cap. What was not seen cannot be
-    /// reasoned about, and the kernel says so instead of guessing.
-    complete: bool,
-    /// Links to directories, with where they lead: the kernel decides
-    /// whether a target is part of the pack or a door out of it.
-    dir_links: Vec<(PathBuf, PathBuf)>,
-}
+pub(crate) use scan::{Scan, Seen};
 
 /// A snapshot of mtimes, sizes, modes and link targets, cheap enough to
 /// take around every hop, plus the before-bytes of the files the hop said
 /// it may touch.
 pub struct PackWatch {
-    inside: std::collections::BTreeMap<PathBuf, Seen>,
+    /// One scan per pack root, in the roots' order.
+    inside: Vec<Scan>,
     /// A scan stopped at the cap: what the hop created cannot be told from
     /// what the scan never reached, so nothing is journaled as created.
     partial: bool,
@@ -462,7 +415,7 @@ pub struct PackWatch {
     /// shallowly: its working directory when that is outside, and where a
     /// directory link inside the pack leads when that is outside. Changes
     /// there are reported (E752), never journaled.
-    outside: Vec<(PathBuf, std::collections::BTreeMap<PathBuf, Seen>)>,
+    outside: Vec<Scan>,
     /// Files stashed in the tin before the hop, by path.
     tinned: std::collections::BTreeMap<PathBuf, tin::Stashed>,
     /// The hop's `touches`, for the hints the report gives.
@@ -471,9 +424,10 @@ pub struct PackWatch {
     pub warnings: Vec<String>,
 }
 
-/// How many entries hop watching reads of a pack before it stops. The
-/// `watch_cap` setting raises it; the safety rule at the cap holds at any
-/// size.
+/// How many entries hop watching reads of a pack before it stops: a memory
+/// guard, five million by default (about 300 MB of scan), which the
+/// `watch_cap` setting moves. The safety rule at the cap holds at any size:
+/// nothing that existed is removed, and the hop says what it could not see.
 pub fn watch_cap() -> usize {
     static CAP: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
     *CAP.get_or_init(|| {
@@ -483,7 +437,7 @@ pub fn watch_cap() -> usize {
             .parse::<usize>()
             .ok()
             .filter(|n| *n > 0)
-            .unwrap_or(50_000)
+            .unwrap_or(5_000_000)
     })
 }
 
@@ -647,106 +601,13 @@ pub fn inside_roots(path: &Path, roots: &[PathBuf]) -> bool {
 /// link by where it sits, since a link to the outside is still an entry
 /// inside, removable without touching what it points to.
 fn entry_inside(p: &Path, meta: &Seen, roots: &[PathBuf]) -> bool {
-    if matches!(meta, Seen::Link { .. }) {
+    if meta.is_link() {
         match p.parent() {
             Some(parent) => inside_roots(parent, roots),
             None => inside_roots(p, roots),
         }
     } else {
         inside_roots(p, roots)
-    }
-}
-
-fn mode_bits(m: &std::fs::Metadata) -> u32 {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode() & 0o7777
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = m;
-        0
-    }
-}
-
-fn scan(root: &Path, max_depth: usize, cap: usize) -> Scan {
-    let mut seen = std::collections::BTreeMap::new();
-    let mut dir_links = Vec::new();
-    let mut complete = true;
-    // Links are not walked: a link is watched as a link (its target can
-    // change, and a write through it is seen by the time and size of what
-    // it leads to), and what it leads to is seen under its own path when
-    // that is inside the pack. A link that leads out of the pack is a door,
-    // not a part of it, so nothing behind it is ever journaled.
-    let ignore = tin::ignore_set(root);
-    // The state directory is never part of a pack, wherever CIGSCRIPT_HOME
-    // put it: the tin watching itself would stash its own objects.
-    let home = runs::home_dir();
-    let mut walk = walkdir::WalkDir::new(root)
-        .min_depth(1)
-        .max_depth(max_depth)
-        .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| {
-            let n = e.file_name().to_string_lossy();
-            if tin::SKIPPED_ALWAYS.contains(&n.as_ref()) || e.path() == home {
-                return false;
-            }
-            match (&ignore, e.path().strip_prefix(root)) {
-                (Some(set), Ok(rel)) => !set.is_match(rel),
-                _ => true,
-            }
-        });
-    for entry in walk.by_ref() {
-        let Ok(entry) = entry else { continue };
-        if seen.len() >= cap {
-            complete = false;
-            break;
-        }
-        let path = entry.path().to_path_buf();
-        if entry.file_type().is_symlink() {
-            let Ok(target) = std::fs::read_link(&path) else {
-                continue;
-            };
-            // A dangling link resolves to nothing and is a link all the same.
-            let through = match std::fs::metadata(&path) {
-                Ok(m) if m.is_file() => Some((journal::mtime_ns(&m).unwrap_or(0), m.len())),
-                Ok(m) if m.is_dir() => {
-                    dir_links.push((path.clone(), journal::resolve_symlink_chain(&path)));
-                    None
-                }
-                _ => None,
-            };
-            seen.insert(path, Seen::Link { target, through });
-            continue;
-        }
-        if entry.file_type().is_dir() {
-            let mode = journal::fresh_metadata(&entry)
-                .map(|m| mode_bits(&m))
-                .unwrap_or(0);
-            seen.insert(path, Seen::Dir { mode });
-            continue;
-        }
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let Ok(m) = journal::fresh_metadata(&entry) else {
-            continue;
-        };
-        seen.insert(
-            path,
-            Seen::File {
-                mtime: journal::mtime_ns(&m).unwrap_or(0),
-                len: m.len(),
-                mode: mode_bits(&m),
-            },
-        );
-    }
-    Scan {
-        seen,
-        complete,
-        dir_links,
     }
 }
 
@@ -865,14 +726,14 @@ fn sealed_count(
             .into_iter()
             .flatten()
             .collect();
-        for (path, meta) in &scan(r, 64, cap).seen {
-            if meta.is_dir() || matches!(meta, Seen::Link { .. }) {
+        let s = scan::scan(r, 64, cap, None);
+        for (rel, meta) in s.iter() {
+            if meta.is_dir() || meta.is_link() {
                 continue;
             }
-            let Ok(rel) = path.strip_prefix(r) else {
-                continue;
-            };
-            if set.is_match(rel) && seal::should_seal(path, Some(r), &sets) {
+            if set.is_match(scan::rel_path(rel).as_ref())
+                && seal::should_seal(&s.path(rel), Some(r), &sets)
+            {
                 n += 1;
             }
         }
@@ -889,15 +750,13 @@ fn touches_counts(roots: &[PathBuf], touches: &[String], cap: usize) -> Vec<(Str
         .map(|t| tin::globs(std::slice::from_ref(t)).ok())
         .collect();
     for r in roots {
-        for (path, meta) in &scan(r, 64, cap).seen {
+        for (rel, meta) in scan::scan(r, 64, cap, None).iter() {
             if meta.is_dir() {
                 continue;
             }
-            let Ok(rel) = path.strip_prefix(r) else {
-                continue;
-            };
+            let relp = scan::rel_path(rel);
             for (i, set) in singles.iter().enumerate() {
-                if set.as_ref().is_some_and(|s| s.is_match(rel)) {
+                if set.as_ref().is_some_and(|s| s.is_match(relp.as_ref())) {
                     counts[i].1 += 1;
                 }
             }
@@ -1065,26 +924,26 @@ impl Kernel {
             return None;
         }
         let cap = watch_cap();
-        let mut inside = std::collections::BTreeMap::new();
+        let mut inside: Vec<Scan> = Vec::new();
         let mut partial = false;
-        let mut outside: Vec<(PathBuf, std::collections::BTreeMap<PathBuf, Seen>)> = Vec::new();
+        let mut outside: Vec<Scan> = Vec::new();
         let mut warnings = Vec::new();
         for r in roots {
-            let s = scan(r, 64, cap);
+            let s = scan::scan(r, 64, cap, None);
             partial |= !s.complete;
-            inside.extend(s.seen);
             // A directory link that leads out of the pack: the hop may
             // write through it, so where it leads is watched for the report.
-            for (_, target) in s.dir_links {
-                if !inside_roots(&target, roots) && !outside.iter().any(|(w, _)| *w == target) {
-                    let shallow = scan(&target, 3, 5_000);
-                    outside.push((target, shallow.seen));
+            for (_, target) in &s.dir_links {
+                if !inside_roots(target, roots) && !outside.iter().any(|o| o.root == *target) {
+                    outside.push(scan::scan(target, 3, 5_000, None));
                 }
             }
+            inside.push(s);
         }
         if partial {
+            let read: usize = inside.iter().map(Scan::len).sum();
             warnings.push(format!(
-                "the pack has more than {cap} entries, so hop watching saw only part of it; what this hop creates is irreversible this time (a .cigignore at the pack root, or the watch_cap setting, brings the pack under)"
+                "the pack has more than {cap} entries (the watch_cap memory guard; {read} were read), so hop watching saw only part of it; what this hop creates is irreversible this time (a .cigignore at the pack root, or a higher watch_cap, brings the pack under)"
             ));
         }
         // The before-bytes of what the hop may touch go to the tin first.
@@ -1109,13 +968,9 @@ impl Kernel {
                     if !partial && !counts.is_empty() && counts.iter().all(|(_, n)| *n == 0) {
                         let existing: Vec<String> = inside
                             .iter()
+                            .flat_map(|s| s.iter())
                             .filter(|(_, m)| !m.is_dir())
-                            .filter_map(|(p, _)| {
-                                roots
-                                    .iter()
-                                    .find_map(|r| p.strip_prefix(r).ok())
-                                    .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-                            })
+                            .map(|(rel, _)| String::from_utf8_lossy(rel).to_string())
                             .collect();
                         let near: Vec<String> = counts
                             .iter()
@@ -1161,35 +1016,30 @@ impl Kernel {
                     let mut from_git: Vec<(usize, PathBuf, String, String, Seen)> = Vec::new();
                     let mut to_tin: Vec<PathBuf> = Vec::new();
                     let mut to_seal: Vec<PathBuf> = Vec::new();
-                    for (path, meta) in &inside {
-                        if meta.is_dir() {
-                            continue;
-                        }
-                        let Some(ri) = roots.iter().position(|r| {
-                            path.strip_prefix(r)
-                                .map(|rel| set.is_match(rel))
-                                .unwrap_or(false)
-                        }) else {
-                            continue;
-                        };
+                    for (ri, s) in inside.iter().enumerate() {
                         let sets: Vec<&globset::GlobSet> =
                             [seal_sets[ri].as_ref(), hop_sealed.as_ref()]
                                 .into_iter()
                                 .flatten()
                                 .collect();
-                        if !matches!(meta, Seen::Link { .. })
-                            && seal::should_seal(path, Some(&roots[ri]), &sets)
-                        {
-                            to_seal.push(path.clone());
-                            continue;
-                        }
-                        if let (Some(repo), Seen::File { len, .. }) = (&repos[ri], meta) {
-                            if let Some((blob, sha256)) = repo.clean_blob(path, *len) {
-                                from_git.push((ri, path.clone(), blob, sha256, meta.clone()));
+                        for (rel, meta) in s.iter() {
+                            if meta.is_dir() || !set.is_match(scan::rel_path(rel).as_ref()) {
                                 continue;
                             }
+                            let path = s.path(rel);
+                            if !meta.is_link() && seal::should_seal(&path, Some(&roots[ri]), &sets)
+                            {
+                                to_seal.push(path);
+                                continue;
+                            }
+                            if let (Some(repo), Seen::File { len, .. }) = (&repos[ri], meta) {
+                                if let Some((blob, sha256)) = repo.clean_blob(&path, *len) {
+                                    from_git.push((ri, path, blob, sha256, meta.clone()));
+                                    continue;
+                                }
+                            }
+                            to_tin.push(path);
                         }
-                        to_tin.push(path.clone());
                     }
                     if !from_git.is_empty() {
                         let run_id = self
@@ -1317,9 +1167,8 @@ impl Kernel {
             .or_else(|| std::env::current_dir().ok())
             .map(|p| normalize_root(&p.to_string_lossy()));
         if let Some(w) = work.filter(|w| !inside_roots(w, roots)) {
-            if !outside.iter().any(|(o, _)| *o == w) {
-                let shallow = scan(&w, 3, 5_000);
-                outside.push((w, shallow.seen));
+            if !outside.iter().any(|o| o.root == w) {
+                outside.push(scan::scan(&w, 3, 5_000, None));
             }
         }
         Some(PackWatch {
@@ -1385,12 +1234,14 @@ impl Kernel {
             }
         }
         let cap = watch_cap();
-        let mut after = std::collections::BTreeMap::new();
         let mut partial = watch.partial;
-        for r in &roots {
-            let s = scan(r, 64, cap);
+        // The scan after, one per root, each reusing the scan before for
+        // the directories that cannot have changed.
+        let mut afters: Vec<Scan> = Vec::new();
+        for (ri, r) in roots.iter().enumerate() {
+            let s = scan::scan(r, 64, cap, watch.inside.get(ri));
             partial |= !s.complete;
-            after.extend(s.seen);
+            afters.push(s);
         }
         let mut writes = HopWrites::default();
         // A symbolic link the hop retargeted, replaced or deleted comes
@@ -1403,108 +1254,156 @@ impl Kernel {
         let mut dirs_gone: Vec<(PathBuf, u32)> = Vec::new();
         let mut dirs_replaced: Vec<(PathBuf, u32)> = Vec::new();
         let mut unseen_created = 0usize;
-        for (p, meta) in &after {
-            match watch.inside.get(p) {
-                None => {
-                    // A scan that stopped at the cap cannot tell a file the
-                    // hop made from one it never reached: nothing is removed
-                    // on a guess, unless the hop itself reported making it.
-                    if partial && !claimed_created.contains(p) {
-                        unseen_created += 1;
-                        continue;
+        // What the hop left at each path it made or changed: time and size.
+        let mut lefts: std::collections::HashMap<PathBuf, Left> = std::collections::HashMap::new();
+        for (ri, after) in afters.iter().enumerate() {
+            let Some(before) = watch.inside.get(ri) else {
+                continue;
+            };
+            for step in scan::merge(before, after) {
+                match step {
+                    scan::Step::Created(rel, meta) => {
+                        let p = after.path(rel);
+                        // A scan that stopped at the cap cannot tell a file the
+                        // hop made from one it never reached: nothing is removed
+                        // on a guess, unless the hop itself reported making it.
+                        if partial && !claimed_created.contains(&p) {
+                            unseen_created += 1;
+                            continue;
+                        }
+                        // A path that reads as inside the pack but leads outside
+                        // it (through a link) is not the pack's to remove. A link
+                        // the hop made is judged by where it sits, not where it
+                        // points: the entry is the pack's, whatever it leads to.
+                        if !entry_inside(&p, meta, &roots) {
+                            writes.outside.push(p);
+                            continue;
+                        }
+                        if let Some(l) = meta.left() {
+                            lefts.insert(p.clone(), l);
+                        }
+                        writes.created.push(p);
                     }
-                    // A path that reads as inside the pack but leads outside
-                    // it (through a link) is not the pack's to remove. A link
-                    // the hop made is judged by where it sits, not where it
-                    // points: the entry is the pack's, whatever it leads to.
-                    if !entry_inside(p, meta, &roots) {
-                        writes.outside.push(p.clone());
-                        continue;
-                    }
-                    writes.created.push(p.clone());
-                }
-                Some(before) => match (before, meta) {
-                    // A directory's mode changing is not a change to watch.
-                    (Seen::Dir { .. }, Seen::Dir { .. }) => {}
-                    (Seen::Dir { mode }, _) => dirs_replaced.push((p.clone(), *mode)),
-                    (
-                        Seen::Link {
-                            target: was,
-                            through: led_to,
-                        },
-                        Seen::Link {
-                            target: now,
-                            through: leads_to,
-                        },
-                    ) => {
-                        if was != now {
-                            links.insert(p.clone(), was.clone());
-                            writes.modified.push(p.clone());
-                        } else if led_to != leads_to {
-                            // Written through the link. Inside the pack the
-                            // file is seen under its own path; outside, the
-                            // write left the pack and is reported.
-                            let landing = journal::resolve_symlink_chain(p);
-                            if !inside_roots(&landing, &roots) {
-                                writes.outside.push(landing);
+                    scan::Step::Gone(rel, meta) => {
+                        let p = before.path(rel);
+                        // With a scan that stopped at the cap, "not seen" is
+                        // not "gone": the disk is asked.
+                        if partial && std::fs::symlink_metadata(&p).is_ok() {
+                            continue;
+                        }
+                        match meta {
+                            Seen::Dir { mode, .. } => dirs_gone.push((p, *mode)),
+                            Seen::Link(l) => {
+                                links.insert(p.clone(), l.target.clone());
+                                writes.deleted.push(p);
                             }
+                            Seen::File { .. } => writes.deleted.push(p),
                         }
                     }
-                    (Seen::Link { target, .. }, _) => {
-                        links.insert(p.clone(), target.clone());
-                        writes.modified.push(p.clone());
-                    }
-                    (Seen::File { .. }, Seen::File { .. }) if before != meta => {
-                        writes.modified.push(p.clone());
-                    }
-                    // Same mtime, size and mode: a tinned file is told by its hash.
-                    (Seen::File { .. }, Seen::File { .. }) => {
-                        if let Some(st) = watch.tinned.get(p) {
-                            if st.link.is_none()
-                                && journal::sha256_file(p).ok().as_deref()
-                                    != Some(st.sha256.as_str())
-                            {
-                                writes.modified.push(p.clone());
+                    scan::Step::Both(rel, b, a) => match (b, a) {
+                        // A directory's mode changing is not a change to watch.
+                        (Seen::Dir { .. }, Seen::Dir { .. }) => {}
+                        (Seen::Dir { mode, .. }, _) => dirs_replaced.push((after.path(rel), *mode)),
+                        (Seen::Link(was), Seen::Link(now)) => {
+                            if was.target != now.target {
+                                let p = after.path(rel);
+                                links.insert(p.clone(), was.target.clone());
+                                writes.modified.push(p);
+                            } else if was.through != now.through {
+                                // Written through the link. Inside the pack the
+                                // file is seen under its own path; outside, the
+                                // write left the pack and is reported.
+                                let landing = journal::resolve_symlink_chain(&after.path(rel));
+                                if !inside_roots(&landing, &roots) {
+                                    writes.outside.push(landing);
+                                }
                             }
                         }
+                        (Seen::Link(was), _) => {
+                            let p = after.path(rel);
+                            links.insert(p.clone(), was.target.clone());
+                            writes.modified.push(p);
+                        }
+                        (Seen::File { .. }, Seen::File { .. }) if b != a => {
+                            let p = after.path(rel);
+                            if let Some(l) = a.left() {
+                                lefts.insert(p.clone(), l);
+                            }
+                            writes.modified.push(p);
+                        }
+                        // Same mtime, size and mode: a tinned file is told by
+                        // its hash, below.
+                        (Seen::File { .. }, Seen::File { .. }) => {}
+                        (Seen::File { .. }, _) => writes.modified.push(after.path(rel)),
+                    },
+                }
+            }
+        }
+        // A tinned file whose time, size and mode all read as before is
+        // told by its hash: an edit that keeps the size and puts the time
+        // back is seen all the same.
+        {
+            let flagged: std::collections::HashSet<&PathBuf> = writes
+                .modified
+                .iter()
+                .chain(writes.deleted.iter())
+                .collect();
+            let mut by_hash: Vec<PathBuf> = Vec::new();
+            for (p, st) in &watch.tinned {
+                if st.link.is_none()
+                    && !flagged.contains(p)
+                    && std::fs::symlink_metadata(p)
+                        .map(|m| m.is_file())
+                        .unwrap_or(false)
+                    && journal::sha256_file(p).ok().as_deref() != Some(st.sha256.as_str())
+                {
+                    by_hash.push(p.clone());
+                }
+            }
+            for p in by_hash {
+                if let Ok(m) = std::fs::symlink_metadata(&p) {
+                    lefts.insert(
+                        p.clone(),
+                        Left {
+                            mtime_ns: journal::mtime_ns(&m).unwrap_or(0),
+                            len: m.len(),
+                        },
+                    );
+                }
+                writes.modified.push(p);
+            }
+        }
+        for before in &watch.outside {
+            let now = scan::scan(&before.root, 3, 5_000, None);
+            for step in scan::merge(before, &now) {
+                match step {
+                    scan::Step::Created(rel, meta) => {
+                        if meta.is_dir() {
+                            continue;
+                        }
+                        let p = now.path(rel);
+                        if !entry_inside(&p, meta, &roots) {
+                            writes.outside.push(p);
+                        }
                     }
-                    (Seen::File { .. }, _) => writes.modified.push(p.clone()),
-                },
-            }
-        }
-        for (p, meta) in &watch.inside {
-            if after.contains_key(p) {
-                continue;
-            }
-            // With a scan that stopped at the cap, "not seen" is not "gone":
-            // the disk is asked.
-            if partial && std::fs::symlink_metadata(p).is_ok() {
-                continue;
-            }
-            match meta {
-                Seen::Dir { mode } => dirs_gone.push((p.clone(), *mode)),
-                Seen::Link { target, .. } => {
-                    links.insert(p.clone(), target.clone());
-                    writes.deleted.push(p.clone());
-                }
-                Seen::File { .. } => writes.deleted.push(p.clone()),
-            }
-        }
-        for (w, before) in &watch.outside {
-            let now = scan(w, 3, 5_000).seen;
-            for (p, meta) in &now {
-                if meta.is_dir() || entry_inside(p, meta, &roots) {
-                    continue;
-                }
-                match before.get(p) {
-                    None => writes.outside.push(p.clone()),
-                    Some(b) if b != meta => writes.outside.push(p.clone()),
-                    Some(_) => {}
-                }
-            }
-            for (p, meta) in before {
-                if !meta.is_dir() && !now.contains_key(p) && !entry_inside(p, meta, &roots) {
-                    writes.outside.push(p.clone());
+                    scan::Step::Gone(rel, meta) => {
+                        if meta.is_dir() {
+                            continue;
+                        }
+                        let p = before.path(rel);
+                        if !entry_inside(&p, meta, &roots) {
+                            writes.outside.push(p);
+                        }
+                    }
+                    scan::Step::Both(rel, b, a) => {
+                        if a.is_dir() || b == a {
+                            continue;
+                        }
+                        let p = now.path(rel);
+                        if !entry_inside(&p, a, &roots) {
+                            writes.outside.push(p);
+                        }
+                    }
                 }
             }
         }
@@ -1516,14 +1415,14 @@ impl Kernel {
             if writes.created.contains(p) {
                 continue;
             }
-            if watch.inside.contains_key(p) {
+            if watch.inside.iter().any(|s| s.has(p)) {
                 claim_warnings.push(format!(
                     "the hop reported creating {}, which existed before it ran; the claim is dropped",
                     p.display()
                 ));
             } else if std::fs::symlink_metadata(p).is_ok()
-                && !after.contains_key(p)
-                && entry_inside(p, &Seen::Dir { mode: 0 }, &roots)
+                && !afters.iter().any(|s| s.has(p))
+                && entry_inside(p, &Seen::Dir { mode: 0, mtime: 0 }, &roots)
             {
                 writes.created.push(p.clone());
             }
@@ -1551,7 +1450,7 @@ impl Kernel {
                 self.seq,
                 Op::HopCreated {
                     path: p.clone(),
-                    left: after.get(p).and_then(Seen::left),
+                    left: lefts.get(p).copied(),
                 },
                 None,
                 compensated,
@@ -1674,7 +1573,7 @@ impl Kernel {
                 },
                 _ => None,
             };
-            let left = after.get(p).and_then(Seen::left);
+            let left = lefts.get(p).copied();
             if let Some((before, how)) = kept {
                 let _ = self.journal.record_with_before(
                     self.seq,

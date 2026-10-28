@@ -204,10 +204,13 @@ irreversible with the detail (`hop modified`, `hop deleted`) unless the tin
 kept them, a directory it deleted or replaced with a file is made again on
 rollback (`(directory)`), and changes in the child's working directory
 outside the pack are reported as `E752`. The scan skips `.git`,
-`node_modules`, `target` and `.cigscript`, never hashes content, and stops
-at `watch_cap` entries (50,000): past the cap it warns up front, journals
-nothing as created and asks the disk before calling a file deleted, so a
-rollback never removes a file that existed before the run. One run at a
+`node_modules`, `target` and `.cigscript`, never hashes content, reads the
+tree on every core into a compact sorted list (about 60 bytes an entry, so a
+million entries is a laptop's business), reuses the scan before the hop for
+every directory whose modification time has not moved, and stops only at
+`watch_cap` entries (five million, a memory guard): past the cap it warns up
+front, journals nothing as created and asks the disk before calling a file
+deleted, so a rollback never removes a file that existed before the run. One run at a
 time holds a pack: a second run on the same or an overlapping pack is
 refused with `E759` while the first runs, because hop watching would read
 its writes as the hop's.
