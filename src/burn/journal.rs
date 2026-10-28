@@ -1398,7 +1398,21 @@ fn displace(path: &Path, taken: &mut Vec<BeforeState>, seal: bool) -> io::Result
 /// tin, links and empty directories go, and a tree hop watching never looks
 /// into (`.git`, `node_modules`, `target`: rebuilt, not restored) goes whole.
 fn displace_tree(dir: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
-    for entry in fs::read_dir(dir)? {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+            // A directory the hop made unreadable is still the hop's to
+            // lose: its mode is opened so what is inside can be taken.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+            }
+            fs::read_dir(dir)?
+        }
+        Err(e) => return Err(e),
+    };
+    for entry in entries {
         let entry = entry?;
         let p = entry.path();
         let ft = entry.file_type()?;
@@ -1407,7 +1421,7 @@ fn displace_tree(dir: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
         } else if ft.is_dir() {
             let name = entry.file_name().to_string_lossy().to_string();
             if super::tin::SKIPPED_ALWAYS.contains(&name.as_str()) {
-                fs::remove_dir_all(&p)?;
+                super::overlay::remove_tree_force(&p)?;
             } else {
                 displace_tree(&p, taken)?;
                 fs::remove_dir(&p)?;
@@ -2123,10 +2137,12 @@ pub(crate) fn make_symlink_pub(target: &Path, at: &Path) -> Result<(), io::Error
 }
 
 /// Remove a file, a directory tree, or a link (never following the link).
+/// A tree goes whatever the modes inside it: what a hop made unreadable
+/// (overlayfs's work directory, a `chmod 000`) is still the hop's to lose.
 fn remove_any(path: &Path) -> Result<(), io::Error> {
     match fs::symlink_metadata(path) {
         Ok(m) if m.file_type().is_symlink() => fs::remove_file(path),
-        Ok(m) if m.is_dir() => fs::remove_dir_all(path),
+        Ok(m) if m.is_dir() => super::overlay::remove_tree_force(path),
         Ok(_) => fs::remove_file(path),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(e) => Err(e),

@@ -896,6 +896,9 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     }
     rec.rolled_back = true;
     rec.rollback_failed = report.failed.clone();
+    // The layers of a boxed hop the run never got to apply (it died in the
+    // hop) were never the pack's: they go with the rollback.
+    let _ = cigscript::burn::overlay::remove_tree_force(&rec.dir().join("box"));
     rec.rollback_took = report.took.len();
     rec.journal_head = Some(journal.head().to_string());
     rec.status = if report.clean() {

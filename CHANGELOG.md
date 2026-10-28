@@ -3,6 +3,21 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.6.2 — 2026-10-29
+
+Two things cig-orchestrator's suite found running on 1.6.1, where a cig home
+sits inside the pack of an outer run.
+
+- **A rollback stopped at a directory it could not read.** A hop-created tree
+  holding a mode-0 directory (overlayfs's work directory of a boxed hop that
+  died, or a `chmod 000`) failed its removal with `Permission denied`, and
+  every directory above it stayed too. The rollback opens the modes and
+  removes the tree whole, as `cig runs --prune` learned to in 1.6.1: what a
+  hop made unreadable is still the hop's to lose.
+- **An interrupted boxed hop left its layers under the run.** They were
+  never the pack's (a hop that dies has its layer dropped); `cig unburn`
+  removes them with the rollback, so nothing unreadable stays under the home.
+
 ## 1.6.1 — 2026-10-29
 
 A debugging pass over everything 1.4.3 to 1.6.0 shipped, adversarial

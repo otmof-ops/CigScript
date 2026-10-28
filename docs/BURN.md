@@ -438,7 +438,11 @@ The trees hop watching never looks into (`.git`, `node_modules`, `target`,
 `.venv` and the rest of that list) are bound through the overlay from the
 real root: a build writes its objects where it always did, nothing of them
 is journaled or undone, and the box applies the rest; a tree that is not
-there before the hop is made through the box like any new directory.
+there before the hop is made through the box like any new directory. A run
+that dies in a boxed hop leaves the layers under its record (overlayfs
+makes the work directory unreadable); `cig unburn` removes them with the
+rollback, and a rollback removes any tree a hop made whatever the modes
+inside it.
 
 ## The parcel
 

@@ -245,7 +245,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.1/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.2/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.1 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.2 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.6.1-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.6.2-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -492,6 +492,8 @@ for.
 | the tin's key file is gone while sealed objects depend on it | no new key is made: the restore refuses naming the key and where it was (`E703`), a run that would seal says so and keeps the change irreversible (`E757`); the key back, the run unburns | 1.6.1 | `a_missing_seal_key_is_refused_rather_than_replaced` |
 | a script pinned to `>=1.5.0` uses `{box: true}`, or to `>=1.4.0` uses `touches_sealed` | `E309` names the option and the release it arrived in; `cig pin` writes the version a `{sensitive: true}` write needs | 1.6.1 | `a_script_pinned_below_the_box_or_sealed_touches_is_caught` |
 | the last line of a journal is edited (no line follows it to carry its hash) | `--verify` says the head does not match the record, exit 1; `unburn` refuses with `E760` and restores nothing; `--force` proceeds knowingly | 1.6.1 | `a_changed_last_journal_line_refuses_the_unburn` |
+| a hop makes a tree and `chmod 000`s a directory inside it, then the burn fails | the tree goes whole on rollback, no `Permission denied` and nothing left above it | 1.6.2 | `a_rollback_removes_a_hop_created_tree_with_unreadable_directories` |
+| a boxed hop's run dies in the hop, leaving overlayfs's unreadable work directory under the record | `cig unburn` removes the layers with the rollback, and the record prunes | 1.6.2 | `the_layers_an_interrupted_boxed_hop_left_go_with_the_unburn` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).
