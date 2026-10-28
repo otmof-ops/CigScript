@@ -1828,23 +1828,20 @@ impl Kernel {
                         )
                     })?;
                 let done: std::io::Result<()> = match &c {
-                    overlay::Change::Dir { mode, .. } => {
-                        std::fs::create_dir_all(&real).and_then(|()| {
-                            #[cfg(unix)]
-                            {
-                                use std::os::unix::fs::PermissionsExt;
-                                std::fs::set_permissions(
-                                    &real,
-                                    std::fs::Permissions::from_mode(*mode),
-                                )
-                            }
-                            #[cfg(not(unix))]
-                            {
-                                let _ = mode;
-                                Ok(())
-                            }
-                        })
-                    }
+                    overlay::Change::Dir { mode, .. } => (|| -> std::io::Result<()> {
+                        std::fs::create_dir_all(&real)?;
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            std::fs::set_permissions(
+                                &real,
+                                std::fs::Permissions::from_mode(*mode),
+                            )?;
+                        }
+                        #[cfg(not(unix))]
+                        let _ = mode;
+                        Ok(())
+                    })(),
                     overlay::Change::Replaced { .. } | overlay::Change::Removed { .. } => {
                         journal::remove_any_pub(&real)
                     }
