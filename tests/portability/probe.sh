@@ -228,4 +228,20 @@ if grep -q "box cannot be made here\|box could not be made here" out.txt; then
 elif grep -q "layer was dropped" out.txt && [ "$(tr -d '\r' < p/keep.txt)" = original ] && [ ! -e p/made.txt ]; then result "the box: a failing boxed hop changes nothing" PASS
 else result "the box: a failing boxed hop changes nothing" FAIL "$(ls p) $(last)"; fi
 
+# 31 a pipeline with touches is reversible like a hop
+fresh; mkdir -p q; echo orig > q/a.txt
+printf 'pack { "./q" }\nburn {\n  proc.pipe([["sh", "-c", "echo new > a.txt; echo made > made.txt; echo piped"], ["cat"]], {cwd: "q", touches: ["a.txt"]})\n  cough "boom"\n}\n' > s.cig
+run run s.cig
+[ "$(tr -d '\r' < q/a.txt)" = orig ] && [ ! -e q/made.txt ] && result "pipeline: touches restored, created file removed" PASS || result "pipeline: touches restored, created file removed" FAIL "a.txt=$(cat q/a.txt) $(ls q) $(last)"
+
+# 32 the burn protocol without a pack: the compensation still runs
+fresh
+cat > tool.sh <<'TOOL'
+#!/bin/sh
+printf '%s\n' '{"op":"compensate","label":"bare undo","undo":["sh","-c","echo undone > undone.txt"]}' >> "$CIG_JOURNAL"
+TOOL
+printf 'burn {\n  proc.run("sh", ["tool.sh"], {})\n  cough "boom"\n}\n' > s.cig
+run run s.cig
+[ -f undone.txt ] && grep -q "ran the compensation for bare undo" out.txt && result "burn protocol: a compensation counts without a pack" PASS || result "burn protocol: a compensation counts without a pack" FAIL "$(ls) $(last)"
+
 echo "== $pass passed, $fail failed, $skip skipped"

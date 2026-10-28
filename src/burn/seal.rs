@@ -166,11 +166,9 @@ pub fn should_seal_here(path: &Path) -> bool {
                 if depth > 64 {
                     break;
                 }
-                if d.join(".cigseal").is_file() {
-                    if let Some(set) = seal_set(d) {
-                        if path.strip_prefix(d).is_ok_and(|rel| set.is_match(rel)) {
-                            return true;
-                        }
+                if let Some(set) = cached_seal_set(d) {
+                    if path.strip_prefix(d).is_ok_and(|rel| set.is_match(rel)) {
+                        return true;
                     }
                 }
                 dir = d.parent();
@@ -179,6 +177,36 @@ pub fn should_seal_here(path: &Path) -> bool {
             false
         }
     }
+}
+
+/// A directory's `.cigseal`, compiled once and reused while the file is
+/// unchanged (its size and modification time). A tree snapshot asks for
+/// every file it copies, up every directory above it; reading and compiling
+/// the same list for each one made a large tree slow for nothing.
+fn cached_seal_set(dir: &Path) -> Option<std::rc::Rc<GlobSet>> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    type Stamp = (u64, Option<std::time::SystemTime>);
+    type Cache = HashMap<PathBuf, (Stamp, Option<Rc<GlobSet>>)>;
+    thread_local! {
+        static CACHE: RefCell<Cache> = RefCell::new(HashMap::new());
+    }
+    let meta = fs::metadata(dir.join(".cigseal"))
+        .ok()
+        .filter(|m| m.is_file())?;
+    let stamp: Stamp = (meta.len(), meta.modified().ok());
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some((seen, set)) = c.get(dir) {
+            if *seen == stamp {
+                return set.clone();
+            }
+        }
+        let set = seal_set(dir).map(Rc::new);
+        c.insert(dir.to_path_buf(), (stamp, set.clone()));
+        set
+    })
 }
 
 /// Is this snapshot path a sealed object or snapshot?
@@ -248,6 +276,11 @@ fn keyring_key() -> Result<Key, String> {
             match entry.get_password() {
                 Ok(hex_key) => decode_key(hex_key.trim()),
                 Err(keyring::Error::NoEntry) => {
+                    if sealed_in_use() {
+                        return Err(format!(
+                            "the keyring has no {SERVICE}/{USER} entry, and this machine holds sealed objects only the key that sealed them opens; a new key would lock them out for good"
+                        ));
+                    }
                     let k = random_key()?;
                     entry
                         .set_password(&hex::encode(k))
@@ -265,11 +298,51 @@ fn keyring_key() -> Result<Key, String> {
     }
 }
 
+/// Does this machine hold anything only the current key opens: an object
+/// under the tin's sealed directory, or a sealed snapshot in a run's record?
+/// Asked before a new key is made where none was found: a key that went
+/// missing is put back, never replaced behind the user's back.
+fn sealed_in_use() -> bool {
+    let any_object = fs::read_dir(super::tin::sealed_dir())
+        .map(|buckets| {
+            buckets.flatten().any(|b| {
+                fs::read_dir(b.path())
+                    .map(|mut objects| objects.next().is_some())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if any_object {
+        return true;
+    }
+    fs::read_dir(super::runs::runs_dir())
+        .map(|runs| {
+            runs.flatten().any(|r| {
+                fs::read_dir(r.path().join("snapshots"))
+                    .map(|snaps| {
+                        snaps
+                            .flatten()
+                            .any(|f| f.file_name().to_string_lossy().ends_with(SUFFIX))
+                    })
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn file_key() -> Result<Key, String> {
     let path = key_path();
     match fs::read_to_string(&path) {
         Ok(text) => decode_key(text.trim()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if sealed_in_use() {
+                return Err(format!(
+                    "the tin's key is gone ({} is not there), and this machine holds sealed objects only that key opens; a new key would lock them out for good. Put the key back (the keyring entry {SERVICE}/{USER}, or that file), or move {} and the sealed snapshots under {} away to start over",
+                    crate::crash::tilde(&path),
+                    crate::crash::tilde(&super::tin::sealed_dir()),
+                    crate::crash::tilde(&super::runs::runs_dir())
+                ));
+            }
             let k = random_key()?;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -494,6 +567,22 @@ pub fn aad_of(path: &Path) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rewritten_cigseal_is_read_again() {
+        let _g = super::super::test_env_lock();
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(".cigseal"), "a.txt\n").unwrap();
+        assert!(should_seal_here(&dir.join("a.txt")));
+        assert!(!should_seal_here(&dir.join("bb.txt")));
+        fs::write(dir.join(".cigseal"), "bb.txt\n").unwrap();
+        assert!(should_seal_here(&dir.join("bb.txt")));
+        assert!(!should_seal_here(&dir.join("a.txt")));
+        fs::remove_file(dir.join(".cigseal")).unwrap();
+        assert!(!should_seal_here(&dir.join("bb.txt")));
+    }
 
     fn with_key_file<T>(f: impl FnOnce(&Path) -> T) -> T {
         let _g = super::super::test_env_lock();

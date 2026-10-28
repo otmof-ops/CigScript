@@ -91,6 +91,19 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
             }
         }
         TinCommand::Gc { sealed_orphans } => {
+            if sealed_orphans {
+                // Without the key nothing opens, and "what nothing opens" would
+                // be every sealed object a run still needs.
+                if let Err(e) = cigscript::burn::seal::key() {
+                    eprintln!(
+                        "{} --sealed-orphans needs the tin's key to tell a sealed object that opens from one that does not: {e}",
+                        ctx.red("error[E703 burn]:")
+                    );
+                    eprintln!("  = hint: put the key back, or move the sealed objects away by hand to start over; nothing was removed");
+                    eprintln!("  = explain: cig explain E703");
+                    return exit::SCRIPT_ERROR;
+                }
+            }
             let (removed, bytes) = tin::gc(sealed_orphans);
             let kept = tin::du().objects;
             if ctx.json {

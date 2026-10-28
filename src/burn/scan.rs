@@ -371,7 +371,10 @@ pub(crate) fn scan(root: &Path, max_depth: usize, cap: usize, reference: Option<
                         if busy.load(Ordering::SeqCst) == 0 {
                             break;
                         }
-                        std::thread::yield_now();
+                        // A short wait, not a spin: idle workers burning a
+                        // core each while one reads a wide directory helped
+                        // nobody.
+                        std::thread::sleep(std::time::Duration::from_micros(200));
                         continue;
                     };
                     let dir = join_rel(root, &dir_rel);

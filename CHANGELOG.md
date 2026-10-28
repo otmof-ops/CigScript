@@ -3,6 +3,95 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.6.1 — 2026-10-29
+
+A debugging pass over everything 1.4.3 to 1.6.0 shipped, adversarial
+scenario by scenario against the installed binary, each gap closed with a
+test that fails on 1.6.0.
+
+- **The box with `cwd` inside the pack fell back.** The working directory
+  handed to the box was the hop's `cwd` as written (`"p"`), and the child
+  had already entered it when the overlay was mounted, so `chdir` looked
+  for `p/p` and refused (`errno 2`): every boxed hop with a relative `cwd`
+  ran on the tin and said so. The directory is made absolute before the
+  fork. The box tests now fail, not shrug, where the machine can make a box
+  (`unshare -Urm true` works, overlayfs is there, kernel 5.11 or later):
+  on 1.6.0 they passed through the fallback.
+- **A folder a boxed hop emptied and made again was gone after the run.**
+  An opaque directory in the layer was applied as the delete alone; it is
+  the delete, then the directory itself, then its entries.
+- **A boxed hop left its layers under the run.** overlayfs makes the work
+  layer's inner directory unreadable (mode 0), where `remove_dir_all`
+  stopped: the layers stayed, and `cig runs --prune` could not remove the
+  record. The modes are opened and the tree removed, after an applied hop
+  and a dropped one alike; the parcel skips a `box/` directory a crash left.
+- **A boxed hop's `touches_sealed` was ignored.** Its writes were journaled
+  as plain; the before-bytes of a file under those globs are sealed now, as
+  on the tin.
+- **A boxed build wrote its whole `target/` through the journal.** Hop
+  watching never looks into `.git`, `node_modules`, `target`, `.venv` and the
+  other build and dependency trees; the box applied and journaled every file
+  a hop put there (3,000 object files: 3,001 ops and fifteen times the
+  wall-clock of the same hop on the watch). Those trees are bound through
+  the overlay from the real root now, so what a hop writes there lands as it
+  always did and is never journaled; a tree that is not there before the hop
+  is made through the box like the rest.
+- **A `compensate` line from a hop without a `pack { }` was dropped.** The
+  hop's own undo needs no pack; it is journaled and runs on rollback. A
+  `write`, `delete` or `create` claim without a pack is said and dropped
+  (`E761`), there being nothing to judge it against.
+- **An undo that said a lot hung the rollback.** `protocol::run_command`
+  piped the undo's stdout and never read it: 64 KiB filled the pipe and
+  both sides waited for ever (a run killed at exit 143). Both pipes are
+  drained on threads while the undo runs, and the report quotes the first
+  200 characters of its last stderr line rather than the whole of it.
+- **`proc.pipe` took `touches` and kept nothing.** The pipeline recorded
+  its `touches` in the plan and the journal but never watched the pack, so
+  a failing burn after a pipeline that rewrote a file could not restore it.
+  The pack is watched around the whole pipeline exactly as around one hop
+  (before-bytes to the tin, created files removed on rollback, writes
+  outside reported), every stage gets `CIG_JOURNAL`, `touches` without a
+  pack is `E757` as for a hop, and `box` on a pipeline is refused (`E400`)
+  rather than quietly ignored: several processes cannot share one box, and
+  `proc.shell("a | b", {box: true})` boxes the same thing as one hop.
+- **A missing seal key was replaced behind the user's back.** With the key
+  file gone (or the keyring entry), a new key was made on first use, and
+  every sealed object and snapshot became unopenable for good, the report
+  blaming "a byte was changed". Where anything sealed depends on the key, no
+  new one is made: a restore refuses naming the key and where it was
+  (`E703`), a run that would seal says so and keeps the change irreversible
+  (`E757`), and the message says what to do (put the key back, or move the
+  sealed objects away to start over). With the keyring set and only a key
+  file present, the file is used rather than a fresh keyring key made.
+- **A parcel written from an imported run lost the way back.** Its manifest
+  named the importing machine's paths while the journal named the original
+  machine's, so a third machine could map nothing. The manifest carries the
+  imported run's own map (`prior`), and the import composes the two; a
+  journal B appended to after its import (an unburn, a give-back) names B's
+  paths too, and both read through one map.
+- **The parcel read every file into memory to hash it**, on writing and on
+  import; both stream now.
+- **A tree snapshot re-read and recompiled `.cigseal` for every file**, up
+  every directory above it. Each directory's list is compiled once and
+  reused while the file is unchanged.
+- **Idle scan workers spun.** A worker with nothing queued yielded in a
+  loop, a core each, while another read a wide directory; they wait now.
+- **`cig pin` and `E309` did not know the hop options.** `touches_sealed`
+  and `fs.write_text(path, text, {sensitive: true})` arrived in 1.5.0 and
+  `{box: true}` in 1.6.0; a script pinned below them is caught before it
+  runs, and `cig pin` writes the version they need.
+- **A changed last journal line was restored from.** The chain covers every
+  line but the last, which nothing follows; the record's `journal_head`
+  covers that one, and `cig runs <id> --verify` said so, but `cig unburn`
+  checked the chain alone. A head that does not match the record refuses the
+  unburn as a broken chain does (`E760`, `--force` to proceed knowingly).
+- **`cig tin gc --sealed-orphans` without the key** would have taken every
+  sealed object for one nothing opens, referred to or not. It refuses until
+  the key is there (`E703`); nothing is removed.
+- A dead condition in the git-sourced restore (a stand-in object was chosen
+  by a check that could never be true) is removed; the behaviour is the one
+  the comment described.
+
 ## 1.6.0 — 2026-10-28
 
 - **The box** (#85). `proc.run(cmd, args, {box: true})` runs the hop over a

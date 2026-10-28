@@ -5520,23 +5520,37 @@ fn without_the_key_a_restore_refuses_and_names_the_file() {
     );
     sb.run_ok(&["run", "s.cig"]);
     let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
-    // A new machine, a wiped keyring: the key is gone and another takes its place.
-    fs::remove_file(sb.home().join("tin/seal.key")).unwrap();
+    // The key is gone: nothing takes its place while sealed objects depend
+    // on it, and the restore names the key, where it was, and the file.
+    let key = sb.home().join("tin/seal.key");
+    let aside = sb.home().join("key-aside");
+    fs::rename(&key, &aside).unwrap();
     let err = sb.run_err(&["unburn", &id], 1);
     assert!(
         err.contains("error[E703 burn]")
-            && err.contains("sealed with another key")
+            && err.contains("the tin's key is gone")
+            && err.contains("seal.key")
             && err.contains("p/.env"),
         "{err}"
     );
+    assert!(!key.exists(), "a new key was made behind the user's back");
     assert_eq!(sb.read("p/.env"), "TOKEN=v2\n");
-    // What nothing can open any more goes with --sealed-orphans, and only then.
+    // Without the key, "what nothing opens" would be everything: refused.
     let gc: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "gc"])).unwrap();
     assert_eq!(gc["removed"], 0, "{gc}");
+    let err = sb.run_err(&["tin", "gc", "--sealed-orphans"], 1);
+    assert!(
+        err.contains("E703") && err.contains("needs the tin's key"),
+        "{err}"
+    );
+    assert_eq!(sealed_objects(&sb).len(), 1);
+    // The key back: the object opens, is referred to, and stays.
+    fs::rename(&aside, &key).unwrap();
     let gc: serde_json::Value =
         serde_json::from_str(&sb.run_ok(&["--json", "tin", "gc", "--sealed-orphans"])).unwrap();
-    assert_eq!(gc["removed"], 1, "{gc}");
-    assert!(sealed_objects(&sb).is_empty());
+    assert_eq!(gc["removed"], 0, "{gc}");
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/.env"), "TOKEN=v1\n");
 }
 
 // ----- the burn protocol (#89): a hop that knows what it changed says so
@@ -6046,6 +6060,45 @@ fn fell_back(err: &str) -> bool {
     err.contains("the box cannot be made here") || err.contains("the box could not be made here")
 }
 
+/// Should the box work on this machine? A kernel of 5.11 or later with
+/// overlayfs, where this user can make user and mount namespaces (`unshare
+/// -Urm true` succeeds): there a fallback is a defect, not a shrug, and the
+/// box tests say so instead of passing through the fallback.
+#[cfg(target_os = "linux")]
+fn box_expected_here() -> bool {
+    let kernel = fs::read_to_string("/proc/sys/kernel/osrelease").unwrap_or_default();
+    let mut parts = kernel.trim().split(|c: char| !c.is_ascii_digit());
+    let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    if (major, minor) < (5, 11) {
+        return false;
+    }
+    let overlay = fs::read_to_string("/proc/filesystems")
+        .map(|t| t.lines().any(|l| l.trim_end().ends_with("overlay")))
+        .unwrap_or(false);
+    if !overlay {
+        return false;
+    }
+    Command::new("unshare")
+        .args(["-Urm", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// The fallback ran: allowed only where the box could not have worked.
+#[cfg(target_os = "linux")]
+fn allow_fallback(err: &str) {
+    assert!(
+        !box_expected_here(),
+        "this machine can make a box (unshare -Urm works, overlayfs is here), yet the hop fell back:\n{err}"
+    );
+    eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_failing_hop_in_a_box_changes_nothing() {
@@ -6058,7 +6111,7 @@ fn a_failing_hop_in_a_box_changes_nothing() {
     );
     let err = sb.run_err(&["run", "s.cig"], 1);
     if fell_back(&err) {
-        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        allow_fallback(&err);
         assert!(err.contains("warning[E763 burn]"), "{err}");
         return;
     }
@@ -6095,7 +6148,7 @@ fn a_succeeding_hop_in_a_box_is_applied_and_unburnable() {
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "{err}");
     if fell_back(&err) {
-        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        allow_fallback(&err);
         return;
     }
     assert!(
@@ -6139,7 +6192,7 @@ fn a_boxed_hop_that_deletes_and_replaces_folders_applies_correctly() {
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(out.status.success(), "{err}");
     if fell_back(&err) {
-        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        allow_fallback(&err);
         return;
     }
     assert!(!sb.exists("p/other"), "{err}");
@@ -6187,4 +6240,416 @@ fn when_the_box_cannot_be_made_the_hop_falls_back_to_the_tin_and_says_so() {
     assert_eq!(sb.read("p/keep.txt"), "original\n", "{err}");
     assert!(!sb.exists("p/made.txt"), "{err}");
     assert!(sb.cig(&["explain", "E763"]).status.success());
+}
+
+// ----- 1.6.1: the debugging pass over the tin, end to end -------------------------
+
+#[cfg(unix)]
+#[test]
+fn a_hops_compensation_counts_without_a_pack() {
+    let sb = Sandbox::new();
+    sb.write(
+        "tool.sh",
+        "#!/bin/sh\nif [ \"$1\" = undo ]; then echo undone > undone.txt; exit 0; fi\nprintf '%s\\n' '{\"op\":\"compensate\",\"label\":\"undo tool\",\"undo\":[\"sh\",\"tool.sh\",\"undo\"]}' >> \"$CIG_JOURNAL\"\nprintf '%s\\n' '{\"op\":\"write\",\"path\":\"x.txt\",\"before\":\"absent\"}' >> \"$CIG_JOURNAL\"\necho did > did.txt\necho hi > x.txt\n",
+    );
+    sb.write(
+        "s.cig",
+        "burn {\n  proc.run(\"sh\", [\"tool.sh\"], {})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    // The hop's own undo needs no pack: it ran on the rollback.
+    assert!(err.contains("ran the compensation for undo tool"), "{err}");
+    assert!(sb.exists("undone.txt"), "{err}");
+    // A file claim has nothing to be judged against: said, and dropped.
+    assert!(
+        err.contains("warning[E761 burn]") && err.contains("declares no pack"),
+        "{err}"
+    );
+    assert!(sb.exists("x.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_chatty_undo_neither_hangs_the_rollback_nor_floods_the_report() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    // 300 KB on stdout: more than any pipe buffers.
+    sb.write(
+        "chatty.sh",
+        "#!/bin/sh\nif [ \"$1\" = undo ]; then head -c 300000 /dev/zero | tr '\\0' x; echo undone > undone.txt; exit 0; fi\nprintf '%s\\n' '{\"op\":\"compensate\",\"undo\":[\"sh\",\"chatty.sh\",\"undo\"]}' >> \"$CIG_JOURNAL\"\n",
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"chatty.sh\"], {touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args(["run", "s.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    use wait_timeout::ChildExt;
+    let Some(status) = child
+        .wait_timeout(std::time::Duration::from_secs(120))
+        .unwrap()
+    else {
+        let _ = child.kill();
+        panic!("the rollback hung on an undo that wrote 300 KB to stdout");
+    };
+    let mut err = String::new();
+    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut err).unwrap();
+    assert_eq!(status.code(), Some(1), "{err}");
+    assert!(err.contains("ran the compensation for"), "{err}");
+    assert!(sb.exists("undone.txt"), "{err}");
+    // A failing undo with a 3000-character last line: quoted, not pasted.
+    sb.write(
+        "loud.sh",
+        "#!/bin/sh\nif [ \"$1\" = undo ]; then head -c 3000 /dev/zero | tr '\\0' y >&2; echo >&2; exit 3; fi\nprintf '%s\\n' '{\"op\":\"compensate\",\"undo\":[\"sh\",\"loud.sh\",\"undo\"]}' >> \"$CIG_JOURNAL\"\n",
+    );
+    sb.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"loud.sh\"], {touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let out = sb.cig(&["run", "t.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let line = err
+        .lines()
+        .find(|l| l.contains("NOT undone"))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(
+        line.contains("exited 3") && line.contains("more characters)"),
+        "{line}"
+    );
+    assert!(
+        line.len() < 700,
+        "the report pasted the whole line: {} characters",
+        line.len()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hop_that_empties_and_remakes_a_folder_leaves_it_in_place() {
+    let sb = Sandbox::new();
+    sb.write("p/d/old.txt", "old\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"rm -rf d; mkdir d\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(err.contains("applied: 1 path written, 1 removed"), "{err}");
+    let d = sb.path().join("p/d");
+    assert!(d.is_dir(), "the emptied folder is gone: {err}");
+    assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    // The layers went with the hop, so the record can be pruned.
+    assert!(
+        !sb.home().join("runs").join(&id).join("box").exists(),
+        "the box's layers were left under the run"
+    );
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/d/old.txt"), "old\n");
+    sb.run_ok(&["runs", "--prune", "0"]);
+    assert_eq!(
+        fs::read_dir(sb.home().join("runs"))
+            .map(|r| r.count())
+            .unwrap_or(0),
+        0
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hops_touches_sealed_seals_what_it_rewrote() {
+    let sb = Sandbox::new();
+    sb.write("p/data/customers.db", "old-rows-not-a-secret-name\n");
+    sb.write("p/plain.txt", "plain words\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo new-rows > data/customers.db; echo y > plain.txt\"], {cwd: \"p\", box: true, touches_sealed: [\"data/*.db\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(err.contains("customers.db  (sealed)"), "{err}");
+    assert_eq!(
+        sb.read("p/data/customers.db"),
+        "old-rows-not-a-secret-name\n"
+    );
+    assert_eq!(sb.read("p/plain.txt"), "plain words\n");
+    assert!(!state_holds_bytes(&sb, b"old-rows-not-a-secret-name"));
+    // The plain file's before-bytes are kept as a native write's are.
+    assert!(state_holds_bytes(&sb, b"plain words\n"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parcel_written_from_an_imported_run_still_unburns_on_a_third_machine() {
+    let a = Sandbox::new();
+    let id = parcelled_run(&a);
+    a.run_ok(&["parcel", &id, "--out", "run.cigparcel"]);
+    let first = a.path().join("run.cigparcel");
+    let b = machine_b(&a);
+    let root_b = format!("p={}", b.path().join("p").display());
+    b.run_ok(&["unparcel", first.to_str().unwrap(), "--root", &root_b]);
+    // B passes the run on as it stands; C undoes it.
+    b.run_ok(&["parcel", &id, "--out", "again.cigparcel"]);
+    let again = b.path().join("again.cigparcel");
+    let c = machine_b(&a);
+    let root_c = format!("p={}", c.path().join("p").display());
+    c.run_ok(&["unparcel", again.to_str().unwrap(), "--root", &root_c]);
+    let shown = c.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("chain     intact") && shown.contains("objects   every snapshot"),
+        "{shown}"
+    );
+    let plan = c.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("unchanged since") && !plan.contains("changed since:"),
+        "{plan}"
+    );
+    c.run_ok(&["unburn", &id]);
+    assert_eq!(c.read("p/a.txt"), "alpha v1\n");
+    assert!(!c.exists("p/b.txt"));
+    assert_eq!(c.read("p/c.txt"), "gamma v1\n");
+    // B undoes it, gives the hop's output back, and passes on a journal
+    // that names two machines' paths; D reads both through its map.
+    b.run_ok(&["unburn", &id]);
+    assert_eq!(b.read("p/a.txt"), "alpha v1\n");
+    b.run_ok(&["unburn", &id, "--give-back"]);
+    assert_eq!(b.read("p/a.txt"), "alpha v2\n");
+    b.run_ok(&["parcel", &id, "--out", "third.cigparcel"]);
+    let third = b.path().join("third.cigparcel");
+    let d = machine_b(&a);
+    let root_d = format!("p={}", d.path().join("p").display());
+    d.run_ok(&["unparcel", third.to_str().unwrap(), "--root", &root_d]);
+    let shown = d.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("status    unburned")
+            && shown.contains("chain     intact")
+            && shown.contains("objects   every snapshot"),
+        "{shown}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pipeline_with_touches_is_reversible_like_a_hop() {
+    let sb = Sandbox::new();
+    sb.write("q/a.txt", "orig\n");
+    sb.write(
+        "q/tool.sh",
+        "#!/bin/sh\nprintf '%s\\n' '{\"op\":\"compensate\",\"label\":\"pipe undo\",\"undo\":[\"sh\",\"-c\",\"echo undone > undone.txt\"]}' >> \"$CIG_JOURNAL\"\necho new > a.txt; echo made > made.txt; echo piped\n",
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./q\" }\nburn {\n  stick r = proc.pipe([[\"sh\", \"tool.sh\"], [\"cat\"]], {cwd: \"q\", touches: [\"a.txt\"]})\n  if r.out.trim() != \"piped\" { cough \"the pipeline lost its output\" }\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("restored hop modified") && err.contains("restored hop created"),
+        "{err}"
+    );
+    assert_eq!(sb.read("q/a.txt"), "orig\n");
+    assert!(!sb.exists("q/made.txt"));
+    // Every stage reports through the burn protocol, as one hop does.
+    assert!(err.contains("ran the compensation for pipe undo"), "{err}");
+    assert!(sb.exists("q/undone.txt"), "{err}");
+    // A pipeline is several processes: it cannot be boxed, and says so.
+    sb.write(
+        "b.cig",
+        "pack { \"./q\" }\nburn {\n  proc.pipe([[\"true\"]], {box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "b.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success() && err.contains("E400") && err.contains("cannot be boxed"),
+        "{err}"
+    );
+    // And `touches` without a pack is the same refusal a hop gets.
+    sb.write(
+        "t.cig",
+        "burn {\n  proc.pipe([[\"true\"]], {touches: [\"**\"]})\n}\n",
+    );
+    let out = sb.cig(&["run", "t.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("E757"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_missing_seal_key_is_refused_rather_than_replaced() {
+    let sb = Sandbox::new();
+    sb.write("p/cfg/.env", "K=v\n");
+    sb.write("p/other/.env", "X=0\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo K=w > cfg/.env\"], {cwd: \"p\", touches: [\"cfg/**\"]})\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let key = sb.home().join("tin/seal.key");
+    let aside = sb.home().join("tin/key-aside");
+    fs::rename(&key, &aside).unwrap();
+    // The restore names the missing key; it makes no new one.
+    let out = sb.cig(&["unburn", &id]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        !out.status.success()
+            && err.contains("E703")
+            && err.contains("a new key would lock them out for good"),
+        "{err}"
+    );
+    assert!(!key.exists(), "a new key was made behind the user's back");
+    assert_eq!(sb.read("p/cfg/.env"), "K=w\n");
+    // A run that would seal says so and keeps the change irreversible.
+    sb.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo X=1 > other/.env\"], {cwd: \"p\", touches: [\"other/**\"]})\n}\n",
+    );
+    let out = sb.cig(&["run", "t.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        out.status.success()
+            && err.contains("warning[E757 burn]")
+            && err.contains("could not be sealed")
+            && err.contains("2 irreversible"),
+        "{err}"
+    );
+    assert!(!key.exists(), "a new key was made behind the user's back");
+    // The key back: the first run unburns.
+    fs::rename(&aside, &key).unwrap();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/cfg/.env"), "K=v\n");
+}
+
+#[test]
+fn a_script_pinned_below_the_box_or_sealed_touches_is_caught() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    sb.write(
+        "b.cig",
+        "# cig >=1.5.0\npack { \"./p\" }\nburn { proc.run(\"true\", [], {box: true}) }\n",
+    );
+    let err = sb.run_err(&["check", "--deny-warnings", "b.cig"], 2);
+    assert!(
+        err.contains("warning[E309 check]") && err.contains("box: true") && err.contains("1.6.0"),
+        "{err}"
+    );
+    sb.write(
+        "t.cig",
+        "# cig >=1.4.0\npack { \"./p\" }\nburn { proc.run(\"true\", [], {touches_sealed: [\"*.db\"]}) }\n",
+    );
+    let err = sb.run_err(&["check", "--deny-warnings", "t.cig"], 2);
+    assert!(
+        err.contains("touches_sealed") && err.contains("1.5.0"),
+        "{err}"
+    );
+    sb.write(
+        "w.cig",
+        "burn { fs.write_text(\"a.txt\", \"b\", {sensitive: true}) }\n",
+    );
+    sb.run_ok(&["pin", "w.cig"]);
+    assert!(
+        sb.read("w.cig").starts_with("# cig >=1.5.0\n"),
+        "{}",
+        sb.read("w.cig")
+    );
+}
+
+#[test]
+fn a_changed_last_journal_line_refuses_the_unburn() {
+    let sb = Sandbox::new();
+    sb.write("p/t.txt", "t1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/t.txt\", \"t2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    // The last line has no line after it to carry its hash; the record's
+    // head is what catches a change to it.
+    let journal = sb.home().join("runs").join(&id).join("journal.jsonl");
+    let text = fs::read_to_string(&journal).unwrap();
+    assert!(text.contains("\"seq\":1,"), "{text}");
+    fs::write(&journal, text.replacen("\"seq\":1,", "\"seq\":1 ,", 1)).unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{shown}");
+    assert!(
+        shown.contains("chain     intact") && shown.contains("head      does not match the record"),
+        "{shown}"
+    );
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E760 burn]") && err.contains("chain's head"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/t.txt"), "t2", "the refusal restored anyway");
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(plan.contains("would refuse [E760]"), "{plan}");
+    sb.run_ok(&["unburn", &id, "--force"]);
+    assert_eq!(sb.read("p/t.txt"), "t1\n");
+    // The give-back reads the took markers from the journal, and refuses a
+    // journal that is not the record the same way. A hop's output the
+    // rollback set aside is what a give-back returns.
+    sb.write("q/h.txt", "h1\n");
+    sb.write(
+        "h.cig",
+        "pack { \"./q\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo h2 > h.txt\"], {cwd: \"q\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    sb.run_err(&["run", "h.cig"], 1);
+    assert_eq!(sb.read("q/h.txt"), "h1\n");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    // The automatic rollback saved the head after its own markers.
+    sb.run_ok(&["runs", &id, "--verify"]);
+    let journal = sb.home().join("runs").join(&id).join("journal.jsonl");
+    let text = fs::read_to_string(&journal).unwrap();
+    let last = text.trim_end().lines().last().unwrap().to_string();
+    fs::write(&journal, text.replacen(&last, &format!("{last} "), 1)).unwrap();
+    let err = sb.run_err(&["unburn", &id, "--give-back"], 1);
+    assert!(
+        err.contains("error[E760 burn]") && err.contains("chain's head"),
+        "{err}"
+    );
+    assert_eq!(sb.read("q/h.txt"), "h1\n", "the refusal gave back anyway");
+    sb.run_ok(&["unburn", &id, "--give-back", "--force"]);
+    assert_eq!(sb.read("q/h.txt"), "h2\n");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hops_writes_under_a_build_tree_pass_through() {
+    let sb = Sandbox::new();
+    sb.write("p/target/old.o", "old\n");
+    sb.write("p/node_modules/dep/index.js", "1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"for i in 1 2 3; do echo $i > target/$i.o; done; echo changed > target/old.o; rm -r node_modules/dep; echo built > out.txt\"], {cwd: \"p\", box: true})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    // One path came through the box; the trees hop watching never looks
+    // into are not the box's business either, and keep what the hop did.
+    assert!(err.contains("applied: 1 path written, 0 removed"), "{err}");
+    assert!(!sb.exists("p/out.txt"));
+    assert_eq!(sb.read("p/target/old.o"), "changed\n");
+    assert!(sb.exists("p/target/3.o"));
+    assert!(!sb.exists("p/node_modules/dep"));
 }

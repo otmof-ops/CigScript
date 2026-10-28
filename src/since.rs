@@ -29,6 +29,9 @@ const FEATURES: &[(&str, Version)] = &[
     ("pack { }", Version(1, 1, 0)),
     ("burn (s) { } unburn { }", Version(1, 1, 0)),
     ("burn (s, label) { }", Version(1, 4, 2)),
+    ("touches_sealed", Version(1, 5, 0)),
+    ("fs.write_text(path, text, {sensitive})", Version(1, 5, 0)),
+    ("box: true", Version(1, 6, 0)),
 ];
 
 pub const FIRST: Version = Version(1, 0, 0);
@@ -184,6 +187,33 @@ fn stmt(s: &Stmt, out: &mut Vec<Use>) {
     }
 }
 
+/// What a call's arguments use that arrived after the builtin itself: a
+/// hop option (`{box: true}`, `touches_sealed`), or `fs.write_text`'s
+/// third argument.
+fn newer_arguments(qualified: &str, args: &[Expr], span: Span, out: &mut Vec<Use>) {
+    if qualified.starts_with("proc.") {
+        if let Some(Expr {
+            kind: ExprKind::Map(entries),
+            ..
+        }) = args.last()
+        {
+            for (k, _) in entries {
+                let MapKey::Static(key) = k else { continue };
+                match key.as_str() {
+                    "touches_sealed" => {
+                        note(out, "touches_sealed", feature("touches_sealed"), span)
+                    }
+                    "box" => note(out, "box: true", feature("box: true"), span),
+                    _ => {}
+                }
+            }
+        }
+    } else if matches!(qualified, "fs.write_text" | "fs.append_text") && args.len() >= 3 {
+        let what = "fs.write_text(path, text, {sensitive})";
+        note(out, what, feature(what), span);
+    }
+}
+
 fn feature(name: &str) -> Version {
     FEATURES
         .iter()
@@ -231,6 +261,7 @@ fn expr(e: &Expr, out: &mut Vec<Use>) {
             if let ExprKind::Ident(module) = &receiver.kind {
                 let qualified = format!("{module}.{name}");
                 note(out, &qualified, builtin_since(&qualified), e.span);
+                newer_arguments(&qualified, args, e.span, out);
             }
             expr(receiver, out);
             args.iter().for_each(|a| expr(a, out));
@@ -277,6 +308,28 @@ mod tests {
         assert_eq!(names, vec!["pack { }", "burn (s) { } unburn { }"]);
         // A lambda's own `pack(x) =>` is not the pack statement.
         let p = parse("stick f = pack(x) => x + 1\n").unwrap();
+        assert!(uses(&p).is_empty());
+    }
+
+    #[test]
+    fn hop_options_and_the_third_argument_count_too() {
+        let p = parse(
+            "pack { \"./p\" }\nburn {\n  proc.run(\"x\", [], {cwd: \"p\", touches_sealed: [\"*.db\"]})\n  fs.write_text(\"a\", \"b\", {sensitive: true})\n}\n",
+        )
+        .unwrap();
+        let names: Vec<String> = uses(&p).into_iter().map(|u| u.what).collect();
+        assert!(names.iter().any(|n| n == "touches_sealed"), "{names:?}");
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "fs.write_text(path, text, {sensitive})"),
+            "{names:?}"
+        );
+        assert_eq!(minimum(&p), Version(1, 5, 0));
+        let p = parse("pack { \"./p\" }\nburn { proc.run(\"x\", [], {box: true}) }\n").unwrap();
+        assert_eq!(minimum(&p), Version(1, 6, 0));
+        // The same keys on a map that is not a hop's options are nothing.
+        let p = parse("stick m = {box: true, touches_sealed: 1}\n").unwrap();
         assert!(uses(&p).is_empty());
     }
 }
