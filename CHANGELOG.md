@@ -3,6 +3,14 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.4.1 — 2026-10-28
+
+- **A link a hop makes is the pack's entry, wherever it points.** 1.4.0 judged
+  a hop-created link by where it led, so one pointing out of the pack was
+  reported as a write outside the pack (`E752`) and left in place on
+  rollback. It is judged by where it sits: rollback removes it, and what it
+  points to is never touched.
+
 ## 1.4.0 — 2026-10-28
 
 Found by two passes over everything 1.3.0 and 1.3.1 added, the second an
