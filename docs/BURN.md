@@ -394,6 +394,33 @@ shows one with its journal, `cig runs --prune N` keeps the newest N, and
 `CIGSCRIPT_HOME` relocates the whole state directory (tests use this to stay
 isolated).
 
+## The box
+
+The tin makes a hop's changes undoable after they happen; the box makes a
+failing hop's changes never happen. `proc.run(cmd, args, {box: true})`
+runs the hop, on Linux, in its own user and mount namespaces, with each
+pack root mounted as overlayfs over itself: the real root is the read-only
+lower layer and an upper directory under the run directory takes every
+write, so other programs reading the pack while the hop runs see nothing
+of it. A hop that fails, or exits outside its contract, has its layer
+dropped: nothing of it reached the pack, whatever the pack's size and
+whether or not `touches` named anything, and the run says `layer was
+dropped`. A hop that succeeds has its layer applied to the pack as native
+burns, outer paths first: a file in the layer is a write (the real file's
+before-bytes journaled first, sealed when it is a secret), a whiteout is a
+delete, an opaque directory a delete and the entries that follow, a new
+directory a mkdir, a link a write; each is journaled with its before-state
+exactly as `fs.write_text` and `fs.rm` are, so the run is unburnable like
+any other and the record reads as native ops. The plan says `(boxed)`, and
+says before the run when the box cannot be made here. It cannot where
+unprivileged user namespaces are off (Ubuntu's AppArmor restricts them
+since 23.10: `sysctl kernel.apparmor_restrict_unprivileged_userns=0`), on
+a kernel before 5.11, on a filesystem overlayfs cannot layer over, and on
+macOS, Windows and the BSDs, which have no overlayfs; there the hop runs on
+the tin as usual, with `touches` keeping what it may change, and the run
+says so (`E763`). A hop's own undo (the burn protocol) is journaled for a
+boxed hop too.
+
 ## The parcel
 
 A run's undo lives on the machine that ran it: the record under

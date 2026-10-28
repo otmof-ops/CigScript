@@ -479,6 +479,9 @@ for.
 | change one byte inside a parcel, then `cig unparcel` | the whole parcel refused (`E762`); nothing placed | 1.6.0 | `a_parcel_with_a_wrong_hash_is_refused_whole` |
 | a hop creates a file in a 60,000-entry pack, where 1.4 stopped scanning at 50,000 | removed on rollback like any other; the scan has no point past which a change goes irreversible | 1.6.0 | `a_created_file_past_the_old_cap_is_removed_on_rollback` |
 | a hop creates, edits and deletes among 500,000 entries | everything undone, under five minutes (heavy; `cargo test --release -- --ignored`) | 1.6.0 | `a_hop_in_a_500k_entry_pack_is_fully_reversible` |
+| a hop in the box rewrites, deletes and creates files, then exits outside its contract | nothing of it reached the pack: the layer is dropped, there is nothing to roll back (Linux) | 1.6.0 | `a_failing_hop_in_a_box_changes_nothing` |
+| a hop in the box deletes one folder and replaces another whole | applied as native burns from the layer's whiteouts and opaque directory; `unburn` brings both folders back as they were (Linux) | 1.6.0 | `a_boxed_hop_that_deletes_and_replaces_folders_applies_correctly` |
+| `{box: true}` where the box cannot be made | the plan says so before the run, the hop runs on the tin, the run says so (`E763`) | 1.6.0 | `when_the_box_cannot_be_made_the_hop_falls_back_to_the_tin_and_says_so` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

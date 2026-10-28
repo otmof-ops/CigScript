@@ -64,6 +64,10 @@ pub fn discard(layers: &Layers) {
 /// answer comes when the mount is tried; this only rules out what cannot
 /// work, so the plan can say so before the run.
 pub fn possible() -> Result<(), &'static str> {
+    // Test hook: the fallback, on a machine where the box would work.
+    if std::env::var_os("CIG_INTERNAL_NO_BOX").is_some() {
+        return Err("CIG_INTERNAL_NO_BOX is set");
+    }
     #[cfg(target_os = "linux")]
     {
         if fs::read_to_string("/proc/filesystems")
@@ -132,21 +136,27 @@ impl Setup {
     }
 
     /// Run in the child, between fork and exec.
+    ///
+    /// # Safety
+    ///
+    /// Only async-signal-safe calls are made (unshare, open, write, mount,
+    /// chdir, close), on data prepared before the fork; the caller runs it
+    /// in a `pre_exec` closure and nowhere else.
     pub unsafe fn apply(&self) -> io::Result<()> {
         if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
             return self.fail(b"unshare(CLONE_NEWUSER|CLONE_NEWNS) refused");
         }
-        if !write_file(b"/proc/self/uid_map\0", &self.uid_map) {
+        if !write_file(c"/proc/self/uid_map", &self.uid_map) {
             return self.fail(b"writing /proc/self/uid_map refused");
         }
-        write_file(b"/proc/self/setgroups\0", b"deny\n");
-        if !write_file(b"/proc/self/gid_map\0", &self.gid_map) {
+        write_file(c"/proc/self/setgroups", b"deny\n");
+        if !write_file(c"/proc/self/gid_map", &self.gid_map) {
             return self.fail(b"writing /proc/self/gid_map refused");
         }
         // Nothing mounted here must reach the parent's namespace.
         if libc::mount(
             std::ptr::null(),
-            b"/\0".as_ptr() as *const libc::c_char,
+            c"/".as_ptr(),
             std::ptr::null(),
             libc::MS_REC | libc::MS_PRIVATE,
             std::ptr::null(),
@@ -156,9 +166,9 @@ impl Setup {
         }
         for (at, opts) in &self.mounts {
             if libc::mount(
-                b"overlay\0".as_ptr() as *const libc::c_char,
+                c"overlay".as_ptr(),
                 at.as_ptr(),
-                b"overlay\0".as_ptr() as *const libc::c_char,
+                c"overlay".as_ptr(),
                 0,
                 opts.as_ptr() as *const libc::c_void,
             ) != 0
@@ -205,11 +215,8 @@ fn escape(p: &Path) -> String {
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn write_file(path: &[u8], bytes: &[u8]) -> bool {
-    let fd = libc::open(
-        path.as_ptr() as *const libc::c_char,
-        libc::O_WRONLY | libc::O_CLOEXEC,
-    );
+unsafe fn write_file(path: &std::ffi::CStr, bytes: &[u8]) -> bool {
+    let fd = libc::open(path.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
     if fd < 0 {
         return false;
     }
@@ -293,7 +300,7 @@ fn is_opaque(dir: &Path) -> bool {
     let n = unsafe {
         libc::getxattr(
             c.as_ptr(),
-            b"user.overlay.opaque\0".as_ptr() as *const libc::c_char,
+            c"user.overlay.opaque".as_ptr(),
             buf.as_mut_ptr() as *mut libc::c_void,
             buf.len(),
         )

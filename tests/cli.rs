@@ -6034,3 +6034,157 @@ fn scan_memory_stays_under_the_budget_for_a_million_entries() {
         rss_kb / 1024
     );
 }
+
+// ----- the box (#85): a failing hop's changes never land
+
+/// The box needs unprivileged user namespaces and overlayfs; where the
+/// machine has neither, the hop falls back to the tin and the run says so.
+/// These tests exercise the box where it can be made, and the fallback's
+/// wording where it cannot.
+#[cfg(target_os = "linux")]
+fn fell_back(err: &str) -> bool {
+    err.contains("the box cannot be made here") || err.contains("the box could not be made here")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failing_hop_in_a_box_changes_nothing() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write("p/gone.txt", "doomed\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo changed > keep.txt; rm gone.txt; echo new > made.txt; mkdir sub; echo deep > sub/d.txt; exit 3\"], {cwd: \"p\", box: true, ok: 0})\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    if fell_back(&err) {
+        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        assert!(err.contains("warning[E763 burn]"), "{err}");
+        return;
+    }
+    assert!(err.contains("error[E553 runtime]"), "{err}");
+    assert!(
+        err.contains("layer was dropped") && err.contains("nothing of it reached the pack"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/keep.txt"), "original\n");
+    assert_eq!(sb.read("p/gone.txt"), "doomed\n");
+    assert!(!sb.exists("p/made.txt") && !sb.exists("p/sub"));
+    // Nothing of the pack was journaled: the hop alone, and no rollback.
+    let rec = &sb.runs()[0];
+    assert_eq!(rec["burns"], 1, "{rec}");
+    assert!(!err.contains("restored"), "{err}");
+    let id = rec["id"].as_str().unwrap();
+    assert!(
+        !sb.exists(&format!("home/runs/{id}/box/1")),
+        "the layer was not dropped"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_succeeding_hop_in_a_box_is_applied_and_unburnable() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write("p/gone.txt", "doomed\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo changed > keep.txt; rm gone.txt; echo new > made.txt; mkdir sub; echo deep > sub/d.txt; ln -s keep.txt link.txt\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        return;
+    }
+    assert!(
+        err.contains("box: `sh -c") && err.contains("applied: 5 paths written, 1 removed"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/keep.txt"), "changed\n");
+    assert!(!sb.exists("p/gone.txt"));
+    assert_eq!(sb.read("p/made.txt"), "new\n");
+    assert_eq!(sb.read("p/sub/d.txt"), "deep\n");
+    assert_eq!(
+        fs::read_link(sb.path().join("p/link.txt")).unwrap(),
+        Path::new("keep.txt")
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("write") && shown.contains("delete") && shown.contains("mkdir"),
+        "{shown}"
+    );
+    assert!(shown.contains("chain     intact"), "{shown}");
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/keep.txt"), "original\n");
+    assert_eq!(sb.read("p/gone.txt"), "doomed\n");
+    assert!(!sb.exists("p/made.txt") && !sb.exists("p/sub") && !sb.exists("p/link.txt"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hop_that_deletes_and_replaces_folders_applies_correctly() {
+    let sb = Sandbox::new();
+    sb.write("p/dir/a.txt", "a\n");
+    sb.write("p/dir/b.txt", "b\n");
+    sb.write("p/dir/sub/c.txt", "c\n");
+    sb.write("p/other/x.txt", "x\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"rm -rf other; rm -rf dir; mkdir dir; echo fresh > dir/new.txt\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        return;
+    }
+    assert!(!sb.exists("p/other"), "{err}");
+    assert_eq!(sb.read("p/dir/new.txt"), "fresh\n");
+    assert!(
+        !sb.exists("p/dir/a.txt") && !sb.exists("p/dir/b.txt") && !sb.exists("p/dir/sub"),
+        "the replaced folder kept old entries: {err}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/dir/a.txt"), "a\n");
+    assert_eq!(sb.read("p/dir/b.txt"), "b\n");
+    assert_eq!(sb.read("p/dir/sub/c.txt"), "c\n");
+    assert_eq!(sb.read("p/other/x.txt"), "x\n");
+    assert!(!sb.exists("p/dir/new.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn when_the_box_cannot_be_made_the_hop_falls_back_to_the_tin_and_says_so() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo changed > keep.txt; echo new > made.txt\"], {cwd: \"p\", box: true, touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let dry = sb.cig_env(
+        &["run", "--dry-run", "s.cig"],
+        &[("CIG_INTERNAL_NO_BOX", "1")],
+    );
+    let plan = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        plan.contains("(boxed)") && plan.contains("the box cannot be made here"),
+        "{plan}"
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_NO_BOX", "1")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("warning[E763 burn]: the box cannot be made here")
+            && err.contains("runs on the tin instead"),
+        "{err}"
+    );
+    // The tin did its usual work.
+    assert_eq!(sb.read("p/keep.txt"), "original\n", "{err}");
+    assert!(!sb.exists("p/made.txt"), "{err}");
+    assert!(sb.cig(&["explain", "E763"]).status.success());
+}

@@ -5,6 +5,21 @@ project follows semantic versioning.
 
 ## 1.6.0 — unreleased
 
+- **The box** (#85). `proc.run(cmd, args, {box: true})` runs the hop over a
+  copy-on-write layer on the pack: on Linux, in its own user and mount
+  namespaces with each root mounted as overlayfs over itself (the real root
+  the read-only lower layer, an upper directory under the run taking every
+  write). A hop that fails (or exits outside its contract) has its layer
+  dropped: nothing of it ever reached the pack, whatever the pack's size and
+  whether or not `touches` named anything. A hop that succeeds has its layer
+  applied as native burns (writes, deletes, mkdirs, whiteouts read as
+  deletes, an opaque directory as a replaced one), each journaled with its
+  before-state, so the run is unburnable like any other; the plan line says
+  `(boxed)`. Where the box cannot be made (no unprivileged user namespaces,
+  a kernel before 5.11, macOS, Windows, the BSDs) the hop runs on the tin as
+  usual and the run says so (`E763`); the plan says so before the run. The
+  reflink clone for macOS and Windows is not made yet: there the box falls
+  back, and says so.
 - **Hop watching that scales** (#84). The scan of a pack is read on every
   core (up to eight threads), kept compact (one arena of relative paths and
   entries of a few dozen bytes, sorted by path, about 60 bytes an entry),

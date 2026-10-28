@@ -25,6 +25,11 @@ jobs:
           components: clippy, rustfmt
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
+      # The box needs unprivileged user namespaces, which Ubuntu's AppArmor
+      # restricts by default; the tests fall back and say so where it
+      # cannot be lifted.
+      - if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: cargo test
       # Release inlining changes which frames a backtrace keeps, and the
       # crash tests read them: run the suite once as users run cig.

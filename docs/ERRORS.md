@@ -1289,6 +1289,7 @@ folds and packs: refusals when automation is composed.
 | [`E760`](#e760-the-journal's-chain-is-broken) | the journal's chain is broken | can't see any ciggies bro | cig runs <id> --verify names the first line that does not fit; cig unburn <id> --force restores from the journal as it is |
 | [`E761`](#e761-a-hop's-report-could-not-be-used) | a hop's report could not be used | can't see any ciggies bro | docs/PROTOCOL.md has the line shapes; report paths inside the pack, and keep a copy of the before-bytes (`saved`) or give an `undo` command |
 | [`E762`](#e762-a-parcel-could-not-be-written-or-imported) | a parcel could not be written or imported | can't see any ciggies bro | cig unparcel --show <file> lists the roots to map; --root name=path for each, --cwd when the working directory cannot be told, --allow-sealed-missing to import what this machine cannot open |
+| [`E763`](#e763-the-box-could-not-be-made,-or-its-layer-not-applied) | the box could not be made, or its layer not applied | can't see any ciggies bro | the warning needs nothing done unless the box was the point: Linux 5.11 or later with user namespaces allowed (kernel.apparmor_restrict_unprivileged_userns=0 on Ubuntu); the error names the path that refused |
 
 ### E750 literal path outside the pack
 
@@ -1511,6 +1512,25 @@ A parcel is a run's record and every object its journal needs in one file, with 
 3. the parcel holds sealed objects this machine's key does not open (no probe; a suggestion, not a finding). **Remedy:** copy the key that sealed them (the keyring entry cigscript/tin-seal, or ~/.cigscript/tin/seal.key), or `--allow-sealed-missing`
 
 Related: `E703`, `E704`.
+
+
+### E763 the box could not be made, or its layer not applied
+
+*burn · since 1.6.0 · arises in run, light*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+A hop asked to run in the box (`{box: true}`): over a copy-on-write layer on the pack, applied only when the hop succeeds. As a warning: the box could not be made here (no user namespaces, a kernel before 5.11, another operating system, a filesystem overlayfs cannot layer over), so the hop ran on the tin as usual. As an error: the hop succeeded but a change in its layer could not be applied to the pack; what was applied before it is in the journal, and the run's rollback puts it back.
+
+**What to type next:** the warning needs nothing done unless the box was the point: Linux 5.11 or later with user namespaces allowed (kernel.apparmor_restrict_unprivileged_userns=0 on Ubuntu); the error names the path that refused
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. unprivileged user namespaces are off, or restricted by AppArmor (Ubuntu 23.10 and later), or the kernel is older than 5.11 (no probe; a suggestion, not a finding). **Remedy:** `sysctl kernel.apparmor_restrict_unprivileged_userns=0` and `kernel.unprivileged_userns_clone=1`, or run the hop without `box`
+2. the operating system has no overlayfs (macOS, Windows, the BSDs) (no probe; a suggestion, not a finding). **Remedy:** the hop runs on the tin there; `touches` keeps what it may change
+3. a path in the layer could not be written to the pack (permissions, a device full) (probe `path-permissions`). **Remedy:** the run rolled back what was applied; fix the path and run again
+
+Related: `E757`, `E752`.
 
 
 ## usage (`E800`–`E849`)

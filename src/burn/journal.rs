@@ -2115,6 +2115,16 @@ fn staging_path(path: &Path) -> PathBuf {
     }
 }
 
+/// `remove_any`, for the box's apply.
+pub(crate) fn remove_any_pub(path: &Path) -> Result<(), io::Error> {
+    remove_any(path)
+}
+
+/// `make_symlink`, for the box's apply.
+pub(crate) fn make_symlink_pub(target: &Path, at: &Path) -> Result<(), io::Error> {
+    make_symlink(target, at)
+}
+
 /// Remove a file, a directory tree, or a link (never following the link).
 fn remove_any(path: &Path) -> Result<(), io::Error> {
     match fs::symlink_metadata(path) {
@@ -2542,6 +2552,7 @@ mod tests {
                 cwd: None,
                 touches: Vec::new(),
                 touches_sealed: Vec::new(),
+                boxed: false,
             },
         )
         .unwrap();

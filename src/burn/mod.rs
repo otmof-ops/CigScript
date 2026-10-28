@@ -13,6 +13,7 @@ pub mod ghost;
 pub mod git;
 pub mod journal;
 pub mod lock;
+pub mod overlay;
 pub mod parcel;
 pub mod protocol;
 pub mod runs;
@@ -74,6 +75,10 @@ pub enum Op {
         /// Globs among them whose files are secrets: kept sealed.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         touches_sealed: Vec<String>,
+        /// Run in the box: over a copy-on-write layer on the pack, so a
+        /// failing hop's changes never land.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        boxed: bool,
     },
     EnvSet {
         key: String,
@@ -191,6 +196,7 @@ impl Op {
                 args,
                 cwd,
                 touches,
+                boxed,
                 ..
             } => {
                 let mut s = format!("run {}", shell_quote(cmd));
@@ -200,6 +206,9 @@ impl Op {
                 }
                 if let Some(c) = cwd {
                     s.push_str(&format!("  (in {})", c.display()));
+                }
+                if *boxed {
+                    s.push_str("  (boxed)");
                 }
                 if !touches.is_empty() {
                     s.push_str(&format!("  (touches {})", touches.join(", ")));
@@ -1703,6 +1712,193 @@ impl Kernel {
         writes
     }
 
+    /// Journal the compensations a hop reported, and stamp the hop's
+    /// irreversible ops since `mark` compensated: the boxed hop's half of
+    /// what `pack_watch_end` does with a report.
+    pub fn hop_compensations(
+        &mut self,
+        compensations: Vec<protocol::Claim>,
+        hop_cwd: Option<&Path>,
+        mark: usize,
+    ) {
+        let here = hop_cwd
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
+        for c in compensations {
+            let protocol::Claim::Compensate {
+                label, undo, cwd, ..
+            } = c
+            else {
+                continue;
+            };
+            let cwd = cwd
+                .map(|d| {
+                    if d.is_absolute() {
+                        normalize_root(&d.to_string_lossy())
+                    } else {
+                        normalize_root(&here.join(d).to_string_lossy())
+                    }
+                })
+                .or_else(|| Some(here.clone()));
+            let comp = journal::Compensation {
+                source: String::new(),
+                state_name: None,
+                state: serde_json::Value::Null,
+                line: 0,
+                label: Some(label.clone()),
+                command: Some(undo),
+                cwd,
+            };
+            self.seq += 1;
+            let _ = self.journal.record_with(
+                self.seq,
+                Op::Compensate {
+                    line: 0,
+                    label: Some(label),
+                },
+                Some(comp),
+                false,
+            );
+        }
+        let stamped = self.journal.mark_compensated_since(mark);
+        self.irreversible = self.irreversible.saturating_sub(stamped);
+    }
+
+    /// The layers for a boxed hop about to run (the hop just journaled), or
+    /// why none can be made here. None in a dry run or without a pack.
+    pub fn box_prepare(&self) -> Option<Result<overlay::Layers, String>> {
+        if self.mode == Mode::DryRun {
+            return None;
+        }
+        let roots = self.pack.as_ref()?;
+        let dir = self.journal.run_dir()?;
+        if let Err(why) = overlay::possible() {
+            return Some(Err(why.to_string()));
+        }
+        Some(
+            overlay::prepare(dir, self.seq, roots)
+                .map_err(|e| format!("the layers could not be made under the run directory: {e}")),
+        )
+    }
+
+    /// Apply a boxed hop's upper layers to the real pack, each change a
+    /// native burn: journaled with its before-state, so the run is
+    /// unburnable like any other. Returns what was applied, or the first
+    /// failure (what was applied before it is in the journal, and the
+    /// run's rollback puts it back).
+    pub fn box_apply(&mut self, layers: &overlay::Layers) -> Result<HopWrites, String> {
+        let mut writes = HopWrites::default();
+        let compensated = self.compensating > 0;
+        for (root, upper, _) in &layers.roots {
+            let changes = overlay::changes(root, upper).map_err(|e| {
+                format!(
+                    "the box's layer under {} could not be read: {e}",
+                    upper.display()
+                )
+            })?;
+            for c in changes {
+                let real = c.real().to_path_buf();
+                let op = match &c {
+                    overlay::Change::Dir { .. } => {
+                        if std::fs::symlink_metadata(&real).is_ok() {
+                            continue;
+                        }
+                        Op::Mkdir { path: real.clone() }
+                    }
+                    overlay::Change::Replaced { .. } | overlay::Change::Removed { .. } => {
+                        if std::fs::symlink_metadata(&real).is_err() {
+                            continue;
+                        }
+                        Op::Delete { path: real.clone() }
+                    }
+                    overlay::Change::File { .. } | overlay::Change::Link { .. } => Op::Write {
+                        path: real.clone(),
+                        sensitive: false,
+                    },
+                };
+                self.seq += 1;
+                self.executed += 1;
+                self.journal
+                    .record_with(self.seq, op.clone(), None, compensated)
+                    .map_err(|e| {
+                        format!(
+                            "could not journal the box's change to {}: {e}",
+                            real.display()
+                        )
+                    })?;
+                let done: std::io::Result<()> = match &c {
+                    overlay::Change::Dir { mode, .. } => {
+                        std::fs::create_dir_all(&real).and_then(|()| {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                std::fs::set_permissions(
+                                    &real,
+                                    std::fs::Permissions::from_mode(*mode),
+                                )
+                            }
+                            #[cfg(not(unix))]
+                            {
+                                let _ = mode;
+                                Ok(())
+                            }
+                        })
+                    }
+                    overlay::Change::Replaced { .. } | overlay::Change::Removed { .. } => {
+                        journal::remove_any_pub(&real)
+                    }
+                    overlay::Change::File { upper, .. } => (|| -> std::io::Result<()> {
+                        if std::fs::symlink_metadata(&real)
+                            .map(|m| !m.is_file())
+                            .unwrap_or(false)
+                        {
+                            journal::remove_any_pub(&real)?;
+                        }
+                        if let Some(parent) = real.parent() {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                        std::fs::copy(upper, &real)?;
+                        let meta = std::fs::metadata(upper)?;
+                        #[cfg(unix)]
+                        std::fs::set_permissions(&real, meta.permissions())?;
+                        if let Some(ns) = journal::mtime_ns(&meta) {
+                            let _ = journal::set_mtime(&real, ns);
+                        }
+                        Ok(())
+                    })(),
+                    overlay::Change::Link { target, .. } => (|| -> std::io::Result<()> {
+                        journal::remove_any_pub(&real)?;
+                        journal::make_symlink_pub(target, &real)
+                    })(),
+                };
+                match done {
+                    Ok(()) => {
+                        // A directory the hop replaced whole is applied as the
+                        // delete above and the entries that follow it.
+                        match c {
+                            overlay::Change::Dir { .. }
+                            | overlay::Change::File { .. }
+                            | overlay::Change::Link { .. } => writes.created.push(real),
+                            overlay::Change::Replaced { .. } | overlay::Change::Removed { .. } => {
+                                writes.deleted.push(real)
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.op_failed();
+                        return Err(format!(
+                            "the box's change to {} could not be applied: {e}",
+                            real.display()
+                        ));
+                    }
+                }
+            }
+        }
+        overlay::discard(layers);
+        Ok(writes)
+    }
+
     /// Warnings the end of a hop's watch produced, for the hop to print.
     pub fn take_late_warnings(&mut self) -> Vec<String> {
         std::mem::take(&mut self.late_warnings)
@@ -1850,6 +2046,12 @@ impl Kernel {
                     }
                     summary.push_str(&format!("  (touches {})", shown.join(", ")));
                 }
+            }
+            // The box is asked for: say now when it cannot be made here.
+            if let (Op::Proc { boxed: true, .. }, Err(why)) = (&op, overlay::possible()) {
+                summary.push_str(&format!(
+                    "  [the box cannot be made here: {why}; the hop would run on the tin]"
+                ));
             }
             self.planned.push(PlannedOp {
                 seq: self.seq,

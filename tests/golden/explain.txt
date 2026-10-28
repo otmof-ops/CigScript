@@ -100,6 +100,7 @@ E750-E769  folds and packs: refusals when automation is composed
   E760  the journal's chain is broken      burn
   E761  a hop's report could not be used   burn
   E762  a parcel could not be written or imported burn
+  E763  the box could not be made, or its layer not applied burn
 
 E800-E849  the command line and the environment
   E800  usage error                        usage
@@ -1550,6 +1551,28 @@ E762 a parcel could not be written or imported  (burn, fold family, since 1.6.0)
      remedy: copy the key that sealed them (the keyring entry cigscript/tin-seal, or ~/.cigscript/tin/seal.key), or `--allow-sealed-missing`
 
   arises in: unburn, runs  ·  related: E703, E704  ·  tags: kernel
+
+======== E763 ========
+E763 the box could not be made, or its layer not applied  (burn, fold family, since 1.6.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A hop asked to run in the box (`{box: true}`): over a copy-on-write layer on the pack, applied only when the hop succeeds. As a warning: the box could not be made here (no user namespaces, a kernel before 5.11, another operating system, a filesystem overlayfs cannot layer over), so the hop ran on the tin as usual. As an error: the hop succeeded but a change in its layer could not be applied to the pack; what was applied before it is in the journal, and the run's rollback puts it back.
+
+  what to type next: the warning needs nothing done unless the box was the point: Linux 5.11 or later with user namespaces allowed (kernel.apparmor_restrict_unprivileged_userns=0 on Ubuntu); the error names the path that refused
+
+  known causes, ranked; doctor checks them in this order
+  1. unprivileged user namespaces are off, or restricted by AppArmor (Ubuntu 23.10 and later), or the kernel is older than 5.11
+     probe: none; a suggestion, not a finding
+     remedy: `sysctl kernel.apparmor_restrict_unprivileged_userns=0` and `kernel.unprivileged_userns_clone=1`, or run the hop without `box`
+  2. the operating system has no overlayfs (macOS, Windows, the BSDs)
+     probe: none; a suggestion, not a finding
+     remedy: the hop runs on the tin there; `touches` keeps what it may change
+  3. a path in the layer could not be written to the pack (permissions, a device full)
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: the run rolled back what was applied; fix the path and run again
+
+  arises in: run, light  ·  related: E757, E752  ·  tags: kernel
 
 ======== E800 ========
 E800 usage error  (usage, usage family, since 1.0.0)
