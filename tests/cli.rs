@@ -4467,6 +4467,16 @@ fn a_touches_glob_that_matches_nothing_is_a_warning() {
         err.contains("touches `scr/**` matches no file in the pack (did you mean `src/**`?)"),
         "{err}"
     );
+    // One glob among several matching nothing is ordinary (a lockfile the
+    // project may have); only a list that covers nothing at all is said.
+    sb.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"true\"], {touches: [\"src/**\", \"yarn.lock\"]})\n}\n",
+    );
+    let quiet = sb.cig(&["run", "t.cig"]);
+    let quiet_err = String::from_utf8_lossy(&quiet.stderr);
+    assert!(quiet.status.success(), "{quiet_err}");
+    assert!(!quiet_err.contains("matches no file"), "{quiet_err}");
     assert!(
         err.contains("p/src/a.txt is not under touches")
             && err.contains("touches: [\"src/**\"] would keep it"),

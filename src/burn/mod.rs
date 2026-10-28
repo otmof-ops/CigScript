@@ -876,28 +876,49 @@ impl Kernel {
         if !touches.is_empty() {
             match tin::globs(touches) {
                 Ok(set) => {
-                    // A glob that matches nothing is a typo until proven
-                    // otherwise, and would quietly leave the files it meant
-                    // irreversible.
-                    let existing: Vec<String> = inside
-                        .iter()
-                        .filter(|(_, m)| !m.is_dir())
-                        .filter_map(|(p, _)| {
-                            roots
+                    // A `touches` that covers no file at all is a typo until
+                    // proven otherwise, and would quietly leave the files it
+                    // meant irreversible. One glob among several matching
+                    // nothing is ordinary (a lockfile the project may have),
+                    // so the list is judged as a whole; the dry run counts
+                    // each glob, and the report after the hop names the glob
+                    // that would have kept a file changed outside them all.
+                    let counts = touches_counts(roots, touches, cap);
+                    if !partial && counts.iter().all(|(_, n)| *n == 0) {
+                        let existing: Vec<String> = inside
+                            .iter()
+                            .filter(|(_, m)| !m.is_dir())
+                            .filter_map(|(p, _)| {
+                                roots
+                                    .iter()
+                                    .find_map(|r| p.strip_prefix(r).ok())
+                                    .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+                            })
+                            .collect();
+                        let near: Vec<String> = counts
+                            .iter()
+                            .filter_map(|(g, _)| nearest_glob(g, &existing))
+                            .collect();
+                        let hint = if near.is_empty() {
+                            String::new()
+                        } else {
+                            format!(
+                                " (did you mean {}?)",
+                                near.iter()
+                                    .map(|g| format!("`{g}`"))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            )
+                        };
+                        warnings.push(format!(
+                            "touches {} match{} no file in the pack{hint}; a change to a file it was meant to cover is irreversible",
+                            counts
                                 .iter()
-                                .find_map(|r| p.strip_prefix(r).ok())
-                                .map(|rel| rel.to_string_lossy().replace('\\', "/"))
-                        })
-                        .collect();
-                    for (glob, n) in touches_counts(roots, touches, cap) {
-                        if n == 0 && !partial {
-                            let near = nearest_glob(&glob, &existing)
-                                .map(|g| format!(" (did you mean `{g}`?)"))
-                                .unwrap_or_default();
-                            warnings.push(format!(
-                                "touches `{glob}` matches no file in the pack{near}; a change to a file it was meant to cover is irreversible"
-                            ));
-                        }
+                                .map(|(g, _)| format!("`{g}`"))
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            if counts.len() == 1 { "es" } else { "" }
+                        ));
                     }
                     let mut staged: Vec<(PathBuf, tin::Staged)> = Vec::new();
                     for (path, meta) in &inside {

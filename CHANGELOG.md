@@ -44,10 +44,12 @@ can see: `cig unburn <id> --give-back`, the pack lock (`E759`) and the
 - **A folder a hop replaced with a file comes back as the folder** (#75),
   with what was in it, the file gone to the tin; **an empty folder a hop
   deleted comes back** (#76), with its mode.
-- **A `touches` glob that matches nothing is said** (#77): before the run,
-  with the nearest glob that would match; in the dry run, as a count beside
-  each glob; and after the run, naming the glob that would have kept a file
-  the hop changed outside every glob.
+- **A `touches` that matches nothing is said** (#77): before the run, when
+  the whole list covers no file, with the nearest glob that would (one glob
+  among several matching nothing is ordinary: a lockfile the project may
+  have); in the dry run, as a count beside each glob; and after the run,
+  naming the glob that would have kept a file the hop changed outside every
+  glob.
 - **Links.** A dangling link is watched like any other, so a hop that
   deletes or retargets one is undone; a write through a link to a file
   outside the pack is reported (`E752`) instead of going unseen.

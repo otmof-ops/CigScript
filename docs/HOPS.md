@@ -225,10 +225,12 @@ most here:
   real path, and the link itself (dangling or not) comes back as the link
   it was.
 
-A `touches` glob that matches no file in the pack is a warning before the
-run (with the nearest glob that would match), a count beside the glob in
-the dry run (`touches scr/**: 0 files`), and after the run the report names
-the glob that would have kept a file the hop changed outside every glob.
+A `touches` that matches no file in the pack at all is a warning before the
+run (with the nearest glob that would match; one glob among several
+matching nothing is ordinary, a lockfile the project may have), each glob
+gets a count in the dry run (`touches scr/**: 0 files`), and after the run
+the report names the glob that would have kept a file the hop changed
+outside every glob.
 
 ## Compensations
 
