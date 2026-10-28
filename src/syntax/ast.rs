@@ -126,6 +126,10 @@ pub enum Stmt {
         /// `burn (state) { }`: a fresh map, visible in the body and the
         /// compensation, journaled with it.
         state: Option<String>,
+        /// `burn ("deploy") { }` or `burn (state, label) { }`: a name for the
+        /// burn, a string, used in place of its line wherever the plan, the
+        /// record or a rollback names it.
+        label: Option<Expr>,
         body: Block,
         /// `unburn { }`: the compensation, run on rollback.
         unburn: Option<Block>,

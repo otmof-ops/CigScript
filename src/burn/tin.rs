@@ -283,12 +283,13 @@ pub fn holds(path: &Path) -> bool {
 
 /// A set of `touches` globs, matched against a path relative to the pack
 /// root it is under. `*` is the root's own files, `**` everything, `src/**`
-/// a tree, `package.json` one file.
+/// a tree, `package.json` one file. A leading `?` (`?yarn.lock`) marks a
+/// glob that may match nothing without a word; it is not part of the glob.
 pub fn globs(patterns: &[String]) -> Result<GlobSet, String> {
     let mut b = GlobSetBuilder::new();
     for p in patterns {
-        let g = Glob::new(p.trim_start_matches("./"))
-            .map_err(|e| format!("touches: `{p}` is not a glob: {e}"))?;
+        let bare = p.strip_prefix('?').unwrap_or(p).trim_start_matches("./");
+        let g = Glob::new(bare).map_err(|e| format!("touches: `{p}` is not a glob: {e}"))?;
         b.add(g);
     }
     b.build().map_err(|e| format!("touches: {e}"))

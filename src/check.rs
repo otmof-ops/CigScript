@@ -484,11 +484,15 @@ impl Checker {
             }
             Stmt::Burn {
                 state,
+                label,
                 body,
                 unburn,
                 span,
                 ..
             } => {
+                if let Some(l) = label {
+                    self.expr(l);
+                }
                 self.push();
                 if let Some(name) = state {
                     self.declare(name, Binding::Immutable, *span);

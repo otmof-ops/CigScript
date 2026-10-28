@@ -345,11 +345,32 @@ impl Interp {
             Stmt::Burn {
                 class,
                 state,
+                label,
                 body,
                 unburn,
                 unburn_src,
                 span,
             } => {
+                // The label is read before the block runs, in the enclosing
+                // scope: a task name, a string.
+                let label_text = match label {
+                    Some(e) => {
+                        let v = self.eval(e, env)?;
+                        match &v {
+                            Value::Str(s) => Some(s.to_string()),
+                            other => {
+                                return Err(type_error(format!(
+                                    "a burn's label is a string, got {}",
+                                    other.type_name()
+                                ))
+                                .at(e.span)
+                                .with_hint("burn (s, \"deploy\") { ... }: the name the plan and a rollback call this burn by")
+                                .into());
+                            }
+                        }
+                    }
+                    None => None,
+                };
                 let scope = Scope::child(env);
                 let state_value = state.as_ref().map(|name| {
                     let m = Value::map(IndexMap::new());
@@ -394,6 +415,7 @@ impl Interp {
                                 state_name: state.clone(),
                                 state: state_json,
                                 line: unburn.as_ref().map(|b| b.span.line).unwrap_or(span.line),
+                                label: label_text,
                             },
                             mark,
                         )

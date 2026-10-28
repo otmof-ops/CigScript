@@ -1454,8 +1454,9 @@ fn hop(
     }
     let watch = i.kernel.pack_watch_begin(o.cwd.as_deref(), &o.touches);
     let ran = run_child(name, cmd, args, o, s);
-    if let Some(w) = watch {
-        for warning in &w.warnings {
+    if let Some(mut w) = watch {
+        // Printed here and taken out, so the watch's end does not say them again.
+        for warning in std::mem::take(&mut w.warnings) {
             let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
         }
         let writes = i.kernel.pack_watch_end(w);

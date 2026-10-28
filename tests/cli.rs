@@ -4579,7 +4579,7 @@ fn a_failed_compensation_leaves_its_ops_honestly_not_undone() {
     );
     let err = sb.run_err(&["run", "s.cig"], 1);
     assert!(
-        err.contains("compensation for the burn at line 3 failed"),
+        err.contains("the burn at line 3 was not undone: its compensation failed:"),
         "{err}"
     );
     assert!(
@@ -4648,4 +4648,142 @@ fn a_link_a_hop_creates_to_outside_the_pack_is_removed_on_rollback() {
         "the link the hop made is still there"
     );
     assert_eq!(sb.read("outside/target.txt"), "o\n");
+}
+
+/// A burn with a label is named by it wherever the plan, the record or a
+/// rollback would have named its line: a tool written in CigScript passes
+/// the user's own words.
+#[cfg(unix)]
+#[test]
+fn a_labelled_burn_names_itself_when_its_compensation_fails() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        concat!(
+            "stick task = \"deploy\"\n",
+            "burn (s, task) {\n",
+            "  s.what = \"live\"\n",
+            "  proc.run(\"sh\", [\"-c\", \"echo live > remote.txt\"])\n",
+            "} unburn {\n",
+            "  proc.run(\"sh\", [\"-c\", \"echo undo-broke >&2; exit 7\"], {check: true})\n",
+            "}\n",
+            "burn (\"notify\") {\n",
+            "  proc.run(\"true\", [])\n",
+            "} unburn {\n",
+            "  proc.run(\"true\", [])\n",
+            "}\n",
+            "burn { cough \"boom\" }\n"
+        ),
+    );
+    let dry = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let plan = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        plan.contains("compensation for deploy") && plan.contains("compensation for notify"),
+        "{plan}"
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("deploy is NOT undone: its compensation failed: proc.run:"),
+        "{err}"
+    );
+    assert!(err.contains("ran the compensation for notify"), "{err}");
+    assert!(
+        !err.contains("at line"),
+        "a labelled burn is never named by its line:\n{err}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(shown.contains("compensation for deploy"), "{shown}");
+    // The label is a string, read before the block runs.
+    sb.write("bad.cig", "burn (s, 42) {\n  exhale 1\n}\n");
+    let bad = sb.run_err(&["run", "bad.cig"], 1);
+    assert!(bad.contains("a burn's label is a string, got int"), "{bad}");
+}
+
+/// Without a label the line stands in, said once.
+#[cfg(unix)]
+#[test]
+fn an_unlabelled_burn_says_its_line_once() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        concat!(
+            "burn (s) {\n",
+            "  proc.run(\"true\", [])\n",
+            "} unburn {\n",
+            "  proc.run(\"sh\", [\"-c\", \"exit 7\"], {check: true})\n",
+            "}\n",
+            "burn { cough \"boom\" }\n"
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    let line = err
+        .lines()
+        .find(|l| l.contains("was not undone"))
+        .unwrap_or_else(|| panic!("no 'was not undone' line:\n{err}"));
+    assert!(
+        line.contains("the burn at line 3 was not undone: its compensation failed: proc.run:"),
+        "{line}"
+    );
+    assert_eq!(line.matches("at line").count(), 1, "{line}");
+    assert!(
+        !err.contains("compensation for the burn at line 3 failed"),
+        "{err}"
+    );
+}
+
+/// A `touches` glob written with a leading `?` may match nothing without a
+/// word: a lockfile the project does not have yet.
+#[cfg(unix)]
+#[test]
+fn an_optional_touches_glob_that_matches_nothing_is_quiet() {
+    let sb = Sandbox::new();
+    sb.write("p/src/a.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > p/src/a.txt\"], {touches: [\"?yarn.lock\", \"?package-lock.json\", \"src/**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let dry = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let plan = String::from_utf8_lossy(&dry.stderr);
+    assert!(plan.contains("?yarn.lock: 0 files"), "{plan}");
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        !err.contains("match"),
+        "an optional glob was counted as a typo:\n{err}"
+    );
+    assert_eq!(sb.read("p/src/a.txt"), "v1\n", "{err}");
+    // A list that is optional through and through says nothing either.
+    sb.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"true\", [], {touches: [\"?yarn.lock\"]})\n}\n",
+    );
+    let quiet = sb.cig(&["run", "t.cig"]);
+    let quiet_err = String::from_utf8_lossy(&quiet.stderr);
+    assert!(
+        quiet.status.success() && !quiet_err.contains("match"),
+        "{quiet_err}"
+    );
+}
+
+/// Each warning about a hop's watch is printed once.
+#[cfg(unix)]
+#[test]
+fn e757_is_printed_once() {
+    let sb = Sandbox::new();
+    sb.write("home/config", "watch_cap = 20\n");
+    for i in 0..30 {
+        sb.write(&format!("p/f{i:03}.txt"), "x");
+    }
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"true\", [], {touches: [\"scr/**\"]})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert_eq!(err.matches("saw only part of it").count(), 1, "{err}");
+    sb.write("home/config", "watch_cap = 50000\n");
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(err.matches("matches no file").count(), 1, "{err}");
 }

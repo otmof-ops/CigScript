@@ -519,13 +519,28 @@ impl Parser {
                 } else {
                     BurnClass::Normal
                 };
-                // `burn (state) { }`: a named state map for the compensation.
-                let state = if self.eat(&TokenKind::LParen) {
-                    let (name, _) = self.ident("a state name inside `burn (...)`")?;
+                // `burn (state) { }`: a named state map for the compensation;
+                // `burn (state, label) { }` or `burn (label) { }`: a name for
+                // the burn, any expression that is a string. A bare identifier
+                // is the state map, as it always was.
+                let (state, label) = if self.eat(&TokenKind::LParen) {
+                    let bare_ident = matches!(self.peek(), TokenKind::Ident(_))
+                        && matches!(self.peek_at(1), TokenKind::RParen | TokenKind::Comma);
+                    let (state, label) = if bare_ident {
+                        let (name, _) = self.ident("a state name inside `burn (...)`")?;
+                        let label = if self.eat(&TokenKind::Comma) {
+                            Some(self.expr()?)
+                        } else {
+                            None
+                        };
+                        (Some(name), label)
+                    } else {
+                        (None, Some(self.expr()?))
+                    };
                     self.expect(TokenKind::RParen, "`)`")?;
-                    Some(name)
+                    (state, label)
                 } else {
-                    None
+                    (None, None)
                 };
                 if !self.at(&TokenKind::LBrace) {
                     return Err(syntax(
@@ -557,6 +572,7 @@ impl Parser {
                 Ok(Stmt::Burn {
                     class,
                     state,
+                    label,
                     body,
                     unburn,
                     unburn_src,
