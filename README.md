@@ -494,6 +494,7 @@ for.
 | the last line of a journal is edited (no line follows it to carry its hash) | `--verify` says the head does not match the record, exit 1; `unburn` refuses with `E760` and restores nothing; `--force` proceeds knowingly | 1.6.1 | `a_changed_last_journal_line_refuses_the_unburn` |
 | a hop makes a tree and `chmod 000`s a directory inside it, then the burn fails | the tree goes whole on rollback, no `Permission denied` and nothing left above it | 1.6.2 | `a_rollback_removes_a_hop_created_tree_with_unreadable_directories` |
 | a boxed hop's run dies in the hop, leaving overlayfs's unreadable work directory under the record | `cig unburn` removes the layers with the rollback, and the record prunes | 1.6.2 | `the_layers_an_interrupted_boxed_hop_left_go_with_the_unburn` |
+| the same, and nobody unburns the dead run | the next `cig run`, of anything, sweeps the layers of every run that is not alive | 1.6.2 | `the_layers_a_dead_run_left_are_swept_when_the_next_run_starts` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

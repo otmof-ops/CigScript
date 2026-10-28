@@ -6714,3 +6714,28 @@ fn the_layers_an_interrupted_boxed_hop_left_go_with_the_unburn() {
         0
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn the_layers_a_dead_run_left_are_swept_when_the_next_run_starts() {
+    let sb = Sandbox::new();
+    sb.write("p/a.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/a.txt\", \"v2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let layers = sb.home().join("runs").join(&id).join("box");
+    let work = layers.join("2/0/work/work");
+    fs::create_dir_all(&work).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    // Another run, of anything: the dead run's layers are gone with it.
+    sb.write("t.cig", "exhale \"hello\"\n");
+    sb.run_ok(&["run", "t.cig"]);
+    assert!(!layers.exists(), "the layers stayed under the dead run");
+    assert_eq!(sb.read("p/a.txt"), "v2");
+}

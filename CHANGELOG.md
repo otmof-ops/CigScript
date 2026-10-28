@@ -15,8 +15,12 @@ sits inside the pack of an outer run.
   removes the tree whole, as `cig runs --prune` learned to in 1.6.1: what a
   hop made unreadable is still the hop's to lose.
 - **An interrupted boxed hop left its layers under the run.** They were
-  never the pack's (a hop that dies has its layer dropped); `cig unburn`
-  removes them with the rollback, so nothing unreadable stays under the home.
+  never the pack's (a hop that dies has its layer dropped), and the
+  unreadable directory inside them was in the way of anything walking the
+  home (cig-orchestrator's suite could not remove its own work directory).
+  `cig unburn` removes them with the rollback, and every `cig run` sweeps
+  them first for any run that is not alive, so nothing unreadable stays
+  under the home.
 
 ## 1.6.1 — 2026-10-29
 

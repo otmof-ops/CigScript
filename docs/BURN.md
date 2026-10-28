@@ -440,9 +440,9 @@ real root: a build writes its objects where it always did, nothing of them
 is journaled or undone, and the box applies the rest; a tree that is not
 there before the hop is made through the box like any new directory. A run
 that dies in a boxed hop leaves the layers under its record (overlayfs
-makes the work directory unreadable); `cig unburn` removes them with the
-rollback, and a rollback removes any tree a hop made whatever the modes
-inside it.
+makes the work directory unreadable); the next `cig run` sweeps them for
+any run that is not alive, `cig unburn` removes them with the rollback, and
+a rollback removes any tree a hop made whatever the modes inside it.
 
 ## The parcel
 

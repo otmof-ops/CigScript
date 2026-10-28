@@ -461,6 +461,33 @@ pub fn pid_alive(pid: u32, started: Option<&str>) -> bool {
     }
 }
 
+/// The layers a boxed hop left when its run died in the hop: overlayfs
+/// leaves a directory nobody can read under them, in the way of anything
+/// that walks the home (an outer run's snapshot of a tree holding it, a
+/// backup). They were never the pack's. Swept when a run starts, for every
+/// run that is not alive; a live run's layers are its own.
+pub fn sweep_dead_layers() {
+    let Ok(entries) = fs::read_dir(runs_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let layers = dir.join("box");
+        if !layers.is_dir() {
+            continue;
+        }
+        let alive = RunRecord::load(&dir)
+            .map(|mut rec| {
+                rec.refresh_from_journal();
+                rec.status == "running"
+            })
+            .unwrap_or(false);
+        if !alive {
+            let _ = super::overlay::remove_tree_force(&layers);
+        }
+    }
+}
+
 pub fn list() -> io::Result<Vec<RunRecord>> {
     let dir = runs_dir();
     let mut out = Vec::new();
