@@ -325,6 +325,9 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
     } else {
         Mode::Run
     };
+    // What a run that died in a boxed hop left behind goes before this one
+    // starts: its layers were never the pack's.
+    cigscript::burn::runs::sweep_dead_layers();
     let mut record = RunRecord::begin(
         &args.file,
         &source,

@@ -2232,9 +2232,13 @@ fn rollback_failures_are_recorded_on_the_run() {
         return;
     }
     let sb = Sandbox::new();
+    // A directory the run did not make, locked after the run wrote into it:
+    // the restore cannot write there, and the rollback opens no mode it did
+    // not set (a tree the hop made is another matter, since 1.6.2).
+    sb.write("locked/secret.txt", "hidden\n");
     sb.write(
         "s.cig",
-        "pack { \".\" }\nburn {\n  fs.write_text(\"free.txt\", \"1\")\n  fs.mkdir(\"locked\")\n  fs.write_text(\"locked/secret.txt\", \"hidden\")\n  proc.run(\"chmod\", [\"000\", \"locked\"])\n  cough \"boom\"\n}\n",
+        "pack { \".\" }\nburn {\n  fs.write_text(\"free.txt\", \"1\")\n  fs.write_text(\"locked/secret.txt\", \"changed\")\n  proc.run(\"chmod\", [\"500\", \"locked\"])\n  cough \"boom\"\n}\n",
     );
     let err = sb.run_err(&["run", "s.cig"], 1);
     assert!(
@@ -2244,22 +2248,23 @@ fn rollback_failures_are_recorded_on_the_run() {
     let rec = &sb.runs()[0];
     assert_eq!(rec["status"], "rollback_incomplete");
     assert_eq!(rec["rolled_back"], true);
-    assert_eq!(rec["rollback_failed"].as_array().map(Vec::len), Some(2));
+    assert_eq!(rec["rollback_failed"].as_array().map(Vec::len), Some(1));
     let id = rec["id"].as_str().unwrap().to_string();
     let shown = sb.run_ok(&["runs", &id]);
     assert!(
-        shown.contains("status    rollback_incomplete") && shown.contains("2 restores failed"),
+        shown.contains("status    rollback_incomplete") && shown.contains("1 restore failed"),
         "{shown}"
     );
     // Still locked: the retry fails the same way, and is not refused.
     let err = sb.run_err(&["unburn", &id], 1);
     assert!(
-        err.contains("2 restores failed last time") && !err.contains("E705"),
+        err.contains("1 restore failed last time") && !err.contains("E705"),
         "{err}"
     );
     fs::set_permissions(sb.path().join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
     sb.run_ok(&["unburn", &id]);
-    assert!(!sb.exists("locked") && !sb.exists("free.txt"));
+    assert_eq!(sb.read("locked/secret.txt"), "hidden\n");
+    assert!(!sb.exists("free.txt"));
     assert_eq!(sb.runs()[0]["status"], "unburned");
 }
 
@@ -6652,4 +6657,85 @@ fn a_boxed_hops_writes_under_a_build_tree_pass_through() {
     assert_eq!(sb.read("p/target/old.o"), "changed\n");
     assert!(sb.exists("p/target/3.o"));
     assert!(!sb.exists("p/node_modules/dep"));
+}
+
+// ----- 1.6.2: what cig-orchestrator's suite found running on 1.6.1 -------------------
+
+#[cfg(unix)]
+#[test]
+fn a_rollback_removes_a_hop_created_tree_with_unreadable_directories() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"mkdir -p made/inner/deep; echo x > made/inner/deep/f; chmod 000 made/inner/deep; chmod 000 made/inner\"], {cwd: \"p\", box: false})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("restored hop created"), "{err}");
+    assert!(!err.contains("Permission denied"), "{err}");
+    assert!(
+        !sb.exists("p/made"),
+        "the unreadable tree survived the rollback: {err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_layers_an_interrupted_boxed_hop_left_go_with_the_unburn() {
+    let sb = Sandbox::new();
+    sb.write("p/a.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/a.txt\", \"v2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    // What overlayfs leaves when the hop dies: a work directory nobody can
+    // read, under the run's box layers.
+    let work = sb.home().join("runs").join(&id).join("box/3/0/work/work");
+    fs::create_dir_all(&work).unwrap();
+    fs::create_dir_all(sb.home().join("runs").join(&id).join("box/3/0/upper")).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/a.txt"), "v1\n");
+    assert!(
+        !sb.home().join("runs").join(&id).join("box").exists(),
+        "the layers stayed under the run"
+    );
+    // The record prunes afterwards as any other.
+    sb.run_ok(&["runs", "--prune", "0"]);
+    assert_eq!(
+        fs::read_dir(sb.home().join("runs"))
+            .map(|r| r.count())
+            .unwrap_or(0),
+        0
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_layers_a_dead_run_left_are_swept_when_the_next_run_starts() {
+    let sb = Sandbox::new();
+    sb.write("p/a.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/a.txt\", \"v2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let layers = sb.home().join("runs").join(&id).join("box");
+    let work = layers.join("2/0/work/work");
+    fs::create_dir_all(&work).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&work, fs::Permissions::from_mode(0o000)).unwrap();
+    }
+    // Another run, of anything: the dead run's layers are gone with it.
+    sb.write("t.cig", "exhale \"hello\"\n");
+    sb.run_ok(&["run", "t.cig"]);
+    assert!(!layers.exists(), "the layers stayed under the dead run");
+    assert_eq!(sb.read("p/a.txt"), "v2");
 }
