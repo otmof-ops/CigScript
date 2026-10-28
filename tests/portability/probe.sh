@@ -5,7 +5,7 @@ set -u
 CIG="${CIG:-cig}"
 case "$CIG" in */*) PATH="$(cd "$(dirname "$CIG")" && pwd):$PATH"; export PATH;; esac
 ROOT="$(mktemp -d 2>/dev/null || mktemp -d -t cigprobe)"
-export CIGSCRIPT_HOME="$ROOT/home" NO_COLOR=1
+export CIGSCRIPT_HOME="$ROOT/home" NO_COLOR=1 CIG_SEAL_KEY=file
 pass=0; fail=0; skip=0
 OS="$(uname -s 2>/dev/null || echo unknown)"
 case "$OS" in MINGW*|MSYS*|CYGWIN*) WIN=1 ;; *) WIN=0 ;; esac

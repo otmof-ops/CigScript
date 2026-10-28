@@ -120,6 +120,7 @@ fn the_wall_names_only_tests_that_exist() {
         "tests/pack.rs",
         "tests/registry.rs",
         "src/burn/journal.rs",
+        "src/burn/tin.rs",
     ] {
         suite.push_str(&read(f));
     }

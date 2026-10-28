@@ -46,6 +46,16 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "50000",
         "how many entries of a pack hop watching reads before it stops; past it, what a hop creates is irreversible and the hop says so (a .cigignore brings a pack under)",
     ),
+    (
+        "seal",
+        "secrets",
+        "which files the tin keeps sealed (encrypted at rest): secrets (secret-shaped names, a pack root's .cigseal, a hop's touches_sealed), all, or never",
+    ),
+    (
+        "seal_key",
+        "keyring",
+        "where the tin's key lives: keyring (the OS keyring, with the key file as the fallback where there is none) or file (~/.cigscript/tin/seal.key, readable by you alone)",
+    ),
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -142,6 +152,14 @@ impl Config {
                 return Err(format!(
                     "update_notice must be true or false, not `{other}`"
                 ))
+            }
+            ("seal", "secrets" | "all" | "never") => {}
+            ("seal", other) => {
+                return Err(format!("seal must be secrets, all or never, not `{other}`"))
+            }
+            ("seal_key", "keyring" | "file") => {}
+            ("seal_key", other) => {
+                return Err(format!("seal_key must be keyring or file, not `{other}`"))
             }
             ("watch_cap", v) if v.parse::<usize>().is_ok_and(|n| n > 0) => {}
             ("watch_cap", other) => {

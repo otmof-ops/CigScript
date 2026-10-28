@@ -1286,6 +1286,7 @@ folds and packs: refusals when automation is composed.
 | [`E757`](#e757-touches-without-a-pack) | touches without a pack | can't see any ciggies bro | declare pack { "." } (or the roots the hop writes under) as the first statement |
 | [`E758`](#e758-a-Windows-device-name-used-as-a-file) | a Windows device name used as a file | can't see any ciggies bro | name the file something else |
 | [`E759`](#e759-the-pack-is-in-use-by-another-run) | the pack is in use by another run | can't see any ciggies bro | wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap |
+| [`E760`](#e760-the-journal's-chain-is-broken) | the journal's chain is broken | can't see any ciggies bro | cig runs <id> --verify names the first line that does not fit; cig unburn <id> --force restores from the journal as it is |
 
 ### E750 literal path outside the pack
 
@@ -1453,6 +1454,24 @@ Another cig run (or an unburn) holds this pack, or a pack that contains or lies 
 2. a run holding the lock was killed and its lock file is still held by a process that outlived it (probe `pid-alive`). **Remedy:** `cig runs` names the holder; end that process, and the lock goes with it
 
 Related: `E751`, `E752`.
+
+
+### E760 the journal's chain is broken
+
+*burn · since 1.5.0 · arises in unburn, runs*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+Every line of a run's journal carries the hash of the line before it (format 2, since 1.5.0), so a line edited, removed or reordered after the run no longer fits its neighbours. cig unburn refuses to treat such a journal as the record of what the run did.
+
+**What to type next:** cig runs <id> --verify names the first line that does not fit; cig unburn <id> --force restores from the journal as it is
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a journal line was edited by hand, or a tool rewrote the file (no probe; a suggestion, not a finding). **Remedy:** `cig runs <id> --verify` says which line; if the edit was yours and the rest is right, `cig unburn <id> --force`
+2. lines were removed, or the journal was replaced with another run's (no probe; a suggestion, not a finding). **Remedy:** the record cannot be trusted as it is; look at the files themselves before restoring anything
+
+Related: `E703`, `E704`.
 
 
 ## usage (`E800`–`E849`)

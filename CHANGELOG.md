@@ -3,6 +3,65 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.5.0 — 2026-10-28
+
+- **The tin in chunks** (#82). A file of 64 KiB or more under `touches` is
+  cut into content-defined chunks (FastCDC: 16 KiB at least, 64 KiB on
+  average, 256 KiB at most), each an object named by its own hash, and the
+  file becomes a *recipe* (`tin/recipes/<sha256>`): the ordered chunks, the
+  hash and the size of the whole. A one-byte change stores the chunk it
+  landed in, not the file again; an insert moves one boundary. A restore
+  checks every chunk against its name and the whole against the hash the
+  journal recorded, and refuses (writing nothing) on a missing or corrupt
+  chunk. `cig tin` reports what is stored next to what the kept files would
+  take; `gc` keeps every chunk a live recipe names. What a rollback
+  displaces into the tin is chunked the same way, so a hop's output that is
+  the original with one change shares every other chunk with it. Objects a
+  1.4 cig wrote (large files kept whole) restore as they always did.
+- **Sealed: the tin encrypted at rest for secrets** (#83). A file the tin
+  keeps that is a secret is sealed: XChaCha20-Poly1305 in the STREAM
+  construction (no crypto of our own), a megabyte a segment, every segment
+  authenticated and the last one marked, so a byte flipped, a tail cut off
+  or another key refuses the restore and writes nothing. Sealed objects are
+  named by a random id and never shared, so two equal secrets stay two
+  objects that tell nothing about each other; the journal keeps the
+  plaintext hash, so the bytes are checked on the way back. What counts as a
+  secret: a built-in list of names (`.env*`, `*.pem`, `*.key`, `id_rsa*`,
+  `credentials*`, `*secret*`, `.npmrc`, `kubeconfig`, `*.kdbx`, and more), a
+  pack root's `.cigseal` (the same shape as `.cigignore`), a hop's
+  `touches_sealed: [...]`, and `fs.write_text(p, t, {sensitive: true})`;
+  the `seal` setting widens it to `all` or turns it off with `never`. The
+  key lives in the OS keyring (Secret Service, Keychain, Credential
+  Manager), made on first use; where there is none, in
+  `~/.cigscript/tin/seal.key`, readable by its owner alone (`seal_key =
+  file` makes that the rule). A run's own snapshots of secrets are sealed
+  the same way, inside tree snapshots too, and what a rollback displaces
+  from a sealed file stays sealed. The plan says `(sealed)`; `cig tin`
+  counts sealed objects apart; `cig tin verify` opens every one (`--quick`
+  looks at the shape); `cig tin gc --sealed-orphans` clears objects the key
+  cannot open any more.
+- **Git blob reuse** (#87). A file under `touches` that git already holds,
+  tracked and clean against the index (the bytes on disk hash to the blob
+  the index names), is referenced from the repository's object store
+  instead of copied into the tin: the journal records the repository, the
+  blob and our own SHA-256, and the restore reads the blob back through
+  `git cat-file`, checks it against that hash and refuses other bytes. The
+  run pins every blob it refers to under `refs/cig/runs/<id>` (one tree
+  naming them all) so a `git gc` after a rebase cannot take them; `cig runs
+  --prune` drops the pin with the record. A dirty or untracked file goes to
+  the tin as before; a repository the run cannot pin in is copied too. Git
+  is only ever read, the pin aside. `(git)` in the record names the keeper.
+- **The hash chain** (#88). Journal format 2: the first line carries the
+  hash of the run's id and every later line the hash of the line before it
+  as written; `run.json` records the head when the record is saved.
+  `cig runs <id> --verify` walks the chain, compares the head with the
+  record and checks every snapshot and tin object a rollback would need.
+  `cig unburn` refuses a journal whose chain is broken (`E760`) unless
+  `--force`. A format 1 journal is read as it always was and gains no
+  chain. This is tamper evidence, not secrecy: whoever can write the
+  journal can recompute the chain, unless the head is kept somewhere they
+  cannot write.
+
 ## 1.4.3 — 2026-10-28
 
 - **Changes outside `touches` are reported once per folder** (#90). A hop

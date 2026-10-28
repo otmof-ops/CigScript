@@ -10,9 +10,11 @@
 //! records the intent and tells the builtin to simulate.
 
 pub mod ghost;
+pub mod git;
 pub mod journal;
 pub mod lock;
 pub mod runs;
+pub mod seal;
 pub mod tin;
 
 /// The one lock every test in this crate that sets `CIGSCRIPT_HOME` takes:
@@ -34,9 +36,15 @@ use std::path::{Path, PathBuf};
 pub enum Op {
     Write {
         path: PathBuf,
+        /// The file is a secret (`fs.write_text(p, t, {sensitive: true})`):
+        /// its before-bytes are kept sealed, whatever the name.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sensitive: bool,
     },
     Append {
         path: PathBuf,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sensitive: bool,
     },
     Delete {
         path: PathBuf,
@@ -60,6 +68,9 @@ pub enum Op {
         /// to the tin first, so a change under them can be undone.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         touches: Vec<String>,
+        /// Globs among them whose files are secrets: kept sealed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        touches_sealed: Vec<String>,
     },
     EnvSet {
         key: String,
@@ -158,8 +169,16 @@ impl Op {
 
     pub fn describe(&self) -> String {
         match self {
-            Op::Write { path } => format!("write {}", path.display()),
-            Op::Append { path } => format!("append to {}", path.display()),
+            Op::Write { path, sensitive } => {
+                format!("write {}{}", path.display(), sealed_note(path, *sensitive))
+            }
+            Op::Append { path, sensitive } => {
+                format!(
+                    "append to {}{}",
+                    path.display(),
+                    sealed_note(path, *sensitive)
+                )
+            }
             Op::Delete { path } => format!("delete {}", path.display()),
             Op::Move { from, to } => format!("move {} -> {}", from.display(), to.display()),
             Op::Copy { from, to } => format!("copy {} -> {}", from.display(), to.display()),
@@ -169,6 +188,7 @@ impl Op {
                 args,
                 cwd,
                 touches,
+                ..
             } => {
                 let mut s = format!("run {}", shell_quote(cmd));
                 for a in args {
@@ -198,6 +218,8 @@ impl Op {
                 match (tinned, kept.as_deref()) {
                     (true, Some("link")) => "  (link kept)",
                     (true, Some("dir")) => "  (directory)",
+                    (true, Some("git")) => "  (git)",
+                    (true, Some("sealed")) => "  (sealed)",
                     (true, _) => "  (tin)",
                     (false, _) => "",
                 }
@@ -207,6 +229,16 @@ impl Op {
                 None => format!("compensation for the burn at line {line}"),
             },
         }
+    }
+}
+
+/// `  (sealed)` when the before-bytes of a native write are kept sealed:
+/// the script said so, or the name is a secret's and sealing is on.
+fn sealed_note(path: &Path, sensitive: bool) -> &'static str {
+    if seal::policy() != seal::Policy::Never && (sensitive || seal::secret_name(path)) {
+        "  (sealed)"
+    } else {
+        ""
     }
 }
 
@@ -285,6 +317,9 @@ pub struct Kernel {
     lock: Option<lock::PackLock>,
     /// Warnings the end of a hop's watch produced, waiting to be printed.
     late_warnings: Vec<String>,
+    /// The git blobs this run refers to instead of copying, by repository:
+    /// pinned under `refs/cig/runs/<id>` as one tree, rebuilt as it grows.
+    git_pins: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
 }
 
 /// The `touches` glob nearest to `glob` among the globs that would match an
@@ -616,6 +651,9 @@ fn scan(root: &Path, max_depth: usize, cap: usize) -> Scan {
     // that is inside the pack. A link that leads out of the pack is a door,
     // not a part of it, so nothing behind it is ever journaled.
     let ignore = tin::ignore_set(root);
+    // The state directory is never part of a pack, wherever CIGSCRIPT_HOME
+    // put it: the tin watching itself would stash its own objects.
+    let home = runs::home_dir();
     let mut walk = walkdir::WalkDir::new(root)
         .min_depth(1)
         .max_depth(max_depth)
@@ -623,7 +661,7 @@ fn scan(root: &Path, max_depth: usize, cap: usize) -> Scan {
         .into_iter()
         .filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
-            if tin::SKIPPED_ALWAYS.contains(&n.as_ref()) {
+            if tin::SKIPPED_ALWAYS.contains(&n.as_ref()) || e.path() == home {
                 return false;
             }
             match (&ignore, e.path().strip_prefix(root)) {
@@ -775,6 +813,44 @@ fn thousands(n: usize) -> String {
     out
 }
 
+/// How many of the files the `touches` globs match would be kept sealed,
+/// for the plan: by name, by the root's `.cigseal`, by `touches_sealed`.
+fn sealed_count(
+    roots: &[PathBuf],
+    touches: &[String],
+    touches_sealed: &[String],
+    cap: usize,
+) -> usize {
+    let Ok(set) = tin::globs(touches) else {
+        return 0;
+    };
+    let hop_sealed = if touches_sealed.is_empty() {
+        None
+    } else {
+        tin::globs(touches_sealed).ok()
+    };
+    let mut n = 0;
+    for r in roots {
+        let root_set = seal::seal_set(r);
+        let sets: Vec<&globset::GlobSet> = [root_set.as_ref(), hop_sealed.as_ref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        for (path, meta) in &scan(r, 64, cap).seen {
+            if meta.is_dir() || matches!(meta, Seen::Link { .. }) {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(r) else {
+                continue;
+            };
+            if set.is_match(rel) && seal::should_seal(path, Some(r), &sets) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 /// How many of the pack's files each `touches` glob matches, for the dry
 /// run's plan line and the warning about a glob that matches nothing.
 fn touches_counts(roots: &[PathBuf], touches: &[String], cap: usize) -> Vec<(String, usize)> {
@@ -823,6 +899,7 @@ impl Kernel {
             compensating_marks: Vec::new(),
             lock: None,
             late_warnings: Vec::new(),
+            git_pins: std::collections::BTreeMap::new(),
         })
     }
 
@@ -946,8 +1023,14 @@ impl Kernel {
 
     /// Before a hop: remember the pack's files (and the child's working
     /// directory, when it is outside the pack) by mtime and size.
-    pub fn pack_watch_begin(&self, cwd: Option<&Path>, touches: &[String]) -> Option<PackWatch> {
-        let roots = self.pack.as_ref()?;
+    pub fn pack_watch_begin(
+        &mut self,
+        cwd: Option<&Path>,
+        touches: &[String],
+        touches_sealed: &[String],
+    ) -> Option<PackWatch> {
+        let roots = self.pack.clone()?;
+        let roots = &roots;
         if self.mode == Mode::DryRun {
             return None;
         }
@@ -1029,23 +1112,136 @@ impl Kernel {
                             if counts.len() == 1 { "es" } else { "" }
                         ));
                     }
-                    let mut staged: Vec<(PathBuf, tin::Staged)> = Vec::new();
+                    // A file git already holds, tracked and clean against the
+                    // index, is referenced from the repository instead of
+                    // copied: the run pins the blobs it refers to first, and
+                    // falls back to the tin for a repository it cannot pin in.
+                    let repos: Vec<Option<git::Repo>> =
+                        roots.iter().map(|r| git::repo_for(r)).collect();
+                    // Secrets are sealed: by name, by the root's `.cigseal`,
+                    // or by the hop's `touches_sealed` globs. A sealed file
+                    // is never referenced from git or shared by content.
+                    let seal_sets: Vec<Option<globset::GlobSet>> =
+                        roots.iter().map(|r| seal::seal_set(r)).collect();
+                    let hop_sealed = if touches_sealed.is_empty() {
+                        None
+                    } else {
+                        tin::globs(touches_sealed).ok()
+                    };
+                    let mut from_git: Vec<(usize, PathBuf, String, String, Seen)> = Vec::new();
+                    let mut to_tin: Vec<PathBuf> = Vec::new();
+                    let mut to_seal: Vec<PathBuf> = Vec::new();
                     for (path, meta) in &inside {
                         if meta.is_dir() {
                             continue;
                         }
-                        let hit = roots.iter().any(|r| {
+                        let Some(ri) = roots.iter().position(|r| {
                             path.strip_prefix(r)
                                 .map(|rel| set.is_match(rel))
                                 .unwrap_or(false)
-                        });
-                        if !hit {
+                        }) else {
+                            continue;
+                        };
+                        let sets: Vec<&globset::GlobSet> =
+                            [seal_sets[ri].as_ref(), hop_sealed.as_ref()]
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                        if !matches!(meta, Seen::Link { .. })
+                            && seal::should_seal(path, Some(&roots[ri]), &sets)
+                        {
+                            to_seal.push(path.clone());
                             continue;
                         }
+                        if let (Some(repo), Seen::File { len, .. }) = (&repos[ri], meta) {
+                            if let Some((blob, sha256)) = repo.clean_blob(path, *len) {
+                                from_git.push((ri, path.clone(), blob, sha256, meta.clone()));
+                                continue;
+                            }
+                        }
+                        to_tin.push(path.clone());
+                    }
+                    if !from_git.is_empty() {
+                        let run_id = self
+                            .journal
+                            .run_dir()
+                            .and_then(|d| d.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let mut pinned_ok: Vec<bool> = vec![false; roots.len()];
+                        for (ri, repo) in repos.iter().enumerate() {
+                            let Some(repo) = repo else { continue };
+                            let blobs: Vec<&String> = from_git
+                                .iter()
+                                .filter(|(i, ..)| *i == ri)
+                                .map(|(_, _, b, ..)| b)
+                                .collect();
+                            if blobs.is_empty() {
+                                continue;
+                            }
+                            let set = self.git_pins.entry(repo.work_tree.clone()).or_default();
+                            for b in blobs {
+                                set.insert(b.clone());
+                            }
+                            match repo.pin(&run_id, set) {
+                                Ok(()) => pinned_ok[ri] = true,
+                                Err(e) => warnings.push(format!(
+                                    "could not pin the blobs this run refers to in {} ({e}); its files are kept in the tin instead",
+                                    repo.work_tree.display()
+                                )),
+                            }
+                        }
+                        if let Some(dir) = self.journal.run_dir() {
+                            let list: String = self
+                                .git_pins
+                                .keys()
+                                .map(|wt| format!("{}\n", wt.display()))
+                                .collect();
+                            let _ = std::fs::write(dir.join(git::PINS), list);
+                        }
+                        for (ri, path, blob, sha256, meta) in from_git {
+                            if !pinned_ok[ri] {
+                                to_tin.push(path);
+                                continue;
+                            }
+                            let repo = repos[ri].as_ref().expect("a pinned repo");
+                            let (len, mtime, mode) = match meta {
+                                Seen::File { mtime, len, mode } => (len, mtime, mode),
+                                _ => (0, 0, 0),
+                            };
+                            tinned.insert(
+                                path,
+                                tin::Stashed {
+                                    object: PathBuf::new(),
+                                    sha256,
+                                    bytes: len,
+                                    mode: if cfg!(unix) { Some(mode) } else { None },
+                                    mtime_ns: Some(mtime),
+                                    link: None,
+                                    git: Some(journal::GitBlob {
+                                        repo: repo.work_tree.clone(),
+                                        blob,
+                                    }),
+                                },
+                            );
+                        }
+                        to_tin.sort();
+                    }
+                    let mut staged: Vec<(PathBuf, tin::Staged)> = Vec::new();
+                    for path in &to_tin {
                         match tin::prepare(path) {
                             Ok(st) => staged.push((path.clone(), st)),
                             Err(e) => warnings.push(format!(
                                 "{} could not be kept in the tin ({e}); a change to it stays irreversible",
+                                path.display()
+                            )),
+                        }
+                    }
+                    for path in &to_seal {
+                        match tin::prepare_sealed(path) {
+                            Ok(st) => staged.push((path.clone(), st)),
+                            Err(e) => warnings.push(format!(
+                                "{} could not be sealed into the tin ({e}); a change to it stays irreversible",
                                 path.display()
                             )),
                         }
@@ -1057,8 +1253,7 @@ impl Kernel {
                     if let Some(dir) = self.journal.run_dir() {
                         let list: String = staged
                             .iter()
-                            .map(|(_, st)| st.object())
-                            .filter(|o| !o.as_os_str().is_empty())
+                            .flat_map(|(_, st)| st.pending_paths())
                             .map(|o| format!("{}\n", o.display()))
                             .collect();
                         if !list.is_empty() {
@@ -1294,8 +1489,15 @@ impl Kernel {
                         bytes: st.bytes,
                         mode: st.mode,
                         mtime_ns: st.mtime_ns,
+                        git: st.git.clone(),
                     },
-                    "tin",
+                    if st.git.is_some() {
+                        "git"
+                    } else if tin::is_sealed(&st.object) {
+                        "sealed"
+                    } else {
+                        "tin"
+                    },
                 )),
                 _ => None,
             };
@@ -1429,8 +1631,8 @@ impl Kernel {
         // with its own code, on the platform where it is one, pack or no pack.
         if cfg!(windows) {
             let named: Vec<&PathBuf> = match &op {
-                Op::Write { path }
-                | Op::Append { path }
+                Op::Write { path, .. }
+                | Op::Append { path, .. }
                 | Op::Delete { path }
                 | Op::Mkdir { path } => vec![path],
                 Op::Copy { to, .. } => vec![to],
@@ -1451,8 +1653,8 @@ impl Kernel {
         }
         if let Some(roots) = &self.pack {
             let outside: Vec<&PathBuf> = match &op {
-                Op::Write { path }
-                | Op::Append { path }
+                Op::Write { path, .. }
+                | Op::Append { path, .. }
                 | Op::Delete { path }
                 | Op::Mkdir { path } => vec![path],
                 Op::Copy { to, .. } => vec![to],
@@ -1498,13 +1700,25 @@ impl Kernel {
             // The plan says how many files each `touches` glob covers, so a
             // glob that covers none is seen before anything runs.
             let mut summary = op.describe();
-            if let (Op::Proc { touches, .. }, Some(roots)) = (&op, &self.pack) {
+            if let (
+                Op::Proc {
+                    touches,
+                    touches_sealed,
+                    ..
+                },
+                Some(roots),
+            ) = (&op, &self.pack)
+            {
                 if !touches.is_empty() {
                     let counts = touches_counts(roots, touches, watch_cap());
-                    let shown: Vec<String> = counts
+                    let mut shown: Vec<String> = counts
                         .iter()
                         .map(|(g, n)| format!("{g}: {n} file{}", if *n == 1 { "" } else { "s" }))
                         .collect();
+                    let sealed = sealed_count(roots, touches, touches_sealed, watch_cap());
+                    if sealed > 0 {
+                        shown.push(format!("{sealed} sealed"));
+                    }
                     if let Some(at) = summary.rfind("  (touches ") {
                         summary.truncate(at);
                     }

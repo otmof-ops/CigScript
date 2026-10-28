@@ -245,7 +245,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.3/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.5.0/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.4.3 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.5.0 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.4.3-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.5.0-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -462,6 +462,16 @@ for.
 | `cig run /dev/zero`; `cig frobnicate` | **read forever; exit 2 (a script error's code)**; now `E801`, and exit 3 | fixed 1.1.1 | `a_device_as_the_script_is_refused_and_a_bad_invocation_exits_3` |
 | a hop deletes a folder of a thousand files it did not name in `touches` | one warning for the folder, with the glob that would have kept it and a few of the files; `cig runs <id>` has every one | 1.4.3 | `changes_outside_touches_are_reported_once_per_folder` |
 | `cig unburn <id> --give-back --dry-run` | the files the rollback set aside, what is at each path now and whether it changed since; nothing written, and a changed path refused without `--force` | 1.4.3 | `give_back_dry_run_lists_what_it_would_restore_and_changes_nothing` |
+| a hop changes one byte of a 1 MiB file it said it might touch, fifty times | the tin stores the chunk that changed, not the file again; the file comes back byte for byte from its recipe | 1.5.0 | `a_hop_edit_to_a_large_file_stores_the_chunk_that_changed` |
+| delete or corrupt one chunk of a recipe, then restore | refused before anything at the path is touched; nothing half-written | 1.5.0 | `a_missing_chunk_refuses_the_restore_and_writes_nothing` |
+| edit a journal line after the run, then `unburn` | the line no longer fits its neighbours: `cig runs <id> --verify` names it, `unburn` refuses with `E760` unless `--force` | 1.5.0 | `unburn_refuses_a_broken_chain` |
+| remove or reorder a journal line | the chain breaks at that line | 1.5.0 | `a_removed_journal_line_breaks_the_chain` |
+| a hop edits a file git holds, tracked and clean, under `touches` | not copied: the journal names the blob, the run pins it under `refs/cig/runs/<id>`, and the restore checks the bytes git gives back against our hash | 1.5.0 | `a_clean_tracked_file_costs_no_tin_space` |
+| git answers with other bytes for a pinned blob (`git replace`) | refused: the bytes do not hash as the journal recorded, nothing written | 1.5.0 | `a_restore_from_a_git_blob_is_hash_checked` |
+| the pin is dropped and the blob gc'd, then `unburn` | refused before anything is touched (`E703`), naming the repository and the blob | 1.5.0 | `a_blob_git_has_lost_refuses_the_restore_with_the_reason` |
+| a hop under `touches: ["**"]` rewrites `id_rsa` and deletes `.env`, then the run fails | both come back byte for byte, and not a byte of either is in the clear anywhere under the state directory | 1.5.0 | `a_private_key_under_touches_is_never_stored_in_the_clear` |
+| flip one byte of a sealed object, then `unburn` | refused before anything is touched; the tag does not fit | 1.5.0 | `a_tampered_sealed_object_refuses_the_restore` |
+| the key is gone (a wiped keyring, a new machine), then `unburn` | refused, naming the file; `cig tin gc --sealed-orphans` clears what nothing can open | 1.5.0 | `without_the_key_a_restore_refuses_and_names_the_file` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

@@ -35,6 +35,7 @@ to die in step C.
 | `grace_ms` | after SIGTERM, how long before SIGKILL; 500 ms by default |
 | `stdin` | text fed to the child's stdin |
 | `touches` | globs, relative to the pack root, of the files the child may change (`"*"` the root's own files, `"**"` everything under it, `"src/**"` a tree, `"package.json"` one file). Each existing file under them is kept in the tin before the child runs, so a file it modifies or deletes comes back on rollback, byte for byte and hash-verified, with its mode and modification time, where it would otherwise be listed as irreversible. A glob written with a leading `?` (`"?yarn.lock"`) may match nothing without a word: a file the project does not have yet. A symbolic link comes back as a link with or without `touches`. Needs a `pack { }` (`E757`) |
+| `touches_sealed` | globs among `touches` whose files are secrets: kept in the tin like the rest, and kept sealed (encrypted at rest; `BURN.md`, "Sealed"). Secret-shaped names (`.env`, `*.pem`, `id_rsa*`, ...) and a pack root's `.cigseal` are sealed without being named here |
 | `ok` | the exit-code contract: an int or a list of ints; `null` for none. It wins over `check` whatever the order of the keys |
 | `check` | `true` means the contract `[0]`, `false` none; ignored when `ok` is given |
 | `encoding` | `utf-8` (strict, the default), `lossy`, `latin1`, `utf-16` |

@@ -11,34 +11,55 @@ use cigscript::burn::tin;
 pub enum TinCommand {
     /// How many objects the tin holds and how many bytes (the default).
     Du,
-    /// Re-hash every object against its name.
-    Verify,
+    /// Re-hash every object against its name, check every recipe, open every sealed object.
+    Verify {
+        /// Only look at each sealed object's shape instead of opening it.
+        #[arg(long)]
+        quick: bool,
+    },
     /// Remove every object no run in the history still refers to.
-    Gc,
+    Gc {
+        /// Also remove sealed objects the tin's key cannot open (sealed under a key that is gone).
+        #[arg(long)]
+        sealed_orphans: bool,
+    },
 }
 
 pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
     match cmd.unwrap_or(TinCommand::Du) {
         TinCommand::Du => {
-            let (objects, bytes) = tin::du();
+            let u = tin::du();
             let referenced = tin::referenced().len();
             if ctx.json {
                 outln!(
                     "{}",
-                    serde_json::json!({"objects": objects, "bytes": bytes, "referenced": referenced, "dir": tin::dir()})
+                    serde_json::json!({"objects": u.objects, "bytes": u.stored, "stored": u.stored, "recipes": u.recipes, "logical": u.logical, "sealed": u.sealed, "sealed_bytes": u.sealed_bytes, "referenced": referenced, "dir": tin::dir()})
                 );
             } else {
                 outln!(
-                    "{objects} object{} ({bytes} bytes), {referenced} still referred to by a run, in {}",
-                    if objects == 1 { "" } else { "s" },
+                    "{} object{} ({} bytes stored) keeping {} bytes of files{}{}; {referenced} still referred to by a run, in {}",
+                    u.objects,
+                    if u.objects == 1 { "" } else { "s" },
+                    u.stored,
+                    u.logical,
+                    if u.recipes == 0 {
+                        String::new()
+                    } else {
+                        format!(", {} of them chunked under a recipe", u.recipes)
+                    },
+                    if u.sealed == 0 {
+                        String::new()
+                    } else {
+                        format!(", {} sealed ({} bytes)", u.sealed, u.sealed_bytes)
+                    },
                     cigscript::crash::tilde(&tin::dir())
                 );
             }
             exit::OK
         }
-        TinCommand::Verify => {
-            let problems = tin::verify();
-            let (objects, _) = tin::du();
+        TinCommand::Verify { quick } => {
+            let problems = tin::verify(quick);
+            let objects = tin::du().objects;
             if ctx.json {
                 outln!(
                     "{}",
@@ -69,9 +90,9 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
                 exit::SCRIPT_ERROR
             }
         }
-        TinCommand::Gc => {
-            let (removed, bytes) = tin::gc();
-            let (kept, _) = tin::du();
+        TinCommand::Gc { sealed_orphans } => {
+            let (removed, bytes) = tin::gc(sealed_orphans);
+            let kept = tin::du().objects;
             if ctx.json {
                 outln!(
                     "{}",

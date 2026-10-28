@@ -95,6 +95,9 @@ pub enum Command {
         /// Delete run records older than the newest N.
         #[arg(long, value_name = "N")]
         prune: Option<usize>,
+        /// With an id: walk the journal's hash chain, compare its head with the record, and check every snapshot and tin object it needs.
+        #[arg(long, requires = "id")]
+        verify: bool,
     },
     /// Put the world back the way it was, newest op first (rollback).
     Unburn {
@@ -299,7 +302,7 @@ pub fn main() -> i32 {
         } => run::check(&ctx, &file, deny_warnings),
         Command::Eval { code } => run::eval(&ctx, &code),
         Command::Repl => repl::repl(&ctx),
-        Command::Runs { id, prune } => runs::runs(&ctx, id, prune),
+        Command::Runs { id, prune, verify } => runs::runs(&ctx, id, prune, verify),
         Command::Unburn {
             id,
             dry_run,

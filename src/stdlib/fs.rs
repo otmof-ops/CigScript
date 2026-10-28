@@ -26,8 +26,8 @@ pub static TABLE: &[Builtin] = &[
     b("fs.glob", Effect::Read, 1, Some(1), glob),
     b("fs.cwd", Effect::Read, 0, Some(0), cwd),
     b("fs.home", Effect::Read, 0, Some(0), home),
-    b("fs.write_text", Effect::Write, 2, Some(2), write_text),
-    b("fs.append_text", Effect::Write, 2, Some(2), append_text),
+    b("fs.write_text", Effect::Write, 2, Some(3), write_text),
+    b("fs.append_text", Effect::Write, 2, Some(3), append_text),
     b("fs.mkdir", Effect::Write, 1, Some(1), mkdir),
     b("fs.rm", Effect::Write, 1, Some(1), rm),
     b("fs.cp", Effect::Write, 2, Some(2), cp),
@@ -470,10 +470,39 @@ fn dry_run_source_check(i: &Interp, name: &str, p: &Path, s: Span) -> Result<(),
     }
 }
 
+/// The `{sensitive: true}` option of `fs.write_text` and `fs.append_text`:
+/// the file is a secret, so its before-bytes are kept sealed.
+fn sensitive_opt(a: &[Value], index: usize, name: &str, s: Span) -> Result<bool, Diagnostic> {
+    let Some(opts) = crate::value::opt_map(a, index, name, s)? else {
+        return Ok(false);
+    };
+    let mut sensitive = false;
+    for (k, v) in opts.borrow().iter() {
+        match k.as_str() {
+            "sensitive" => sensitive = v.truthy(),
+            other => {
+                return Err(runtime(format!("{name}: unknown option `{other}`"))
+                    .at(s)
+                    .with_hint("the one option is {sensitive: true}"))
+            }
+        }
+    }
+    Ok(sensitive)
+}
+
 fn write_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.write_text", s)?;
     let text = expect_str(a, 1, "fs.write_text", s)?;
-    if i.effect("fs.write_text", Op::Write { path: p.clone() }, s)? == Decision::Execute {
+    let sensitive = sensitive_opt(a, 2, "fs.write_text", s)?;
+    if i.effect(
+        "fs.write_text",
+        Op::Write {
+            path: p.clone(),
+            sensitive,
+        },
+        s,
+    )? == Decision::Execute
+    {
         if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
             fs::create_dir_all(parent).map_err(|e| io_err("fs.write_text", parent, e, s))?;
         }
@@ -487,7 +516,16 @@ fn write_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic>
 fn append_text(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let p = path_arg(a, 0, "fs.append_text", s)?;
     let text = expect_str(a, 1, "fs.append_text", s)?;
-    if i.effect("fs.append_text", Op::Append { path: p.clone() }, s)? == Decision::Execute {
+    let sensitive = sensitive_opt(a, 2, "fs.append_text", s)?;
+    if i.effect(
+        "fs.append_text",
+        Op::Append {
+            path: p.clone(),
+            sensitive,
+        },
+        s,
+    )? == Decision::Execute
+    {
         use std::io::Write;
         // Like fs.write_text: the parent is created, so a log under a
         // directory that does not exist yet works, and the dry run (which
