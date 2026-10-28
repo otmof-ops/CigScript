@@ -36,6 +36,16 @@ fn recipes_dir() -> PathBuf {
     dir().join("recipes")
 }
 
+/// Where sealed objects live: named by a random id, never shared.
+pub fn sealed_dir() -> PathBuf {
+    dir().join("sealed")
+}
+
+/// Is this snapshot path a sealed object in the tin?
+pub fn is_sealed(path: &Path) -> bool {
+    path.starts_with(sealed_dir())
+}
+
 /// Files at least this large are kept as chunks under a recipe rather than
 /// as one object, so a small change stores the chunk that changed, not the
 /// file again. Smaller files cost exactly what they did before.
@@ -159,6 +169,9 @@ pub struct Staged {
     chunks: Vec<StagedChunk>,
     /// The recipe's temporary copy, when the tin did not already hold it.
     recipe_tmp: Option<PathBuf>,
+    /// A sealed copy waiting under a temporary name, with the random id it
+    /// will be named by.
+    sealed: Option<(PathBuf, String)>,
     chunked: bool,
     sha256: String,
     bytes: u64,
@@ -211,7 +224,7 @@ fn copy_hashing(from: &Path, to: &Path) -> io::Result<(String, u64)> {
     Ok((hex::encode(hasher.finalize()), total))
 }
 
-fn mode_of(meta: &fs::Metadata) -> Option<u32> {
+pub(crate) fn mode_of(meta: &fs::Metadata) -> Option<u32> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -285,6 +298,7 @@ pub fn prepare(path: &Path) -> io::Result<Staged> {
             tmp: None,
             chunks: Vec::new(),
             recipe_tmp: None,
+            sealed: None,
             chunked: false,
             sha256: String::new(),
             bytes: 0,
@@ -309,6 +323,7 @@ pub fn prepare(path: &Path) -> io::Result<Staged> {
         tmp: Some(tmp),
         chunks: Vec::new(),
         recipe_tmp: None,
+        sealed: None,
         chunked: false,
         sha256,
         bytes,
@@ -394,6 +409,7 @@ fn prepare_chunked(path: &Path, meta: &fs::Metadata) -> io::Result<Staged> {
         tmp: None,
         chunks,
         recipe_tmp,
+        sealed: None,
         chunked: true,
         sha256,
         bytes: total,
@@ -403,12 +419,40 @@ fn prepare_chunked(path: &Path, meta: &fs::Metadata) -> io::Result<Staged> {
     })
 }
 
+/// Seal `path` into the tin: encrypted under a fresh random id, never
+/// shared with another file, so two equal secrets stay two objects that
+/// tell nothing about each other. A link is kept as a link, as ever.
+pub fn prepare_sealed(path: &Path) -> io::Result<Staged> {
+    let meta = fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        return prepare(path);
+    }
+    fs::create_dir_all(sealed_dir())?;
+    let id = super::seal::random_id()?;
+    let tmp = temp_name_in(&sealed_dir(), "seal");
+    let (sha256, bytes) = super::seal::seal_file(path, &tmp, id.as_bytes())?;
+    Ok(Staged {
+        tmp: None,
+        chunks: Vec::new(),
+        recipe_tmp: None,
+        sealed: Some((tmp, id)),
+        chunked: false,
+        sha256,
+        bytes,
+        mode: mode_of(&meta),
+        mtime_ns: super::journal::mtime_ns(&meta),
+        link: None,
+    })
+}
+
 impl Staged {
-    /// What the journal will point at once committed: the object, or the
-    /// recipe for a chunked file (empty for a link).
+    /// What the journal will point at once committed: the object, the
+    /// recipe for a chunked file, or the sealed object (empty for a link).
     pub fn object(&self) -> PathBuf {
         if self.link.is_some() {
             PathBuf::new()
+        } else if let Some((_, id)) = &self.sealed {
+            sealed_dir().join(&id[..2]).join(id)
         } else if self.chunked {
             recipe_path(&self.sha256)
         } else {
@@ -445,6 +489,30 @@ impl Staged {
             });
         }
         let object = self.object();
+        if let Some((tmp, _)) = &self.sealed {
+            let bucket = object.parent().expect("a sealed object has a bucket");
+            fs::create_dir_all(bucket)?;
+            let done = (|| -> io::Result<()> {
+                super::journal::sync_file(tmp)?;
+                make_read_only(tmp)?;
+                fs::rename(tmp, &object)?;
+                let _ = super::journal::sync_dir_pub(bucket);
+                Ok(())
+            })();
+            if done.is_err() {
+                let _ = fs::remove_file(tmp);
+            }
+            done?;
+            return Ok(Stashed {
+                object,
+                sha256: self.sha256,
+                bytes: self.bytes,
+                mode: self.mode,
+                mtime_ns: self.mtime_ns,
+                link: None,
+                git: None,
+            });
+        }
         if self.chunked {
             let mut chunks = self.chunks.into_iter();
             let mut failed: Option<io::Error> = None;
@@ -532,6 +600,12 @@ pub fn stash(path: &Path) -> io::Result<Stashed> {
 /// copy and a remove where it is not) and becomes an object named by the
 /// hash of what arrived.
 pub fn take(path: &Path) -> io::Result<Stashed> {
+    take_with(path, false)
+}
+
+/// `take`, sealing the file when `seal` says so (what replaced a secret is
+/// a secret) or when the file alone says so.
+pub fn take_with(path: &Path, seal: bool) -> io::Result<Stashed> {
     let meta = fs::symlink_metadata(path)?;
     if !meta.is_file() {
         return Err(io::Error::other(format!(
@@ -540,6 +614,14 @@ pub fn take(path: &Path) -> io::Result<Stashed> {
         )));
     }
     fs::create_dir_all(objects_dir())?;
+    if (seal && super::seal::policy() != super::seal::Policy::Never)
+        || super::seal::should_seal_here(path)
+    {
+        // A secret the rollback displaces is kept sealed like any other.
+        let st = prepare_sealed(path)?.commit()?;
+        let _ = fs::remove_file(path);
+        return Ok(st);
+    }
     if meta.len() >= CHUNK_FILE_MIN {
         // A large file is read and kept as chunks, so a hop's output that
         // is the original with one change shares every other chunk with it.
@@ -570,6 +652,7 @@ pub fn take(path: &Path) -> io::Result<Stashed> {
         tmp: Some(tmp),
         chunks: Vec::new(),
         recipe_tmp: None,
+        sealed: None,
         chunked: false,
         sha256,
         bytes,
@@ -596,6 +679,14 @@ pub fn materialize(snapshot: &Path, expect_sha256: &str, dest: &Path) -> io::Res
 }
 
 fn materialize_inner(snapshot: &Path, expect_sha256: &str, dest: &Path) -> io::Result<()> {
+    if super::seal::is_sealed_path(snapshot) {
+        return super::seal::unseal_file(
+            snapshot,
+            &super::seal::aad_of(snapshot),
+            expect_sha256,
+            dest,
+        );
+    }
     if is_recipe(snapshot) {
         let recipe = read_recipe(snapshot)?;
         if !expect_sha256.is_empty() && recipe.sha256 != expect_sha256 {
@@ -671,6 +762,20 @@ fn materialize_inner(snapshot: &Path, expect_sha256: &str, dest: &Path) -> io::R
     #[cfg(unix)]
     fs::set_permissions(dest, fs::metadata(snapshot)?.permissions())?;
     Ok(())
+}
+
+/// Does the sealed snapshot open with the tin's key and hold the bytes the
+/// journal recorded? Nothing is written. One line per problem.
+pub fn check_sealed(snapshot: &Path, expect_sha256: &str) -> Vec<String> {
+    match super::seal::unseal_to(
+        snapshot,
+        &super::seal::aad_of(snapshot),
+        expect_sha256,
+        &mut io::sink(),
+    ) {
+        Ok(_) => Vec::new(),
+        Err(e) => vec![e.to_string()],
+    }
 }
 
 /// Everything a restore from this snapshot would need, checked without
@@ -774,7 +879,7 @@ pub fn referenced() -> HashSet<PathBuf> {
                         }
                         super::journal::Before::File { snapshot, .. }
                         | super::journal::Before::Dir { snapshot }
-                            if holds(snapshot) =>
+                            if holds(snapshot) || is_sealed(snapshot) =>
                         {
                             out.insert(snapshot.clone());
                         }
@@ -795,9 +900,9 @@ pub fn referenced() -> HashSet<PathBuf> {
     out
 }
 
-/// Every entry of one bucketed store (`objects/` or `recipes/`) named by a
-/// hash, with its size.
-fn hashed_entries(store: &Path) -> Vec<(PathBuf, u64)> {
+/// Every entry of one bucketed store (`objects/`, `recipes/`, `sealed/`)
+/// named by `name_len` hex digits, with its size.
+fn hashed_entries_named(store: &Path, name_len: usize) -> Vec<(PathBuf, u64)> {
     let mut out = Vec::new();
     let Ok(buckets) = fs::read_dir(store) else {
         return out;
@@ -809,7 +914,7 @@ fn hashed_entries(store: &Path) -> Vec<(PathBuf, u64)> {
         for e in entries.flatten() {
             let p = e.path();
             let name = e.file_name().to_string_lossy().to_string();
-            if name.len() == 64 && name.chars().all(|c| c.is_ascii_hexdigit()) {
+            if name.len() == name_len && name.chars().all(|c| c.is_ascii_hexdigit()) {
                 if let Ok(m) = e.metadata() {
                     out.push((p, m.len()));
                 }
@@ -818,6 +923,10 @@ fn hashed_entries(store: &Path) -> Vec<(PathBuf, u64)> {
     }
     out.sort();
     out
+}
+
+fn hashed_entries(store: &Path) -> Vec<(PathBuf, u64)> {
+    hashed_entries_named(store, 64)
 }
 
 /// Every object in the tin (whole files and chunks alike), with its size.
@@ -830,6 +939,11 @@ pub fn recipes() -> Vec<(PathBuf, u64)> {
     hashed_entries(&recipes_dir())
 }
 
+/// Every sealed object in the tin, with its size on disk.
+pub fn sealed() -> Vec<(PathBuf, u64)> {
+    hashed_entries_named(&sealed_dir(), 32)
+}
+
 /// What the tin holds, stored and logical.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct Usage {
@@ -840,8 +954,11 @@ pub struct Usage {
     /// Recipes: chunked files.
     pub recipes: usize,
     /// Bytes the kept files would take written out: every recipe's file,
-    /// plus every object that is not a chunk of one.
+    /// plus every object that is not a chunk of one, plus the sealed ones.
     pub logical: u64,
+    /// Sealed objects (encrypted at rest), counted apart.
+    pub sealed: usize,
+    pub sealed_bytes: u64,
 }
 
 /// What the tin holds: objects and bytes stored, next to what the files
@@ -868,18 +985,44 @@ pub fn du() -> Usage {
             logical += size;
         }
     }
+    let sealed = sealed();
+    let sealed_bytes: u64 = sealed.iter().map(|(_, b)| b).sum();
     Usage {
         objects: all.len(),
         stored: all.iter().map(|(_, b)| b).sum(),
         recipes: recipes.len(),
-        logical,
+        logical: logical + sealed_bytes,
+        sealed: sealed.len(),
+        sealed_bytes,
     }
 }
 
-/// Re-hash every object against its name, and check every recipe names
-/// chunks the tin holds. Returns one line per problem.
-pub fn verify() -> Vec<String> {
+/// Re-hash every object against its name, check every recipe names chunks
+/// the tin holds, and open every sealed object with the tin's key (with
+/// `quick`, only look at its shape). Returns one line per problem.
+pub fn verify(quick: bool) -> Vec<String> {
     let mut problems = Vec::new();
+    for (p, size) in sealed() {
+        if quick {
+            let shaped = fs::File::open(&p)
+                .and_then(|mut f| {
+                    let mut head = [0u8; 8];
+                    f.read_exact(&mut head).map(|()| head)
+                })
+                .map(|h| &h == super::seal::MAGIC)
+                .unwrap_or(false);
+            if !shaped || size < 8 + 19 + 16 {
+                problems.push(format!(
+                    "{} is not shaped like a sealed object",
+                    p.display()
+                ));
+            }
+            continue;
+        }
+        if let Err(e) = super::seal::opens(&p, &super::seal::aad_of(&p)) {
+            problems.push(format!("{e}"));
+        }
+    }
     for (p, _) in objects() {
         let name = p
             .file_name()
@@ -916,14 +1059,18 @@ pub fn verify() -> Vec<String> {
     problems
 }
 
-/// Remove every object and recipe no live run refers to. Returns
-/// (removed, bytes).
-pub fn gc() -> (usize, u64) {
+/// Remove every object, recipe and sealed object no live run refers to,
+/// and, with `sealed_orphans`, every sealed object the tin's key cannot
+/// open (sealed under a key that is gone). Returns (removed, bytes).
+pub fn gc(sealed_orphans: bool) -> (usize, u64) {
     let keep = referenced();
     let mut removed = 0;
     let mut bytes = 0;
-    for (p, size) in objects().into_iter().chain(recipes()) {
-        if keep.contains(&p) {
+    for (p, size) in objects().into_iter().chain(recipes()).chain(sealed()) {
+        let orphan = sealed_orphans
+            && is_sealed(&p)
+            && super::seal::opens(&p, &super::seal::aad_of(&p)).is_err();
+        if keep.contains(&p) && !orphan {
             continue;
         }
         lift_read_only(&p);
@@ -1020,12 +1167,12 @@ mod tests {
             // Corrupt the object in place: same size, other bytes.
             lift_read_only(&first.object);
             fs::write(&first.object, "content two\n").unwrap();
-            assert_eq!(verify().len(), 1);
+            assert_eq!(verify(false).len(), 1);
             // A later stash of the same content does not trust the name.
             let again = stash(&f).unwrap();
             assert_eq!(again.object, first.object);
             assert_eq!(fs::read_to_string(&again.object).unwrap(), "content one\n");
-            assert!(verify().is_empty(), "the corrupt object was replaced");
+            assert!(verify(false).is_empty(), "the corrupt object was replaced");
         });
     }
 
@@ -1139,9 +1286,9 @@ mod tests {
             assert!(err.to_string().contains("corrupt"), "{err}");
             assert!(!dest.exists(), "nothing is left where the restore failed");
             assert_eq!(check_recipe(&st.object, &st.sha256).len(), 1);
-            assert_eq!(verify().len(), 1);
+            assert_eq!(verify(false).len(), 1);
             fs::write(&victim, &good).unwrap();
-            assert!(verify().is_empty());
+            assert!(verify(false).is_empty());
             // A journal that recorded other bytes under this recipe is refused too.
             let err = materialize(&st.object, "0000000000000000", &dest).unwrap_err();
             assert!(
@@ -1170,7 +1317,7 @@ mod tests {
             let problems = check_recipe(&st.object, &st.sha256);
             assert_eq!(problems.len(), 1, "{problems:?}");
             assert!(problems[0].contains("missing"), "{problems:?}");
-            assert_eq!(verify().len(), 1);
+            assert_eq!(verify(false).len(), 1);
             // The next stash of the same file puts the chunk back.
             stash(&f).unwrap();
             assert!(gone.is_file());
@@ -1222,7 +1369,7 @@ mod tests {
             )
             .unwrap();
             let live_chunks = read_recipe(&kept.object).unwrap().chunks.len();
-            let (removed, _) = gc();
+            let (removed, _) = gc(false);
             assert!(removed >= 3, "{removed}");
             assert!(kept.object.is_file());
             for c in read_recipe(&kept.object).unwrap().chunks {
@@ -1231,7 +1378,7 @@ mod tests {
             assert_eq!(objects().len(), live_chunks);
             assert!(!gone.object.exists() && !gone_small.object.exists());
             assert_eq!(recipes().len(), 1);
-            assert!(verify().is_empty());
+            assert!(verify(false).is_empty());
         });
     }
 

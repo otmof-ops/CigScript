@@ -18,6 +18,28 @@ project follows semantic versioning.
   displaces into the tin is chunked the same way, so a hop's output that is
   the original with one change shares every other chunk with it. Objects a
   1.4 cig wrote (large files kept whole) restore as they always did.
+- **Sealed: the tin encrypted at rest for secrets** (#83). A file the tin
+  keeps that is a secret is sealed: XChaCha20-Poly1305 in the STREAM
+  construction (no crypto of our own), a megabyte a segment, every segment
+  authenticated and the last one marked, so a byte flipped, a tail cut off
+  or another key refuses the restore and writes nothing. Sealed objects are
+  named by a random id and never shared, so two equal secrets stay two
+  objects that tell nothing about each other; the journal keeps the
+  plaintext hash, so the bytes are checked on the way back. What counts as a
+  secret: a built-in list of names (`.env*`, `*.pem`, `*.key`, `id_rsa*`,
+  `credentials*`, `*secret*`, `.npmrc`, `kubeconfig`, `*.kdbx`, and more), a
+  pack root's `.cigseal` (the same shape as `.cigignore`), a hop's
+  `touches_sealed: [...]`, and `fs.write_text(p, t, {sensitive: true})`;
+  the `seal` setting widens it to `all` or turns it off with `never`. The
+  key lives in the OS keyring (Secret Service, Keychain, Credential
+  Manager), made on first use; where there is none, in
+  `~/.cigscript/tin/seal.key`, readable by its owner alone (`seal_key =
+  file` makes that the rule). A run's own snapshots of secrets are sealed
+  the same way, inside tree snapshots too, and what a rollback displaces
+  from a sealed file stays sealed. The plan says `(sealed)`; `cig tin`
+  counts sealed objects apart; `cig tin verify` opens every one (`--quick`
+  looks at the shape); `cig tin gc --sealed-orphans` clears objects the key
+  cannot open any more.
 - **Git blob reuse** (#87). A file under `touches` that git already holds,
   tracked and clean against the index (the bytes on disk hash to the blob
   the index names), is referenced from the repository's object store

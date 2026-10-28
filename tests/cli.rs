@@ -53,6 +53,7 @@ impl Sandbox {
             .current_dir(self.path())
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
+            .env("CIG_SEAL_KEY", "file")
             // No test reaches the releases page: a pin that needs a fetch
             // finds no network here, as a machine offline would.
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
@@ -90,6 +91,7 @@ impl Sandbox {
             .current_dir(self.path())
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
+            .env("CIG_SEAL_KEY", "file")
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .envs(envs.iter().copied())
             .output()
@@ -547,6 +549,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .current_dir(sb.path())
         .env("CIGSCRIPT_HOME", sb.home())
         .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
         .env("CIG_INTERNAL_PANIC", "1")
         .output()
         .unwrap();
@@ -619,6 +622,7 @@ fn update_checks_verifies_and_installs_from_a_local_manifest() {
             .current_dir(sb.path())
             .env("CIGSCRIPT_HOME", sb.home())
             .env("NO_COLOR", "1")
+            .env("CIG_SEAL_KEY", "file")
             .env("CIG_UPDATE_MANIFEST", sb.path().join("manifest.json"))
             .output()
             .unwrap()
@@ -2185,6 +2189,7 @@ fn a_named_pipe_is_refused_not_hung() {
         .current_dir(sb.path())
         .env("CIGSCRIPT_HOME", sb.home())
         .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -4337,6 +4342,7 @@ fn a_second_run_on_the_same_pack_is_refused_while_the_first_runs() {
         .current_dir(sb.path())
         .env("CIGSCRIPT_HOME", sb.home())
         .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
         .env("CIG_UPDATE_MANIFEST", sb.path().join("no-releases.json"))
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -5317,4 +5323,218 @@ fn a_blob_git_has_lost_refuses_the_restore_with_the_reason() {
         "{err}"
     );
     assert_eq!(sb.read("p/src/app.txt"), "v2\n", "nothing was restored");
+}
+
+// ----- sealed (#83): a secret the tin keeps is never in the clear
+
+/// Do these bytes appear anywhere under the sandbox's state directory (tin
+/// objects, recipes, sealed objects, run snapshots)?
+#[cfg(unix)]
+fn state_holds_bytes(sb: &Sandbox, needle: &[u8]) -> bool {
+    fn walk(dir: &Path, needle: &[u8]) -> bool {
+        for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if walk(&p, needle) {
+                    return true;
+                }
+            } else if let Ok(bytes) = fs::read(&p) {
+                if bytes.windows(needle.len()).any(|w| w == needle) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    walk(&sb.home(), needle)
+}
+
+#[cfg(unix)]
+fn sealed_objects(sb: &Sandbox) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for bucket in fs::read_dir(sb.home().join("tin/sealed"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        for e in fs::read_dir(bucket.path()).into_iter().flatten().flatten() {
+            out.push(e.path());
+        }
+    }
+    out.sort();
+    out
+}
+
+#[cfg(unix)]
+#[test]
+fn a_private_key_under_touches_is_never_stored_in_the_clear() {
+    let sb = Sandbox::new();
+    let secret = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZWQyNTUx\n-----END OPENSSH PRIVATE KEY-----\n";
+    sb.write("p/.ssh/id_rsa", secret);
+    sb.write("p/.env", "DB_PASSWORD=hunter2-very-secret\n");
+    sb.write("p/README.md", "plain readme\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo rotated > .ssh/id_rsa; rm .env; echo changed > README.md\"], {cwd: \"p\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let dry = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let plan = String::from_utf8_lossy(&dry.stderr);
+    assert!(plan.contains("2 sealed"), "{plan}");
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/.ssh/id_rsa"), secret, "{err}");
+    assert_eq!(sb.read("p/.env"), "DB_PASSWORD=hunter2-very-secret\n");
+    assert_eq!(sb.read("p/README.md"), "plain readme\n");
+    assert!(err.contains("(sealed)"), "{err}");
+    assert!(
+        !state_holds_bytes(&sb, b"BEGIN OPENSSH PRIVATE KEY"),
+        "the private key is in the clear under the state directory"
+    );
+    assert!(!state_holds_bytes(&sb, b"hunter2-very-secret"));
+    assert!(
+        state_holds_bytes(&sb, b"plain readme\n"),
+        "an ordinary file is kept as it is"
+    );
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    // The two secrets, and the hop's rotated key the rollback set aside.
+    assert_eq!(du["sealed"], 3, "{du}");
+    assert_eq!(du["objects"], 2, "the readme and its changed version: {du}");
+    assert!(sb.exists("home/tin/seal.key"));
+    sb.run_ok(&["tin", "verify"]);
+    sb.run_ok(&["tin", "verify", "--quick"]);
+    let text = sb.run_ok(&["tin"]);
+    assert!(text.contains("3 sealed"), "{text}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_sealed_file_restores_byte_for_byte() {
+    let sb = Sandbox::new();
+    // Three megabytes: several segments, and a tail.
+    let blob: Vec<u8> = (0..(3usize << 20) + 777)
+        .map(|i| (i * 7 % 251) as u8)
+        .collect();
+    fs::create_dir_all(sb.path().join("p/data")).unwrap();
+    fs::write(sb.path().join("p/data/customers.db"), &blob).unwrap();
+    sb.write("p/config/token.txt", "tok-123-not-a-secret-name\n");
+    sb.write("p/notes.txt", "old notes, sensitive by the script's word\n");
+    sb.write("p/.cigseal", "config/**\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo x > data/customers.db; echo y > config/token.txt\"], {cwd: \"p\", touches: [\"config/**\"], touches_sealed: [\"data/*.db\"]})\n  fs.write_text(\"p/notes.txt\", \"new\", {sensitive: true})\n  fs.rm(\"p/config\")\n  cough \"boom\"\n}\n",
+    );
+    let dry = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let plan = String::from_utf8_lossy(&dry.stderr);
+    assert!(plan.contains("2 sealed"), "{plan}");
+    assert!(plan.contains("write p/notes.txt  (sealed)"), "{plan}");
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(
+        fs::read(sb.path().join("p/data/customers.db")).unwrap(),
+        blob,
+        "{err}"
+    );
+    assert_eq!(sb.read("p/config/token.txt"), "tok-123-not-a-secret-name\n");
+    assert_eq!(
+        sb.read("p/notes.txt"),
+        "old notes, sensitive by the script's word\n"
+    );
+    assert!(!state_holds_bytes(&sb, b"tok-123-not-a-secret-name"));
+    assert!(!state_holds_bytes(&sb, b"old notes, sensitive"));
+    assert!(!state_holds_bytes(&sb, &blob[1000..1200]));
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    // The database and the token, and the hop's two outputs the rollback
+    // set aside: what replaced a sealed file is sealed too.
+    assert_eq!(du["sealed"], 4, "{du}");
+    assert_eq!(du["objects"], 0, "{du}");
+    sb.run_ok(&["tin", "verify"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn two_equal_secrets_are_two_objects() {
+    let sb = Sandbox::new();
+    sb.write("p/.env", "SAME=secret\n");
+    sb.write("p/sub/.env", "SAME=secret\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"rm .env sub/.env\"], {cwd: \"p\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/.env"), "SAME=secret\n");
+    assert_eq!(sb.read("p/sub/.env"), "SAME=secret\n");
+    let objects = sealed_objects(&sb);
+    assert_eq!(objects.len(), 2, "{objects:?}");
+    assert_ne!(
+        fs::read(&objects[0]).unwrap(),
+        fs::read(&objects[1]).unwrap(),
+        "two equal secrets must not share bytes"
+    );
+    assert!(!state_holds_bytes(&sb, b"SAME=secret"));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tampered_sealed_object_refuses_the_restore() {
+    let sb = Sandbox::new();
+    sb.write("p/.env", "TOKEN=v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo TOKEN=v2 > .env\"], {cwd: \"p\", touches: [\"**\"]})\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let objects = sealed_objects(&sb);
+    assert_eq!(objects.len(), 1, "{objects:?}");
+    let mut bytes = fs::read(&objects[0]).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x01;
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&objects[0], fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    fs::write(&objects[0], &bytes).unwrap();
+    let shown = sb.cig(&["runs", &id, "--verify"]);
+    assert_eq!(shown.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&shown.stdout).contains("does not open with the tin's key"),
+        "{}",
+        String::from_utf8_lossy(&shown.stdout)
+    );
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E703 burn]") && err.contains("does not open with the tin's key"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/.env"), "TOKEN=v2\n", "nothing was written");
+    let problems = sb.cig(&["tin", "verify"]);
+    assert_eq!(problems.status.code(), Some(1));
+}
+
+#[cfg(unix)]
+#[test]
+fn without_the_key_a_restore_refuses_and_names_the_file() {
+    let sb = Sandbox::new();
+    sb.write("p/.env", "TOKEN=v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo TOKEN=v2 > .env\"], {cwd: \"p\", touches: [\"**\"]})\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    // A new machine, a wiped keyring: the key is gone and another takes its place.
+    fs::remove_file(sb.home().join("tin/seal.key")).unwrap();
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E703 burn]")
+            && err.contains("sealed with another key")
+            && err.contains("p/.env"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/.env"), "TOKEN=v2\n");
+    // What nothing can open any more goes with --sealed-orphans, and only then.
+    let gc: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "gc"])).unwrap();
+    assert_eq!(gc["removed"], 0, "{gc}");
+    let gc: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "tin", "gc", "--sealed-orphans"])).unwrap();
+    assert_eq!(gc["removed"], 1, "{gc}");
+    assert!(sealed_objects(&sb).is_empty());
 }

@@ -219,7 +219,15 @@ fn write(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let o = opts(a, 2, "csv.write", s)?;
     let header = a.get(2).is_none() || o.header;
     let text = rows_to_text(&a[1], o.sep, header, s)?;
-    if i.effect("csv.write", Op::Write { path: p.clone() }, s)? == Decision::Execute {
+    if i.effect(
+        "csv.write",
+        Op::Write {
+            path: p.clone(),
+            sensitive: false,
+        },
+        s,
+    )? == Decision::Execute
+    {
         if let Some(parent) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent).map_err(|e| {
                 runtime(format!(

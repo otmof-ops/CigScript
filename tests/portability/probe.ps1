@@ -4,6 +4,7 @@ $cig = $args[0]
 $root = Join-Path $env:RUNNER_TEMP ("ps" + (Get-Random))
 New-Item -ItemType Directory $root | Out-Null
 $env:NO_COLOR = '1'
+$env:CIG_SEAL_KEY = 'file'
 $script:pass = 0; $script:fail = 0
 
 function Fresh {

@@ -265,12 +265,12 @@ impl Ghost {
     /// [`Ghost::put`], from the function that has them.
     pub fn apply(&mut self, seq: u64, op: &Op) {
         match op {
-            Op::Write { path } => {
+            Op::Write { path, .. } => {
                 let abs = self.abs(path);
                 self.ensure_dirs(&abs, seq);
                 self.entries.insert(abs, (seq, Node::File(Vec::new())));
             }
-            Op::Append { path } => {
+            Op::Append { path, .. } => {
                 let abs = self.abs(path);
                 let current = self.read_through(&abs);
                 self.ensure_dirs(&abs, seq);
@@ -423,6 +423,7 @@ mod tests {
     fn op_write(p: &str) -> Op {
         Op::Write {
             path: PathBuf::from(p),
+            sensitive: false,
         }
     }
 
@@ -462,6 +463,7 @@ mod tests {
             4,
             &Op::Append {
                 path: PathBuf::from("log.txt"),
+                sensitive: false,
             },
         );
         g.put(Path::new("log.txt"), b"two\n", true, 4);

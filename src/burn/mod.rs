@@ -14,6 +14,7 @@ pub mod git;
 pub mod journal;
 pub mod lock;
 pub mod runs;
+pub mod seal;
 pub mod tin;
 
 /// The one lock every test in this crate that sets `CIGSCRIPT_HOME` takes:
@@ -35,9 +36,15 @@ use std::path::{Path, PathBuf};
 pub enum Op {
     Write {
         path: PathBuf,
+        /// The file is a secret (`fs.write_text(p, t, {sensitive: true})`):
+        /// its before-bytes are kept sealed, whatever the name.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sensitive: bool,
     },
     Append {
         path: PathBuf,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        sensitive: bool,
     },
     Delete {
         path: PathBuf,
@@ -61,6 +68,9 @@ pub enum Op {
         /// to the tin first, so a change under them can be undone.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         touches: Vec<String>,
+        /// Globs among them whose files are secrets: kept sealed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        touches_sealed: Vec<String>,
     },
     EnvSet {
         key: String,
@@ -159,8 +169,16 @@ impl Op {
 
     pub fn describe(&self) -> String {
         match self {
-            Op::Write { path } => format!("write {}", path.display()),
-            Op::Append { path } => format!("append to {}", path.display()),
+            Op::Write { path, sensitive } => {
+                format!("write {}{}", path.display(), sealed_note(path, *sensitive))
+            }
+            Op::Append { path, sensitive } => {
+                format!(
+                    "append to {}{}",
+                    path.display(),
+                    sealed_note(path, *sensitive)
+                )
+            }
             Op::Delete { path } => format!("delete {}", path.display()),
             Op::Move { from, to } => format!("move {} -> {}", from.display(), to.display()),
             Op::Copy { from, to } => format!("copy {} -> {}", from.display(), to.display()),
@@ -170,6 +188,7 @@ impl Op {
                 args,
                 cwd,
                 touches,
+                ..
             } => {
                 let mut s = format!("run {}", shell_quote(cmd));
                 for a in args {
@@ -200,6 +219,7 @@ impl Op {
                     (true, Some("link")) => "  (link kept)",
                     (true, Some("dir")) => "  (directory)",
                     (true, Some("git")) => "  (git)",
+                    (true, Some("sealed")) => "  (sealed)",
                     (true, _) => "  (tin)",
                     (false, _) => "",
                 }
@@ -209,6 +229,16 @@ impl Op {
                 None => format!("compensation for the burn at line {line}"),
             },
         }
+    }
+}
+
+/// `  (sealed)` when the before-bytes of a native write are kept sealed:
+/// the script said so, or the name is a secret's and sealing is on.
+fn sealed_note(path: &Path, sensitive: bool) -> &'static str {
+    if seal::policy() != seal::Policy::Never && (sensitive || seal::secret_name(path)) {
+        "  (sealed)"
+    } else {
+        ""
     }
 }
 
@@ -783,6 +813,44 @@ fn thousands(n: usize) -> String {
     out
 }
 
+/// How many of the files the `touches` globs match would be kept sealed,
+/// for the plan: by name, by the root's `.cigseal`, by `touches_sealed`.
+fn sealed_count(
+    roots: &[PathBuf],
+    touches: &[String],
+    touches_sealed: &[String],
+    cap: usize,
+) -> usize {
+    let Ok(set) = tin::globs(touches) else {
+        return 0;
+    };
+    let hop_sealed = if touches_sealed.is_empty() {
+        None
+    } else {
+        tin::globs(touches_sealed).ok()
+    };
+    let mut n = 0;
+    for r in roots {
+        let root_set = seal::seal_set(r);
+        let sets: Vec<&globset::GlobSet> = [root_set.as_ref(), hop_sealed.as_ref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        for (path, meta) in &scan(r, 64, cap).seen {
+            if meta.is_dir() || matches!(meta, Seen::Link { .. }) {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(r) else {
+                continue;
+            };
+            if set.is_match(rel) && seal::should_seal(path, Some(r), &sets) {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 /// How many of the pack's files each `touches` glob matches, for the dry
 /// run's plan line and the warning about a glob that matches nothing.
 fn touches_counts(roots: &[PathBuf], touches: &[String], cap: usize) -> Vec<(String, usize)> {
@@ -959,6 +1027,7 @@ impl Kernel {
         &mut self,
         cwd: Option<&Path>,
         touches: &[String],
+        touches_sealed: &[String],
     ) -> Option<PackWatch> {
         let roots = self.pack.clone()?;
         let roots = &roots;
@@ -1049,8 +1118,19 @@ impl Kernel {
                     // falls back to the tin for a repository it cannot pin in.
                     let repos: Vec<Option<git::Repo>> =
                         roots.iter().map(|r| git::repo_for(r)).collect();
+                    // Secrets are sealed: by name, by the root's `.cigseal`,
+                    // or by the hop's `touches_sealed` globs. A sealed file
+                    // is never referenced from git or shared by content.
+                    let seal_sets: Vec<Option<globset::GlobSet>> =
+                        roots.iter().map(|r| seal::seal_set(r)).collect();
+                    let hop_sealed = if touches_sealed.is_empty() {
+                        None
+                    } else {
+                        tin::globs(touches_sealed).ok()
+                    };
                     let mut from_git: Vec<(usize, PathBuf, String, String, Seen)> = Vec::new();
                     let mut to_tin: Vec<PathBuf> = Vec::new();
+                    let mut to_seal: Vec<PathBuf> = Vec::new();
                     for (path, meta) in &inside {
                         if meta.is_dir() {
                             continue;
@@ -1062,6 +1142,17 @@ impl Kernel {
                         }) else {
                             continue;
                         };
+                        let sets: Vec<&globset::GlobSet> =
+                            [seal_sets[ri].as_ref(), hop_sealed.as_ref()]
+                                .into_iter()
+                                .flatten()
+                                .collect();
+                        if !matches!(meta, Seen::Link { .. })
+                            && seal::should_seal(path, Some(&roots[ri]), &sets)
+                        {
+                            to_seal.push(path.clone());
+                            continue;
+                        }
                         if let (Some(repo), Seen::File { len, .. }) = (&repos[ri], meta) {
                             if let Some((blob, sha256)) = repo.clean_blob(path, *len) {
                                 from_git.push((ri, path.clone(), blob, sha256, meta.clone()));
@@ -1142,6 +1233,15 @@ impl Kernel {
                             Ok(st) => staged.push((path.clone(), st)),
                             Err(e) => warnings.push(format!(
                                 "{} could not be kept in the tin ({e}); a change to it stays irreversible",
+                                path.display()
+                            )),
+                        }
+                    }
+                    for path in &to_seal {
+                        match tin::prepare_sealed(path) {
+                            Ok(st) => staged.push((path.clone(), st)),
+                            Err(e) => warnings.push(format!(
+                                "{} could not be sealed into the tin ({e}); a change to it stays irreversible",
                                 path.display()
                             )),
                         }
@@ -1391,7 +1491,13 @@ impl Kernel {
                         mtime_ns: st.mtime_ns,
                         git: st.git.clone(),
                     },
-                    if st.git.is_some() { "git" } else { "tin" },
+                    if st.git.is_some() {
+                        "git"
+                    } else if tin::is_sealed(&st.object) {
+                        "sealed"
+                    } else {
+                        "tin"
+                    },
                 )),
                 _ => None,
             };
@@ -1525,8 +1631,8 @@ impl Kernel {
         // with its own code, on the platform where it is one, pack or no pack.
         if cfg!(windows) {
             let named: Vec<&PathBuf> = match &op {
-                Op::Write { path }
-                | Op::Append { path }
+                Op::Write { path, .. }
+                | Op::Append { path, .. }
                 | Op::Delete { path }
                 | Op::Mkdir { path } => vec![path],
                 Op::Copy { to, .. } => vec![to],
@@ -1547,8 +1653,8 @@ impl Kernel {
         }
         if let Some(roots) = &self.pack {
             let outside: Vec<&PathBuf> = match &op {
-                Op::Write { path }
-                | Op::Append { path }
+                Op::Write { path, .. }
+                | Op::Append { path, .. }
                 | Op::Delete { path }
                 | Op::Mkdir { path } => vec![path],
                 Op::Copy { to, .. } => vec![to],
@@ -1594,13 +1700,25 @@ impl Kernel {
             // The plan says how many files each `touches` glob covers, so a
             // glob that covers none is seen before anything runs.
             let mut summary = op.describe();
-            if let (Op::Proc { touches, .. }, Some(roots)) = (&op, &self.pack) {
+            if let (
+                Op::Proc {
+                    touches,
+                    touches_sealed,
+                    ..
+                },
+                Some(roots),
+            ) = (&op, &self.pack)
+            {
                 if !touches.is_empty() {
                     let counts = touches_counts(roots, touches, watch_cap());
-                    let shown: Vec<String> = counts
+                    let mut shown: Vec<String> = counts
                         .iter()
                         .map(|(g, n)| format!("{g}: {n} file{}", if *n == 1 { "" } else { "s" }))
                         .collect();
+                    let sealed = sealed_count(roots, touches, touches_sealed, watch_cap());
+                    if sealed > 0 {
+                        shown.push(format!("{sealed} sealed"));
+                    }
                     if let Some(at) = summary.rfind("  (touches ") {
                         summary.truncate(at);
                     }

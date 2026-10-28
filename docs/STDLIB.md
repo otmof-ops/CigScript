@@ -43,8 +43,8 @@ Reads are free; anything that changes a file is a **burn**, snapshotted before a
 | `fs.glob` | 1 | read |
 | `fs.cwd` | 0 | read |
 | `fs.home` | 0 | read |
-| `fs.write_text` | 2 | **burn** |
-| `fs.append_text` | 2 | **burn** |
+| `fs.write_text` | 2-3 | **burn** |
+| `fs.append_text` | 2-3 | **burn** |
 | `fs.mkdir` | 1 | **burn** |
 | `fs.rm` | 1 | **burn** |
 | `fs.cp` | 2 | **burn** |

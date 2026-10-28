@@ -589,15 +589,17 @@ impl Journal {
     /// path itself); rollback applies them innermost-first.
     fn capture_before(&self, seq: u64, op: &Op) -> Result<Vec<BeforeState>, io::Error> {
         Ok(match op {
-            Op::Write { path } | Op::Append { path } => self.destination_states(seq, path, 0)?,
-            Op::Delete { path } => vec![self.snapshot(seq, path, 0)?],
+            Op::Write { path, sensitive } | Op::Append { path, sensitive } => {
+                self.destination_states(seq, path, 0, *sensitive)?
+            }
+            Op::Delete { path } => vec![self.snapshot(seq, path, 0, false)?],
             Op::Mkdir { path } => {
                 // `mkdir -p` may create several levels; remember the highest
                 // one that is about to appear so rollback removes all of them.
                 let created_root = first_missing_ancestor(path);
-                vec![self.snapshot(seq, &created_root, 0)?]
+                vec![self.snapshot(seq, &created_root, 0, false)?]
             }
-            Op::Copy { to, .. } => self.destination_states(seq, to, 0)?,
+            Op::Copy { to, .. } => self.destination_states(seq, to, 0, false)?,
             Op::Move { from, to } => {
                 let mut states = vec![BeforeState {
                     path: from.clone(),
@@ -609,7 +611,7 @@ impl Journal {
                 // of it restored after the move back would only put the
                 // same bytes under the other spelling.
                 if !(super::case_variants(from, to) && super::same_object(from, to)) {
-                    states.extend(self.destination_states(seq, to, 1)?);
+                    states.extend(self.destination_states(seq, to, 1, false)?);
                 }
                 states
             }
@@ -634,23 +636,33 @@ impl Journal {
         seq: u64,
         path: &Path,
         slot: usize,
+        sensitive: bool,
     ) -> Result<Vec<BeforeState>, io::Error> {
         let mut states = Vec::new();
         let created_root = first_missing_ancestor(path);
         if created_root != *path {
-            states.push(self.snapshot(seq, &created_root, slot)?);
+            states.push(self.snapshot(seq, &created_root, slot, false)?);
         }
-        states.push(self.snapshot(seq, path, slot + 1)?);
+        states.push(self.snapshot(seq, path, slot + 1, sensitive)?);
         if is_symlink(path) {
             let landing = resolve_symlink_chain(path);
             if landing != *path {
-                states.push(self.snapshot(seq, &landing, slot + 2)?);
+                states.push(self.snapshot(seq, &landing, slot + 2, sensitive)?);
             }
         }
         Ok(states)
     }
 
-    fn snapshot(&self, seq: u64, path: &Path, slot: usize) -> Result<BeforeState, io::Error> {
+    /// The before-image of one path, in the run's own directory. A secret
+    /// (the op said so, or the name is a secret's and sealing is on) is kept
+    /// sealed, under `<name>.cig-sealed`, with its mode in the journal.
+    fn snapshot(
+        &self,
+        seq: u64,
+        path: &Path,
+        slot: usize,
+        sensitive: bool,
+    ) -> Result<BeforeState, io::Error> {
         let meta = match fs::symlink_metadata(path) {
             Ok(m) => m,
             Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -712,6 +724,29 @@ impl Journal {
             Ok(BeforeState {
                 path: path.to_path_buf(),
                 before: Before::Dir { snapshot: snap },
+            })
+        } else if super::seal::policy() != super::seal::Policy::Never
+            && (sensitive || super::seal::should_seal_here(path))
+        {
+            let sealed = snap.with_file_name(format!(
+                "{}{}",
+                snap.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                super::seal::SUFFIX
+            ));
+            let (sha256, _) = super::seal::seal_file(path, &sealed, &super::seal::aad_of(&sealed))?;
+            sync_dir(&dir.join("snapshots"))?;
+            Ok(BeforeState {
+                path: path.to_path_buf(),
+                before: Before::File {
+                    snapshot: sealed,
+                    sha256,
+                    bytes: meta.len(),
+                    mode: super::tin::mode_of(&meta),
+                    mtime_ns: mtime_ns(&meta),
+                    git: None,
+                },
             })
         } else {
             copy_file_with_mode(path, &snap)?;
@@ -789,6 +824,15 @@ impl Journal {
                                 state.path.display(),
                                 snapshot.display()
                             ));
+                        } else if super::seal::is_sealed_path(snapshot) {
+                            for p in super::tin::check_sealed(snapshot, sha256) {
+                                problems.push(format!(
+                                    "op {}: {} for {}",
+                                    entry.seq,
+                                    p,
+                                    state.path.display()
+                                ));
+                            }
                         } else if super::tin::is_recipe(snapshot) {
                             for p in super::tin::check_recipe(snapshot, sha256) {
                                 problems.push(format!(
@@ -962,15 +1006,35 @@ impl Journal {
         // changed again is the run's, not someone else's.
         let mut latest_left: std::collections::BTreeMap<PathBuf, Option<(u64, u64)>> =
             std::collections::BTreeMap::new();
+        // Paths a newer native op's before-state covers: a directory it
+        // deleted or replaced accounts for every file under it, so a hop's
+        // file inside is the run's own work too, however it reads now.
+        let mut covered: Vec<PathBuf> = Vec::new();
         for e in self.entries.iter().skip(from).rev() {
             if e.undone {
                 continue;
             }
             if let Some(p) = e.op.path() {
-                latest_left.entry(p.clone()).or_insert_with(|| e.op.left());
+                // A hop's path is absolute; a native op's is as the script
+                // wrote it. Both are read the same way before they are compared.
+                let abs = super::normalize_root(&p.to_string_lossy());
+                let under_newer = covered.iter().any(|d| {
+                    let d = super::normalize_root(&d.to_string_lossy());
+                    abs.starts_with(&d) && d != abs
+                });
+                latest_left.entry(p.clone()).or_insert_with(|| {
+                    if under_newer {
+                        None
+                    } else {
+                        e.op.left()
+                    }
+                });
             }
             for b in &e.before {
                 latest_left.entry(b.path.clone()).or_insert(None);
+                if e.op.path().is_none() {
+                    covered.push(b.path.clone());
+                }
             }
         }
         for entry in self.entries.iter().skip(from).rev() {
@@ -1262,9 +1326,9 @@ fn file_stamp(path: &Path) -> Option<(u64, u64)> {
 /// Clear `path` for a restore without destroying anything: a regular file
 /// goes to the tin (recorded in `taken`), a directory is emptied the same
 /// way and removed, a link is removed (its target is all it is).
-fn displace(path: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
+fn displace(path: &Path, taken: &mut Vec<BeforeState>, seal: bool) -> io::Result<()> {
     let take_file = |p: &Path, taken: &mut Vec<BeforeState>| -> io::Result<()> {
-        let st = super::tin::take(p)?;
+        let st = super::tin::take_with(p, seal)?;
         taken.push(BeforeState {
             path: p.to_path_buf(),
             before: Before::File {
@@ -1686,6 +1750,11 @@ fn restore(
 ) -> Result<(Option<&'static str>, Vec<BeforeState>), io::Error> {
     let path = &state.path;
     let mut taken = Vec::new();
+    // What replaced a sealed file is kept sealed too when it is displaced.
+    let sealed = match &state.before {
+        Before::File { snapshot, .. } => super::seal::is_sealed_path(snapshot),
+        _ => false,
+    };
     match &state.before {
         Before::Absent => {
             if !keep {
@@ -1693,7 +1762,7 @@ fn restore(
             }
             // What is at the path goes to the tin before it goes: the hop's
             // output, or a save made while the hop ran, either way recoverable.
-            displace(path, &mut taken)?;
+            displace(path, &mut taken, sealed)?;
             if fs::symlink_metadata(path).is_ok() {
                 // Windows: another program holds the file, so it could not be
                 // removed; its bytes are kept all the same.
@@ -1708,7 +1777,7 @@ fn restore(
                 Ok(m) if m.is_dir() => {}
                 Ok(_) => {
                     if keep {
-                        displace(path, &mut taken)?;
+                        displace(path, &mut taken, sealed)?;
                     } else {
                         remove_any(path)?;
                     }
@@ -1789,7 +1858,7 @@ fn restore(
                     && !sha256.is_empty()
                     && sha256_file(path).ok().as_deref() == Some(sha256.as_str());
                 if !same {
-                    displace(path, &mut taken)?;
+                    displace(path, &mut taken, sealed)?;
                 }
             }
             #[cfg(unix)]
@@ -1858,7 +1927,7 @@ fn restore(
                 ));
             }
             let staged = staging_path(path);
-            copy_tree(snapshot, &staged)?;
+            restore_tree(snapshot, &staged)?;
             remove_any(path)?;
             fs::rename(&staged, path).map(|()| (None, taken))
         }
@@ -1867,7 +1936,7 @@ fn restore(
                 fs::create_dir_all(parent)?;
             }
             if keep {
-                displace(path, &mut taken)?;
+                displace(path, &mut taken, sealed)?;
             } else {
                 remove_any(path)?;
             }
@@ -2043,17 +2112,29 @@ fn make_symlink(target: &Path, at: &Path) -> Result<(), io::Error> {
 /// Copy a tree, preserving links as links. Directory permissions are applied
 /// after the walk so a read-only directory still receives its children.
 pub fn copy_tree(from: &Path, to: &Path) -> Result<(), io::Error> {
-    copy_tree_inner(from, to, false)
+    copy_tree_inner(from, to, false, false)
 }
 
 /// `copy_tree` for a snapshot: every copied file is synced to disk and the
 /// directories fsynced, so the journal entry that follows never points at
-/// bytes that were still in the page cache when the power went.
+/// bytes that were still in the page cache when the power went. A secret
+/// inside the tree is kept sealed, as `<name>.<mode>.cig-sealed`.
 fn copy_tree_durable(from: &Path, to: &Path) -> Result<(), io::Error> {
-    copy_tree_inner(from, to, true)
+    copy_tree_inner(from, to, true, false)
 }
 
-fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Error> {
+/// `copy_tree` from a snapshot: a sealed entry comes back open, under its
+/// own name and mode, checked on the way.
+fn restore_tree(snapshot: &Path, to: &Path) -> Result<(), io::Error> {
+    copy_tree_inner(snapshot, to, false, true)
+}
+
+fn copy_tree_inner(
+    from: &Path,
+    to: &Path,
+    durable: bool,
+    restoring: bool,
+) -> Result<(), io::Error> {
     fs::create_dir_all(to)?;
     let mut dir_modes: Vec<(PathBuf, fs::Permissions)> = Vec::new();
     for entry in walkdir::WalkDir::new(from)
@@ -2078,9 +2159,38 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
             let meta = entry.metadata().map_err(io::Error::other)?;
             dir_modes.push((dest, meta.permissions()));
         } else if entry.file_type().is_file() {
-            copy_file_with_mode(entry.path(), &dest)?;
-            if durable {
-                sync_file(&dest)?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if restoring && name.ends_with(super::seal::SUFFIX) && starts_sealed(entry.path()) {
+                // `<name>.<mode>.cig-sealed`: back under its name and mode.
+                let stem = &name[..name.len() - super::seal::SUFFIX.len()];
+                let (base, mode) = match stem.rsplit_once('.') {
+                    Some((b, m)) => (b.to_string(), u32::from_str_radix(m, 8).ok()),
+                    None => (stem.to_string(), None),
+                };
+                let open = dest.with_file_name(&base);
+                super::seal::unseal_file(
+                    entry.path(),
+                    &super::seal::aad_of(entry.path()),
+                    "",
+                    &open,
+                )?;
+                #[cfg(unix)]
+                if let Some(m) = mode {
+                    use std::os::unix::fs::PermissionsExt;
+                    fs::set_permissions(&open, fs::Permissions::from_mode(m))?;
+                }
+                #[cfg(not(unix))]
+                let _ = mode;
+            } else if durable && super::seal::should_seal_here(entry.path()) {
+                let mode =
+                    super::tin::mode_of(&entry.metadata().map_err(io::Error::other)?).unwrap_or(0);
+                let sealed = dest.with_file_name(format!("{name}.{mode:o}{}", super::seal::SUFFIX));
+                super::seal::seal_file(entry.path(), &sealed, &super::seal::aad_of(&sealed))?;
+            } else {
+                copy_file_with_mode(entry.path(), &dest)?;
+                if durable {
+                    sync_file(&dest)?;
+                }
             }
         } else {
             return Err(io::Error::other(format!(
@@ -2104,6 +2214,16 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
         sync_dir(to)?;
     }
     Ok(())
+}
+
+/// Does the file begin with a sealed object's magic?
+fn starts_sealed(path: &Path) -> bool {
+    use std::io::Read as _;
+    let mut head = [0u8; 8];
+    fs::File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .map(|()| &head == super::seal::MAGIC)
+        .unwrap_or(false)
 }
 
 /// A file's modification time as the journal records it: nanoseconds since
@@ -2297,7 +2417,14 @@ mod tests {
         fs::write(&b, "to be deleted").unwrap();
 
         let mut j = Journal::open(Some(run_dir.clone())).unwrap();
-        j.record(1, Op::Write { path: a.clone() }).unwrap();
+        j.record(
+            1,
+            Op::Write {
+                path: a.clone(),
+                sensitive: false,
+            },
+        )
+        .unwrap();
         fs::write(&a, "changed").unwrap();
         j.record(2, Op::Delete { path: b.clone() }).unwrap();
         fs::remove_file(&b).unwrap();
@@ -2314,6 +2441,7 @@ mod tests {
             4,
             Op::Write {
                 path: root.join("new.txt"),
+                sensitive: false,
             },
         )
         .unwrap();
@@ -2325,6 +2453,7 @@ mod tests {
                 args: vec![],
                 cwd: None,
                 touches: Vec::new(),
+                touches_sealed: Vec::new(),
             },
         )
         .unwrap();
@@ -2385,6 +2514,7 @@ mod tests {
             3,
             Op::Write {
                 path: root.join("target.txt"),
+                sensitive: false,
             },
         )
         .unwrap();
@@ -2419,6 +2549,7 @@ mod tests {
             1,
             Op::Write {
                 path: root.join("f.txt"),
+                sensitive: false,
             },
         )
         .unwrap();
@@ -2427,6 +2558,7 @@ mod tests {
             2,
             Op::Write {
                 path: root.join("g.txt"),
+                sensitive: false,
             },
         )
         .unwrap();
@@ -2457,6 +2589,7 @@ mod tests {
             1,
             Op::Write {
                 path: root.join("m1.txt"),
+                sensitive: false,
             },
         )
         .unwrap();
@@ -2465,6 +2598,7 @@ mod tests {
             2,
             Op::Write {
                 path: root.join("m2.txt"),
+                sensitive: false,
             },
         )
         .unwrap();
@@ -2581,13 +2715,13 @@ mod tests {
 
     fn apply(op: &Op) -> io::Result<()> {
         match op {
-            Op::Write { path } => {
+            Op::Write { path, .. } => {
                 if let Some(p) = path.parent() {
                     fs::create_dir_all(p)?;
                 }
                 fs::write(path, "written")
             }
-            Op::Append { path } => {
+            Op::Append { path, .. } => {
                 let mut f = fs::OpenOptions::new()
                     .create(true)
                     .append(true)
@@ -2636,12 +2770,15 @@ mod tests {
                 let op = match rng.below(7) {
                     0 => Op::Write {
                         path: pick(&mut rng, &paths),
+                        sensitive: false,
                     },
                     1 => Op::Write {
                         path: fresh.clone(),
+                        sensitive: false,
                     },
                     2 => Op::Append {
                         path: pick(&mut rng, &paths),
+                        sensitive: false,
                     },
                     3 => Op::Delete {
                         path: pick(&mut rng, &paths),
@@ -2666,8 +2803,10 @@ mod tests {
                 // (a missing source, a write that cannot land) are skipped.
                 let source_ok = match &op {
                     Op::Delete { path } => fs::symlink_metadata(path).is_ok(),
-                    Op::Write { path } => can_receive_bytes(path),
-                    Op::Append { path } => fs::metadata(path).map(|m| m.is_file()).unwrap_or(false),
+                    Op::Write { path, .. } => can_receive_bytes(path),
+                    Op::Append { path, .. } => {
+                        fs::metadata(path).map(|m| m.is_file()).unwrap_or(false)
+                    }
                     Op::Move { from, to } => fs::symlink_metadata(from).is_ok() && from != to,
                     Op::Copy { from, .. } => {
                         fs::metadata(from).map(|m| m.is_file()).unwrap_or(false)
@@ -2680,8 +2819,9 @@ mod tests {
                 j.record(seq, op.clone())
                     .unwrap_or_else(|e| panic!("seed {seed} seq {seq} record {op:?}: {e}"));
                 apply(&op).unwrap_or_else(|e| panic!("seed {seed} seq {seq} apply {op:?}: {e}"));
-                if let Op::Write { path } | Op::Copy { to: path, .. } | Op::Move { to: path, .. } =
-                    &op
+                if let Op::Write { path, .. }
+                | Op::Copy { to: path, .. }
+                | Op::Move { to: path, .. } = &op
                 {
                     if !paths.contains(path) {
                         paths.push(path.clone());

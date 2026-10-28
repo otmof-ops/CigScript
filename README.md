@@ -469,6 +469,9 @@ for.
 | a hop edits a file git holds, tracked and clean, under `touches` | not copied: the journal names the blob, the run pins it under `refs/cig/runs/<id>`, and the restore checks the bytes git gives back against our hash | 1.5.0 | `a_clean_tracked_file_costs_no_tin_space` |
 | git answers with other bytes for a pinned blob (`git replace`) | refused: the bytes do not hash as the journal recorded, nothing written | 1.5.0 | `a_restore_from_a_git_blob_is_hash_checked` |
 | the pin is dropped and the blob gc'd, then `unburn` | refused before anything is touched (`E703`), naming the repository and the blob | 1.5.0 | `a_blob_git_has_lost_refuses_the_restore_with_the_reason` |
+| a hop under `touches: ["**"]` rewrites `id_rsa` and deletes `.env`, then the run fails | both come back byte for byte, and not a byte of either is in the clear anywhere under the state directory | 1.5.0 | `a_private_key_under_touches_is_never_stored_in_the_clear` |
+| flip one byte of a sealed object, then `unburn` | refused before anything is touched; the tag does not fit | 1.5.0 | `a_tampered_sealed_object_refuses_the_restore` |
+| the key is gone (a wiped keyring, a new machine), then `unburn` | refused, naming the file; `cig tin gc --sealed-orphans` clears what nothing can open | 1.5.0 | `without_the_key_a_restore_refuses_and_names_the_file` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

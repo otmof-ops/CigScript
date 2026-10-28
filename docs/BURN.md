@@ -280,6 +280,41 @@ before, and a large file a 1.4 cig kept whole restores as it always did.
 Measured in [FINDINGS.md](FINDINGS.md): twenty one-byte edits of a 200 MB
 file cost the tin 202 MB, where 1.4 stored 200 MB a run.
 
+**Sealed.** A tin that is on for a whole project would keep every old
+`.env`, private key and kubeconfig it ever saw in the clear, for as long as
+a run refers to it. So a secret is sealed: encrypted with
+XChaCha20-Poly1305 in the STREAM construction (the `chacha20poly1305`
+crate; nothing home-made), a megabyte a segment, every segment
+authenticated and the last one marked, so a byte flipped, a tail cut off or
+a different key is refused on read and nothing is written. A sealed object
+(`tin/sealed/<random id>`) is named by a random id, bound to that name, and
+never shared between files, so two equal secrets do not reveal that they
+are equal; the journal keeps the plaintext's hash and size, so the bytes
+are checked on the way back whatever the ciphertext says. What is a secret:
+a built-in list of names (`.env` and `.env.*`, `*.pem`, `*.key`, `id_rsa*`,
+`id_ed25519*`, `id_ecdsa*`, `id_dsa*`, `*.p12`, `*.pfx`, `credentials*`,
+`*secret*`, `.npmrc`, `.pypirc`, `kubeconfig`, `*.kdbx`, `.netrc`,
+`.git-credentials`, `*.ppk`, `*.jks`, `*.keystore`), whatever a pack root's
+`.cigseal` lists (one glob per line, like `.cigignore`, applying to the tree
+below it), a hop's `touches_sealed: ["data/*.db"]` (its files are kept, and
+kept sealed), and a native write that says so,
+`fs.write_text(p, t, {sensitive: true})`. The `seal` setting is `secrets`
+by default, `all` seals everything the tin keeps, `never` turns it off. The
+run directory's own snapshots of secrets are sealed the same way
+(`<name>.cig-sealed`, the mode in the journal), a secret inside a tree
+snapshot too, and what a rollback displaces from a sealed path stays
+sealed. The key is 32 random bytes made on first use and kept in the OS
+keyring (Secret Service on Linux and the BSDs, Keychain on macOS, Credential
+Manager on Windows) under `cigscript` / `tin-seal`; where no keyring
+answers within five seconds, in `~/.cigscript/tin/seal.key`, readable by
+its owner alone, and a note says so once (`seal_key = file` makes the file
+the rule, and tests use it). The plan says `(sealed)` and counts sealed
+files in a hop's `touches` line; `cig runs <id>` labels the entry
+`(sealed)`; `cig tin` counts sealed objects apart; `cig tin verify` opens
+every one with the key (`--quick` checks the shape alone); and when the key
+is gone (a new machine, a wiped keyring), a restore refuses naming the
+file, and `cig tin gc --sealed-orphans` clears what nothing can open.
+
 **Git blob reuse.** Most files a hop touches in a git project are tracked
 and unchanged since the last commit, and git already holds their bytes in
 `.git/objects`. Such a file (tracked, and clean against the index: the
@@ -385,10 +420,12 @@ rollback report ("cannot undo"). What the label covers:
   restores over the newer content anyway. `cig unburn --dry-run` prints the
   plan with a *changed since* column. A run that predates after-state records
   says "unknown" and is allowed.
-- **Snapshots are plain copies**, unencrypted, under your home directory. Prune
-  them with `cig runs --prune` if they hold anything sensitive. They keep the
-  full mode (setuid, setgid and sticky bits included), and a restored tree
-  keeps the mode of its root.
+- **Snapshots are plain copies**, under your home directory, except for
+  secrets, which are sealed (above): a secret-shaped name, a `.cigseal`
+  entry or `{sensitive: true}` keeps the before-bytes encrypted at rest. Prune
+  the rest with `cig runs --prune` if it holds anything sensitive the list
+  did not know. Snapshots keep the full mode (setuid, setgid and sticky bits
+  included), and a restored tree keeps the mode of its root.
 - **Restores are atomic where they can be.** A file comes back beside its
   destination and is swapped in, so a failure half-way leaves what is there
   untouched; on Unix a file that has other hard links is restored in place

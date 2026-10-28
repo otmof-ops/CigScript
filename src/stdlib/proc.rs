@@ -77,6 +77,8 @@ struct Options {
     sep: char,
     /// Globs of the files the hop may change, kept in the tin first.
     touches: Vec<String>,
+    /// Globs among them whose files are secrets, kept sealed.
+    touches_sealed: Vec<String>,
 }
 
 impl Options {
@@ -99,6 +101,7 @@ impl Options {
             header: true,
             sep: ',',
             touches: Vec::new(),
+            touches_sealed: Vec::new(),
         };
         let Some(opts) = opt_map(a, index, name, s)? else {
             return Ok(o);
@@ -118,6 +121,21 @@ impl Options {
                             other => {
                                 return Err(type_error(format!(
                                     "{name}: `touches` holds a {}; want globs as strings",
+                                    other.type_name()
+                                ))
+                                .at(s))
+                            }
+                        }
+                    }
+                }
+                ("touches_sealed", Value::Str(g)) => o.touches_sealed = vec![g.to_string()],
+                ("touches_sealed", Value::List(l)) => {
+                    for item in l.borrow().iter() {
+                        match item {
+                            Value::Str(g) => o.touches_sealed.push(g.to_string()),
+                            other => {
+                                return Err(type_error(format!(
+                                    "{name}: `touches_sealed` holds a {}; want globs as strings",
                                     other.type_name()
                                 ))
                                 .at(s))
@@ -186,7 +204,7 @@ impl Options {
                         }
                     }
                 }
-                ("cwd" | "env" | "timeout_ms" | "grace_ms" | "stdin" | "ok" | "encoding" | "sep" | "touches", other) => {
+                ("cwd" | "env" | "timeout_ms" | "grace_ms" | "stdin" | "ok" | "encoding" | "sep" | "touches" | "touches_sealed", other) => {
                     return Err(type_error(format!(
                         "{name}: option `{k}` has the wrong type ({})",
                         other.type_name()
@@ -196,7 +214,7 @@ impl Options {
                 (other, _) => {
                     return Err(runtime(format!("{name}: unknown option `{other}`"))
                         .at(s)
-                        .with_hint("use one of cwd, env, clean_env, timeout_ms, grace_ms, stdin, check, ok, encoding, header, sep, touches"))
+                        .with_hint("use one of cwd, env, clean_env, timeout_ms, grace_ms, stdin, check, ok, encoding, header, sep, touches, touches_sealed"))
                 }
             }
         }
@@ -205,6 +223,12 @@ impl Options {
             (None, Some(true)) => o.ok = Some(vec![0]),
             (None, Some(false)) => o.ok = None,
             (None, None) => {}
+        }
+        // A sealed glob is a touches glob too: its files are kept, sealed.
+        for g in &o.touches_sealed {
+            if !o.touches.contains(g) {
+                o.touches.push(g.clone());
+            }
         }
         Ok(o)
     }
@@ -1440,6 +1464,7 @@ fn hop(
         args: args.to_vec(),
         cwd: o.cwd.clone(),
         touches: o.touches.clone(),
+        touches_sealed: o.touches_sealed.clone(),
     };
     if !o.touches.is_empty() && i.kernel.pack().is_none() {
         return Err(cigscript_burn(format!(
@@ -1452,7 +1477,9 @@ fn hop(
     if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
     }
-    let watch = i.kernel.pack_watch_begin(o.cwd.as_deref(), &o.touches);
+    let watch = i
+        .kernel
+        .pack_watch_begin(o.cwd.as_deref(), &o.touches, &o.touches_sealed);
     let ran = run_child(name, cmd, args, o, s);
     if let Some(mut w) = watch {
         // Printed here and taken out, so the watch's end does not say them again.
@@ -1706,6 +1733,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         args: summary_args,
         cwd: o.cwd.clone(),
         touches: o.touches.clone(),
+        touches_sealed: o.touches_sealed.clone(),
     };
     if i.effect("proc.pipe", op, s)? == Decision::Simulate {
         return Ok(result_map(0, "", "", 0, true));
