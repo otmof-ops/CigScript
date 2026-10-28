@@ -4913,3 +4913,155 @@ fn give_back_dry_run_lists_what_it_would_restore_and_changes_nothing() {
     assert_eq!(sb.read("p/src/app.txt"), "v2 my edit\n");
     assert_eq!(sb.read("p/src/notes.txt"), "my new notes\n");
 }
+
+// ----- the hash chain (#88): a journal edited after the fact is not the record
+
+/// Runs a script that burns twice and returns the run id and the journal path.
+fn chained_run(sb: &Sandbox) -> (String, PathBuf) {
+    sb.write("a.txt", "one\n");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"a.txt\", \"two\")\n  fs.write_text(\"b.txt\", \"new\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let jp = sb.home().join("runs").join(&id).join("journal.jsonl");
+    (id, jp)
+}
+
+#[test]
+fn an_edited_journal_line_breaks_the_chain() {
+    let sb = Sandbox::new();
+    let (id, jp) = chained_run(&sb);
+    let shown = sb.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("chain     intact: 3 lines")
+            && shown.contains("head      matches the record")
+            && shown.contains("objects   every snapshot"),
+        "{shown}"
+    );
+    // Every line but the first carries the hash of the line before it.
+    let text = fs::read_to_string(&jp).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    assert!(lines[0].starts_with("{\"format\":2,\"prev\":\""), "{text}");
+    for l in &lines[1..] {
+        assert!(l.contains("\"prev\":\""), "{l}");
+    }
+    // Edit the first entry: the second no longer fits it.
+    let edited = text.replacen("a.txt", "z.txt", 1);
+    assert_ne!(edited, text);
+    fs::write(&jp, &edited).unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    assert_eq!(out.status.code(), Some(1));
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        shown
+            .contains("chain     BROKEN at line 3: its prev is not the hash of the line before it"),
+        "{shown}"
+    );
+    // Edit the last line instead: the chain fits, the recorded head does not.
+    let last_edited = text.replace("b.txt", "c.txt");
+    assert_ne!(last_edited, text);
+    fs::write(&jp, last_edited).unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    assert_eq!(out.status.code(), Some(1));
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        shown.contains("chain     intact") && shown.contains("head      does not match the record"),
+        "{shown}"
+    );
+    // The JSON form carries the same verdict.
+    let json = sb.cig(&["--json", "runs", &id, "--verify"]);
+    let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(v["verify"]["ok"], false, "{v}");
+    assert_eq!(v["verify"]["head_ok"], false, "{v}");
+}
+
+#[test]
+fn a_removed_journal_line_breaks_the_chain() {
+    let sb = Sandbox::new();
+    let (id, jp) = chained_run(&sb);
+    let text = fs::read_to_string(&jp).unwrap();
+    let kept: Vec<&str> = text
+        .lines()
+        .enumerate()
+        .filter(|(i, _)| *i != 1)
+        .map(|(_, l)| l)
+        .collect();
+    fs::write(&jp, format!("{}\n", kept.join("\n"))).unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    assert_eq!(out.status.code(), Some(1));
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(shown.contains("chain     BROKEN at line 2"), "{shown}");
+    // Reordering is a removal and an insertion: seen the same way.
+    let mut lines: Vec<&str> = text.lines().collect();
+    lines.swap(1, 2);
+    fs::write(&jp, format!("{}\n", lines.join("\n"))).unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn unburn_refuses_a_broken_chain() {
+    let sb = Sandbox::new();
+    let (id, jp) = chained_run(&sb);
+    let text = fs::read_to_string(&jp).unwrap();
+    fs::write(&jp, text.replacen("a.txt", "z.txt", 1)).unwrap();
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("the journal's chain is broken at line 3") && plan.contains("E760"),
+        "{plan}"
+    );
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E760 burn]: the journal of") && err.contains("line 3"),
+        "{err}"
+    );
+    assert_eq!(sb.read("a.txt"), "two", "the refusal restored nothing");
+    assert!(sb.exists("b.txt"));
+    // --force restores from the journal as it is, and says so.
+    let out = sb.cig(&["unburn", &id, "--force"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains("chain is broken at line 3") && err.contains("--force given"),
+        "{err}"
+    );
+    assert!(!sb.exists("b.txt"), "{err}");
+    assert!(sb.cig(&["explain", "E760"]).status.success());
+}
+
+/// A journal an older cig wrote carries no chain, and is read as it always was.
+#[test]
+fn a_format_1_journal_still_unburns() {
+    let sb = Sandbox::new();
+    let (id, jp) = chained_run(&sb);
+    // Make the journal format 1 by hand: no prev anywhere.
+    let text = fs::read_to_string(&jp).unwrap();
+    let mut out = String::from("{\"format\":1}\n");
+    for l in text.lines().skip(1) {
+        let v: serde_json::Value = serde_json::from_str(l).unwrap();
+        let mut m = v.as_object().unwrap().clone();
+        m.remove("prev");
+        out.push_str(&serde_json::to_string(&m).unwrap());
+        out.push('\n');
+    }
+    fs::write(&jp, out).unwrap();
+    let shown = sb.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("chain     none: the journal is format 1"),
+        "{shown}"
+    );
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("a.txt"), "one\n");
+    assert!(!sb.exists("b.txt"));
+    // The markers the unburn appended carry no prev either: the file stays format 1.
+    let after = fs::read_to_string(&jp).unwrap();
+    assert!(!after.contains("prev"), "{after}");
+    assert!(after.contains("\"restored\":true"), "{after}");
+}

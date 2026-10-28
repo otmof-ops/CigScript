@@ -115,7 +115,56 @@ pub struct Compensation {
 /// The shape of `journal.jsonl` and `after.json` this cig writes. The
 /// journal's first line says which; a cig that reads an older format reads
 /// it as it always did, and a newer one is refused by its number (E808).
-pub const JOURNAL_FORMAT: u32 = 1;
+/// Format 2 (1.5.0) chains the lines: each carries `prev`, the SHA-256 of
+/// the line before it as written, and the first line that of the run's id,
+/// so a line edited, removed or reordered after the run no longer fits.
+pub const JOURNAL_FORMAT: u32 = 2;
+
+/// The state of a journal's hash chain, found when it was loaded. A format
+/// 1 journal has no chain and is never checked.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Chain {
+    /// The format the journal declared (0 for one from before 1.2.0).
+    pub format: u32,
+    /// Lines read, the format line included and a damaged last line aside.
+    pub lines: usize,
+    /// The first line whose `prev` is not the hash of the line before it.
+    pub broken_at: Option<ChainBreak>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ChainBreak {
+    /// The line in `journal.jsonl`, counted from 1.
+    pub line: usize,
+    pub reason: String,
+}
+
+impl Chain {
+    /// Does this journal carry a chain at all?
+    pub fn checked(&self) -> bool {
+        self.format >= 2
+    }
+
+    /// Every line fits the one before it (true for a journal with no chain).
+    pub fn intact(&self) -> bool {
+        self.broken_at.is_none()
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+/// What the first line of a run's journal carries as `prev`: the hash of
+/// the run's id, so a journal moved under another run's name is seen.
+fn chain_seed(run_dir: &Path) -> String {
+    let id = run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    sha256_hex(id.as_bytes())
+}
 
 pub struct Journal {
     run_dir: Option<PathBuf>,
@@ -126,6 +175,11 @@ pub struct Journal {
     /// The last line on disk was cut short (a crash mid-append); what came
     /// before it loaded.
     truncated: bool,
+    /// The SHA-256 of the last line on disk, which the next line carries as
+    /// `prev`; `run.json` records it when the run ends.
+    head: String,
+    /// What the chain check found when the journal was loaded.
+    chain: Chain,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -156,6 +210,8 @@ impl RollbackReport {
 
 impl Journal {
     pub fn open(run_dir: Option<PathBuf>) -> Result<Self, io::Error> {
+        let mut head = String::new();
+        let mut chain = Chain::default();
         let file = match &run_dir {
             Some(dir) => {
                 fs::create_dir_all(dir.join("snapshots"))?;
@@ -163,12 +219,26 @@ impl Journal {
                     .create(true)
                     .append(true)
                     .open(dir.join("journal.jsonl"))?;
-                // The first line names the format. It has no `op`, so a cig
-                // from before formats reads it as a marker and goes on.
                 if f.metadata()?.len() == 0 {
-                    f.write_all(format!("{{\"format\":{JOURNAL_FORMAT}}}\n").as_bytes())?;
+                    // The first line names the format and seeds the chain.
+                    // It has no `op`, so a cig from before formats reads it
+                    // as a marker and goes on.
+                    let line = format!(
+                        "{{\"format\":{JOURNAL_FORMAT},\"prev\":\"{}\"}}",
+                        chain_seed(dir)
+                    );
+                    f.write_all(line.as_bytes())?;
+                    f.write_all(b"\n")?;
                     f.flush()?;
                     full_sync_data(&f)?;
+                    head = sha256_hex(line.as_bytes());
+                    chain.format = JOURNAL_FORMAT;
+                    chain.lines = 1;
+                } else {
+                    // Reopened: the chain goes on from the last intact line.
+                    let loaded = Self::load(dir)?;
+                    head = loaded.head;
+                    chain = loaded.chain;
                 }
                 sync_dir(dir)?;
                 Some(f)
@@ -181,6 +251,8 @@ impl Journal {
             entries: Vec::new(),
             format: JOURNAL_FORMAT,
             truncated: false,
+            head,
+            chain,
         })
     }
 
@@ -190,6 +262,10 @@ impl Journal {
         let mut entries: Vec<Entry> = Vec::new();
         let mut truncated = false;
         let mut format = 0;
+        let mut chain = Chain::default();
+        // What this line's `prev` must be: the hash of the line before it,
+        // or of the run's id for the first.
+        let mut expect = chain_seed(run_dir);
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         for (i, line) in lines.iter().enumerate() {
             let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
@@ -203,12 +279,8 @@ impl Journal {
                 }
                 Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e)),
             };
-            // Markers: `{"seq": N, "undone": true}` says an earlier entry was
-            // rolled back by a retry, or never happened (`"failed": true`);
-            // `{"seq": N, "compensated": true}` says its block completed and
-            // the compensation recorded after it covers the op.
-            if v.get("op").is_none() {
-                if let Some(f) = v.get("format").and_then(|f| f.as_u64()) {
+            if let Some(f) = v.get("format").and_then(|f| f.as_u64()) {
+                if v.get("op").is_none() {
                     if f > u64::from(JOURNAL_FORMAT) {
                         let version = fs::read_to_string(run_dir.join("run.json"))
                             .ok()
@@ -222,8 +294,34 @@ impl Journal {
                         ));
                     }
                     format = f as u32;
-                    continue;
+                    chain.format = format;
                 }
+            }
+            // From format 2 on, every line names the hash of the line before
+            // it. The first break is kept; what follows it is read all the
+            // same, so the record can still be shown.
+            if chain.format >= 2 && chain.broken_at.is_none() {
+                let reason = match v.get("prev").and_then(|p| p.as_str()) {
+                    Some(p) if p == expect => None,
+                    Some(_) => Some(
+                        "its prev is not the hash of the line before it: a line was edited, removed or reordered",
+                    ),
+                    None => Some("it carries no prev, which every line of this format does"),
+                };
+                if let Some(reason) = reason {
+                    chain.broken_at = Some(ChainBreak {
+                        line: i + 1,
+                        reason: reason.to_string(),
+                    });
+                }
+            }
+            expect = sha256_hex(line.as_bytes());
+            chain.lines = i + 1;
+            // Markers: `{"seq": N, "undone": true}` says an earlier entry was
+            // rolled back by a retry, or never happened (`"failed": true`);
+            // `{"seq": N, "compensated": true}` says its block completed and
+            // the compensation recorded after it covers the op.
+            if v.get("op").is_none() {
                 let seq = v.get("seq").and_then(|n| n.as_u64());
                 let target = seq.and_then(|seq| entries.iter_mut().find(|e| e.seq == seq));
                 if let Some(e) = target {
@@ -258,12 +356,24 @@ impl Journal {
             entries,
             format,
             truncated,
+            head: expect,
+            chain,
         })
     }
 
     /// The format the journal on disk declared (0: from before 1.2.0).
     pub fn format(&self) -> u32 {
         self.format
+    }
+
+    /// The hash of the last line on disk: the chain's head.
+    pub fn head(&self) -> &str {
+        &self.head
+    }
+
+    /// What the chain check found when the journal was loaded.
+    pub fn chain(&self) -> &Chain {
+        &self.chain
     }
 
     /// True when the journal on disk ended mid-line (a crash while appending)
@@ -312,35 +422,54 @@ impl Journal {
     /// numbers stay; the retry's own entries follow.
     pub fn rollback_since(&mut self, mark: usize) -> RollbackReport {
         let report = self.rollback_from(mark, None, false);
-        let mut markers = String::new();
+        let mut markers = Vec::new();
         for e in self.entries.iter_mut().skip(mark) {
             if !e.undone {
                 e.undone = true;
-                markers.push_str(&format!("{{\"seq\":{},\"undone\":true}}\n", e.seq));
+                markers.push(serde_json::json!({"seq": e.seq, "undone": true}));
             }
         }
-        if let Some(f) = &mut self.file {
-            let _ = f.write_all(markers.as_bytes());
-            let _ = f.flush();
-            let _ = full_sync_data(f);
-        }
+        self.append_markers(markers);
         report
     }
 
-    fn append_marker(&mut self, marker: &str) {
-        // A journal loaded for `unburn` has no file open: open it to append.
+    /// Append one line to the journal on disk, chained to the one before it
+    /// and made durable. A journal loaded for `unburn` has no file open: it
+    /// is opened to append. An in-memory journal writes nothing.
+    fn append_line(&mut self, mut v: serde_json::Value) -> io::Result<()> {
         if self.file.is_none() {
             if let Some(dir) = &self.run_dir {
-                self.file = fs::OpenOptions::new()
-                    .append(true)
-                    .open(dir.join("journal.jsonl"))
-                    .ok();
+                self.file = Some(
+                    fs::OpenOptions::new()
+                        .append(true)
+                        .open(dir.join("journal.jsonl"))?,
+                );
             }
         }
-        if let Some(f) = &mut self.file {
-            let _ = f.write_all(marker.as_bytes());
-            let _ = f.flush();
-            let _ = full_sync_data(f);
+        let Some(f) = &mut self.file else {
+            return Ok(());
+        };
+        // A format 1 journal (one an older cig wrote) stays format 1: its
+        // markers carry no `prev`, as none of its lines do.
+        if self.format >= 2 {
+            v["prev"] = serde_json::Value::String(self.head.clone());
+        }
+        let line =
+            serde_json::to_string(&v).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        f.write_all(line.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.flush()?;
+        full_sync_data(f)?;
+        self.head = sha256_hex(line.as_bytes());
+        self.chain.lines += 1;
+        Ok(())
+    }
+
+    /// Append marker lines; a marker that cannot be written is not fatal to
+    /// the rollback it describes, which already happened.
+    fn append_markers(&mut self, markers: Vec<serde_json::Value>) {
+        for m in markers {
+            let _ = self.append_line(m);
         }
     }
 
@@ -354,8 +483,10 @@ impl Journal {
         }
         e.undone = true;
         let out = (e.reversible, e.compensated);
-        let marker = format!("{{\"seq\":{},\"undone\":true,\"failed\":true}}\n", e.seq);
-        self.append_marker(&marker);
+        let seq = e.seq;
+        self.append_markers(vec![
+            serde_json::json!({"seq": seq, "undone": true, "failed": true}),
+        ]);
         Some(out)
     }
 
@@ -363,18 +494,15 @@ impl Journal {
     /// recorded: stamp its irreversible ops `compensated`, in memory and
     /// on disk. Returns how many were stamped.
     pub fn mark_compensated_since(&mut self, mark: usize) -> usize {
-        let mut markers = String::new();
-        let mut count = 0;
+        let mut markers = Vec::new();
         for e in self.entries.iter_mut().skip(mark) {
             if !e.reversible && !e.undone && !e.compensated && e.compensation.is_none() {
                 e.compensated = true;
-                count += 1;
-                markers.push_str(&format!("{{\"seq\":{},\"compensated\":true}}\n", e.seq));
+                markers.push(serde_json::json!({"seq": e.seq, "compensated": true}));
             }
         }
-        if count > 0 {
-            self.append_marker(&markers);
-        }
+        let count = markers.len();
+        self.append_markers(markers);
         count
     }
 
@@ -420,13 +548,10 @@ impl Journal {
             compensated,
             compensation,
         };
-        if let Some(f) = &mut self.file {
-            let mut line = serde_json::to_string(&entry)
+        if self.file.is_some() {
+            let v = serde_json::to_value(&entry)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            line.push('\n');
-            f.write_all(line.as_bytes())?;
-            f.flush()?;
-            full_sync_data(f)?;
+            self.append_line(v)?;
         }
         self.entries.push(entry);
         Ok(())
@@ -974,14 +1099,14 @@ impl Journal {
         if seqs.is_empty() {
             return;
         }
-        let mut markers = String::new();
+        let mut markers = Vec::new();
         for e in self.entries.iter_mut() {
             if seqs.contains(&e.seq) && !e.restored {
                 e.restored = true;
-                markers.push_str(&format!("{{\"seq\":{},\"restored\":true}}\n", e.seq));
+                markers.push(serde_json::json!({"seq": e.seq, "restored": true}));
             }
         }
-        self.append_marker(&markers);
+        self.append_markers(markers);
     }
 
     /// Record what a pass moved into the tin, per entry, and what it left
@@ -991,25 +1116,19 @@ impl Journal {
         if took.is_empty() {
             return;
         }
-        let mut markers = String::new();
+        let mut markers = Vec::new();
         for (seq, states, left) in took {
-            if let (Ok(json), Ok(left_json)) =
-                (serde_json::to_string(&states), serde_json::to_string(&left))
-            {
-                if left.is_empty() {
-                    markers.push_str(&format!("{{\"seq\":{seq},\"took\":{json}}}\n"));
-                } else {
-                    markers.push_str(&format!(
-                        "{{\"seq\":{seq},\"took\":{json},\"left\":{left_json}}}\n"
-                    ));
-                }
+            let mut m = serde_json::json!({"seq": seq, "took": states});
+            if !left.is_empty() {
+                m["left"] = serde_json::to_value(&left).unwrap_or_default();
             }
+            markers.push(m);
             if let Some(e) = self.entries.iter_mut().find(|e| e.seq == seq) {
                 e.took = states;
                 e.left_after = left;
             }
         }
-        self.append_marker(&markers);
+        self.append_markers(markers);
     }
 
     /// Does any entry hold files a rollback displaced into the tin?

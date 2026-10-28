@@ -70,6 +70,11 @@ pub struct RunRecord {
     /// The pack the run declared, so `cig unburn` can take its lock.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pack: Vec<PathBuf>,
+    /// The head of the journal's hash chain when this record was last
+    /// saved: the hash of its last line. `cig runs <id> --verify` compares
+    /// it with the journal on disk, so lines added or removed since show.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub journal_head: Option<String>,
     /// Process id of the run, to tell an interrupted run from a live one.
     #[serde(default)]
     pub pid: Option<u32>,
@@ -127,6 +132,7 @@ impl RunRecord {
             rollback_failed: Vec::new(),
             rollback_took: 0,
             pack: Vec::new(),
+            journal_head: None,
             pid: Some(std::process::id()),
             pid_started: if mode == "dry-run" {
                 None
@@ -170,6 +176,7 @@ impl RunRecord {
             rollback_failed: Vec::new(),
             rollback_took: 0,
             pack: Vec::new(),
+            journal_head: None,
             pid: None,
             pid_started: None,
             trial: None,

@@ -7,7 +7,7 @@ use super::{exit, Ctx};
 use cigscript::burn::journal::{Before, Journal};
 use cigscript::burn::runs::{self, RunRecord};
 
-pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>) -> i32 {
+pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>, verify: bool) -> i32 {
     if let Some(keep) = prune {
         return prune_runs(ctx, keep);
     }
@@ -19,7 +19,7 @@ pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>) -> i32 {
         }
     };
     match id {
-        Some(id) => show(ctx, &id, &all),
+        Some(id) => show(ctx, &id, &all, verify),
         None => {
             if ctx.json {
                 outln!("{}", serde_json::to_string(&all).unwrap_or_default());
@@ -62,7 +62,7 @@ pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>) -> i32 {
     }
 }
 
-fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
+fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
     let rec = match runs::find(id) {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -82,13 +82,22 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
         }
     };
     let journal = Journal::load(&rec.dir()).ok();
+    let checked = if verify {
+        journal.as_ref().map(|j| verify_run(&rec, j))
+    } else {
+        None
+    };
     if ctx.json {
         let obj = serde_json::json!({
             "run": rec,
             "journal": journal.as_ref().map(|j| j.entries().to_vec()),
+            "verify": checked,
         });
         outln!("{}", serde_json::to_string(&obj).unwrap_or_default());
-        return exit::OK;
+        return match &checked {
+            Some(v) if !v.ok => exit::SCRIPT_ERROR,
+            _ => exit::OK,
+        };
     }
     outln!("{}", ctx.bold(&rec.id));
     outln!(
@@ -176,7 +185,109 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
             }
         }
     }
+    if let Some(v) = checked {
+        outln!(
+            "  chain     {}",
+            if v.chain_ok {
+                v.chain_text
+            } else {
+                ctx.red(&v.chain_text)
+            }
+        );
+        outln!(
+            "  head      {}",
+            if v.head_ok {
+                v.head_text
+            } else {
+                ctx.red(&v.head_text)
+            }
+        );
+        if v.problems.is_empty() {
+            outln!(
+                "  objects   every snapshot and tin object the journal needs is there and hashes as recorded"
+            );
+        } else {
+            outln!(
+                "  objects   {} problem{}:",
+                v.problems.len(),
+                if v.problems.len() == 1 { "" } else { "s" }
+            );
+            for p in &v.problems {
+                outln!("    {} {p}", ctx.red("problem"));
+            }
+        }
+        return if v.ok { exit::OK } else { exit::SCRIPT_ERROR };
+    }
     exit::OK
+}
+
+/// What `cig runs <id> --verify` found.
+#[derive(serde::Serialize)]
+struct Verified {
+    chain: cigscript::burn::journal::Chain,
+    chain_ok: bool,
+    chain_text: String,
+    head_recorded: Option<String>,
+    head: String,
+    head_ok: bool,
+    head_text: String,
+    problems: Vec<String>,
+    ok: bool,
+}
+
+/// Walk the journal's chain, compare its head with the record, and check
+/// every snapshot and tin object a rollback would need.
+fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
+    let chain = journal.chain().clone();
+    let (chain_ok, chain_text) = if !chain.checked() {
+        (
+            true,
+            format!(
+                "none: the journal is format {} (from before 1.5.0), so its lines carry no prev",
+                chain.format
+            ),
+        )
+    } else if let Some(b) = &chain.broken_at {
+        (false, format!("BROKEN at line {}: {}", b.line, b.reason))
+    } else {
+        (
+            true,
+            format!(
+                "intact: {} line{}, each carrying the hash of the one before it",
+                chain.lines,
+                if chain.lines == 1 { "" } else { "s" }
+            ),
+        )
+    };
+    let head = journal.head().to_string();
+    let (head_ok, head_text) = match &rec.journal_head {
+        _ if !chain.checked() => (
+            true,
+            "not checked: a journal without a chain has no head to compare".to_string(),
+        ),
+        None => (
+            true,
+            "not recorded yet (the run has not finished, or died before it could)".to_string(),
+        ),
+        Some(h) if *h == head => (true, "matches the record: no line was added or removed since it was saved".to_string()),
+        Some(_) => (
+            false,
+            "does not match the record: lines were added, removed or changed after the record was saved".to_string(),
+        ),
+    };
+    let problems = journal.verify();
+    let ok = chain_ok && head_ok && problems.is_empty();
+    Verified {
+        chain,
+        chain_ok,
+        chain_text,
+        head_recorded: rec.journal_head.clone(),
+        head,
+        head_ok,
+        head_text,
+        problems,
+        ok,
+    }
 }
 
 /// `cig unburn <id> --give-back`: put back what the run's rollback moved
@@ -321,6 +432,15 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             outln!("  {} {text}", paint_action(ctx, label));
         }
     }
+    let mut rec = rec;
+    rec.journal_head = Some(journal.head().to_string());
+    if let Err(e) = rec.save() {
+        eprintln!(
+            "{} could not record the give-back in {}: {e}",
+            ctx.yellow("warning:"),
+            rec.dir().display()
+        );
+    }
     if report.clean() {
         exit::OK
     } else {
@@ -402,6 +522,41 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     if journal.is_empty() {
         eprintln!("{} burned nothing; there is nothing to unburn", rec.id);
         return exit::OK;
+    }
+    // Every line of a format 2 journal carries the hash of the one before
+    // it: a journal that no longer fits itself is not the record, and is
+    // restored from only on purpose.
+    if let Some(b) = &journal.chain().broken_at {
+        if !force && !dry_run {
+            eprintln!(
+                "{} the journal of {} is not the record the run wrote: line {} {}",
+                ctx.red("error[E760 burn]:"),
+                rec.id,
+                b.line,
+                b.reason
+            );
+            eprintln!(
+                "  = hint: cig runs {} --verify walks the chain; pass --force to restore from the journal as it is, knowing it was changed",
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E760");
+            return exit::SCRIPT_ERROR;
+        }
+        if dry_run {
+            outln!(
+                "  {} the journal's chain is broken at line {} ({}); a real unburn would refuse [E760] unless --force",
+                ctx.yellow("note:"),
+                b.line,
+                b.reason
+            );
+        } else {
+            eprintln!(
+                "{} the journal's chain is broken at line {} ({}); --force given",
+                ctx.yellow("note:"),
+                b.line,
+                b.reason
+            );
+        }
     }
     // A rollback that left restores failed is finished by a plain unburn:
     // the entries restored the first time are skipped, the failed ones
@@ -678,6 +833,7 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     rec.rolled_back = true;
     rec.rollback_failed = report.failed.clone();
     rec.rollback_took = report.took.len();
+    rec.journal_head = Some(journal.head().to_string());
     rec.status = if report.clean() {
         "unburned".to_string()
     } else {

@@ -452,6 +452,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             record.diagnostic = Some(v);
         }
         record.trial = trial_note.clone();
+        record.journal_head = Some(interp.kernel.journal().head().to_string());
         record.finish(status, error);
         if !record.rolled_back && !interp.kernel.journal().is_empty() {
             if let Err(e) = interp.kernel.journal().write_after_state() {
