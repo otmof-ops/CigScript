@@ -2912,7 +2912,7 @@ fn a_run_from_1_1_1_reads_on_the_current_version() {
         "home/runs/{}/journal.jsonl",
         runs[0]["id"].as_str().unwrap()
     ));
-    assert!(journal.starts_with("{\"format\":1}\n"), "{journal}");
+    assert!(journal.starts_with("{\"format\":2,\"run\":\""), "{journal}");
     let id2 = "20260102T000000-def456";
     write_run(
         &sb,
@@ -4944,7 +4944,7 @@ fn an_edited_journal_line_breaks_the_chain() {
     let text = fs::read_to_string(&jp).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 3, "{text}");
-    assert!(lines[0].starts_with("{\"format\":2,\"prev\":\""), "{text}");
+    assert!(lines[0].starts_with("{\"format\":2,\"run\":\""), "{text}");
     for l in &lines[1..] {
         assert!(l.contains("\"prev\":\""), "{l}");
     }
@@ -5064,4 +5064,61 @@ fn a_format_1_journal_still_unburns() {
     let after = fs::read_to_string(&jp).unwrap();
     assert!(!after.contains("prev"), "{after}");
     assert!(after.contains("\"restored\":true"), "{after}");
+}
+
+/// A hop's one-byte edit to a large file costs the tin one chunk, and the
+/// file comes back byte for byte from its recipe (#82).
+#[cfg(unix)]
+#[test]
+fn a_hop_edit_to_a_large_file_stores_the_chunk_that_changed() {
+    let sb = Sandbox::new();
+    let mut x: u64 = 99;
+    let data: Vec<u8> = (0..(1usize << 20))
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect();
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    fs::write(sb.path().join("p/big.bin"), &data).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", 'printf X | dd of=big.bin bs=1 seek=$1 conv=notrunc 2>/dev/null', \"sh\", args[0]], {cwd: \"p\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig", "--", "500000"], 1);
+    assert_eq!(
+        fs::read(sb.path().join("p/big.bin")).unwrap(),
+        data,
+        "the file came back byte for byte: {err}"
+    );
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    // The original and the hop's output (taken by the rollback) share every
+    // chunk but the one the edit landed in.
+    assert_eq!(du["recipes"], 2, "{du}");
+    assert_eq!(du["logical"], 2u64 << 20, "{du}");
+    let stored1 = du["stored"].as_u64().unwrap();
+    assert!(
+        stored1 < (1 << 20) + 2 * 256 * 1024,
+        "two versions of 1 MiB stored in {stored1} bytes: {du}"
+    );
+    // Another edit, another run: one more chunk.
+    sb.run_err(&["run", "s.cig", "--", "900000"], 1);
+    assert_eq!(fs::read(sb.path().join("p/big.bin")).unwrap(), data);
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    assert_eq!(du["recipes"], 3, "{du}");
+    assert_eq!(du["logical"], 3u64 << 20, "{du}");
+    let stored2 = du["stored"].as_u64().unwrap();
+    assert!(
+        stored2 - stored1 <= 2 * 256 * 1024,
+        "the second edit added {} bytes: {du}",
+        stored2 - stored1
+    );
+    // Every chunk a live run names survives gc, and the tin verifies.
+    let gc: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "gc"])).unwrap();
+    assert_eq!(gc["removed"], 0, "{gc}");
+    sb.run_ok(&["tin", "verify"]);
+    let text = sb.run_ok(&["tin"]);
+    assert!(text.contains("chunked under a recipe"), "{text}");
 }

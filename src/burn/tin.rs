@@ -16,6 +16,7 @@
 
 use super::journal::sha256_file;
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
@@ -29,6 +30,87 @@ pub fn dir() -> PathBuf {
 
 fn objects_dir() -> PathBuf {
     dir().join("objects")
+}
+
+fn recipes_dir() -> PathBuf {
+    dir().join("recipes")
+}
+
+/// Files at least this large are kept as chunks under a recipe rather than
+/// as one object, so a small change stores the chunk that changed, not the
+/// file again. Smaller files cost exactly what they did before.
+pub const CHUNK_FILE_MIN: u64 = 64 * 1024;
+/// FastCDC's bounds for one chunk: 16 KiB at least, 64 KiB on average,
+/// 256 KiB at most. Boundaries depend on the bytes, not on offsets, so an
+/// insert moves one boundary, not every boundary after it.
+const CHUNK_MIN: u32 = 16 * 1024;
+const CHUNK_AVG: u32 = 64 * 1024;
+const CHUNK_MAX: u32 = 256 * 1024;
+
+/// The shape of a recipe file this cig writes.
+pub const RECIPE_FORMAT: u32 = 1;
+
+/// A chunked file in the tin: the ordered chunks that make it, each an
+/// object named by its own hash, and the hash and size of the whole. Kept
+/// under `tin/recipes/<sha256 of the file>`, so the same file stashed
+/// twice is one recipe.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Recipe {
+    pub format: u32,
+    pub sha256: String,
+    pub bytes: u64,
+    pub chunks: Vec<ChunkRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChunkRef {
+    pub sha256: String,
+    pub len: u64,
+}
+
+fn object_path(hash: &str) -> PathBuf {
+    objects_dir().join(&hash[..2]).join(hash)
+}
+
+fn recipe_path(hash: &str) -> PathBuf {
+    recipes_dir().join(&hash[..2]).join(hash)
+}
+
+/// Is this snapshot path a recipe in the tin (a chunked file)?
+pub fn is_recipe(path: &Path) -> bool {
+    path.starts_with(recipes_dir())
+}
+
+/// Read a recipe and check that it is the one its name says.
+pub fn read_recipe(path: &Path) -> io::Result<Recipe> {
+    let text = fs::read_to_string(path)?;
+    let recipe: Recipe =
+        serde_json::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if recipe.sha256 != name {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "recipe {} is for other bytes than its name says (sha256 {})",
+                path.display(),
+                &recipe.sha256[..recipe.sha256.len().min(12)]
+            ),
+        ));
+    }
+    if recipe.format > RECIPE_FORMAT {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "recipe {} is format {}, written by a newer cig; this one reads up to {RECIPE_FORMAT}",
+                path.display(),
+                recipe.format
+            ),
+        ));
+    }
+    Ok(recipe)
 }
 
 /// One path kept in the tin: a file's bytes as an object, with its mode
@@ -45,14 +127,23 @@ pub struct Stashed {
     pub link: Option<PathBuf>,
 }
 
-/// A copy of a file waiting beside the objects under a temporary name,
-/// hashed as it was copied: it becomes an object under that hash when it
-/// is committed. The two steps let a run write down which objects it is
-/// about to depend on before any of them exists under its final name, so
-/// a `cig tin gc` in another terminal never removes one between the two.
+/// A copy of a file waiting beside the objects under temporary names,
+/// hashed as it was read: it becomes an object (or, for a large file, a
+/// recipe and the chunks the tin did not have yet) when it is committed.
+/// The two steps let a run write down which objects it is about to depend
+/// on before any of them exists under its final name, so a `cig tin gc` in
+/// another terminal never removes one between the two.
 #[derive(Debug)]
 pub struct Staged {
-    tmp: PathBuf,
+    /// A whole file's copy under a temporary name; None for a chunked file
+    /// or a link.
+    tmp: Option<PathBuf>,
+    /// A chunked file: every chunk, with a temporary copy of each one the
+    /// tin did not already hold.
+    chunks: Vec<StagedChunk>,
+    /// The recipe's temporary copy, when the tin did not already hold it.
+    recipe_tmp: Option<PathBuf>,
+    chunked: bool,
     sha256: String,
     bytes: u64,
     mode: Option<u32>,
@@ -60,10 +151,21 @@ pub struct Staged {
     link: Option<PathBuf>,
 }
 
+#[derive(Debug)]
+struct StagedChunk {
+    sha256: String,
+    len: u64,
+    tmp: Option<PathBuf>,
+}
+
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 fn temp_name(tag: &str) -> PathBuf {
-    objects_dir().join(format!(
+    temp_name_in(&objects_dir(), tag)
+}
+
+fn temp_name_in(dir: &Path, tag: &str) -> PathBuf {
+    dir.join(format!(
         ".{tag}-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -120,13 +222,54 @@ fn make_read_only(p: &Path) -> io::Result<()> {
     }
 }
 
-/// Copy `path` beside the objects, hashed as it is copied. A symbolic link
-/// needs no copy: it is kept as its target.
+/// Is the object already there, whole and hashing to its name?
+fn pressed_ok(object: &Path, len: u64, sha256: &str) -> bool {
+    object.is_file()
+        && fs::metadata(object).map(|m| m.len()).ok() == Some(len)
+        && sha256_file(object).ok().as_deref() == Some(sha256)
+}
+
+/// Give a temporary copy its name as an object: pressed, written once. An
+/// object already there is trusted only when it hashes to its name; one
+/// that does not is replaced, so a corrupt object is never reused by a
+/// later stash. The copy is flushed through a handle that works on a
+/// read-only file too, then named, and its directory synced, so the journal
+/// entry that follows never points at a name the disk has not learned yet.
+fn press(tmp: &Path, object: &Path, len: u64, sha256: &str) -> io::Result<()> {
+    let bucket = object.parent().expect("an object has a bucket");
+    fs::create_dir_all(bucket)?;
+    if pressed_ok(object, len, sha256) {
+        let _ = fs::remove_file(tmp);
+        return Ok(());
+    }
+    let done = (|| {
+        super::journal::sync_file(tmp)?;
+        make_read_only(tmp)?;
+        if object.exists() {
+            lift_read_only(object);
+            let _ = fs::remove_file(object);
+        }
+        fs::rename(tmp, object)?;
+        let _ = super::journal::sync_dir_pub(bucket);
+        Ok(())
+    })();
+    if done.is_err() {
+        let _ = fs::remove_file(tmp);
+    }
+    done
+}
+
+/// Copy `path` beside the objects, hashed as it is copied: whole when it is
+/// small, as chunks under a recipe when it is `CHUNK_FILE_MIN` or more. A
+/// symbolic link needs no copy: it is kept as its target.
 pub fn prepare(path: &Path) -> io::Result<Staged> {
     let meta = fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() {
         return Ok(Staged {
-            tmp: PathBuf::new(),
+            tmp: None,
+            chunks: Vec::new(),
+            recipe_tmp: None,
+            chunked: false,
             sha256: String::new(),
             bytes: 0,
             mode: None,
@@ -135,6 +278,9 @@ pub fn prepare(path: &Path) -> io::Result<Staged> {
         });
     }
     fs::create_dir_all(objects_dir())?;
+    if meta.len() >= CHUNK_FILE_MIN {
+        return prepare_chunked(path, &meta);
+    }
     let tmp = temp_name("stash");
     let (sha256, bytes) = match copy_hashing(path, &tmp) {
         Ok(v) => v,
@@ -144,7 +290,10 @@ pub fn prepare(path: &Path) -> io::Result<Staged> {
         }
     };
     Ok(Staged {
-        tmp,
+        tmp: Some(tmp),
+        chunks: Vec::new(),
+        recipe_tmp: None,
+        chunked: false,
         sha256,
         bytes,
         mode: mode_of(&meta),
@@ -153,19 +302,120 @@ pub fn prepare(path: &Path) -> io::Result<Staged> {
     })
 }
 
+/// Read a large file once, cutting it into content-defined chunks as it
+/// streams. A chunk the tin already holds (hashing to its name) costs
+/// nothing; the rest wait under temporary names. The recipe is written
+/// when the tin has none for this exact content.
+fn prepare_chunked(path: &Path, meta: &fs::Metadata) -> io::Result<Staged> {
+    fs::create_dir_all(recipes_dir())?;
+    let file = fs::File::open(path)?;
+    let mut whole = Sha256::new();
+    let mut total = 0u64;
+    let mut chunks: Vec<StagedChunk> = Vec::new();
+    let cut = (|| -> io::Result<()> {
+        let reader = io::BufReader::with_capacity(1 << 20, file);
+        for chunk in fastcdc::v2020::StreamCDC::new(reader, CHUNK_MIN, CHUNK_AVG, CHUNK_MAX) {
+            let chunk = match chunk {
+                Ok(c) => c,
+                Err(fastcdc::v2020::Error::Empty) => break,
+                Err(fastcdc::v2020::Error::IoError(e)) => return Err(e),
+                Err(e) => return Err(io::Error::other(e.to_string())),
+            };
+            let sha256 = hex::encode(Sha256::digest(&chunk.data));
+            whole.update(&chunk.data);
+            let len = chunk.data.len() as u64;
+            total += len;
+            let tmp = if pressed_ok(&object_path(&sha256), len, &sha256) {
+                None
+            } else {
+                let t = temp_name("chunk");
+                fs::write(&t, &chunk.data)?;
+                Some(t)
+            };
+            chunks.push(StagedChunk { sha256, len, tmp });
+        }
+        Ok(())
+    })();
+    if let Err(e) = cut {
+        for c in &chunks {
+            if let Some(t) = &c.tmp {
+                let _ = fs::remove_file(t);
+            }
+        }
+        return Err(e);
+    }
+    let sha256 = hex::encode(whole.finalize());
+    let recipe = Recipe {
+        format: RECIPE_FORMAT,
+        sha256: sha256.clone(),
+        bytes: total,
+        chunks: chunks
+            .iter()
+            .map(|c| ChunkRef {
+                sha256: c.sha256.clone(),
+                len: c.len,
+            })
+            .collect(),
+    };
+    let have = read_recipe(&recipe_path(&sha256)).ok();
+    let recipe_tmp = if have.as_ref() == Some(&recipe) {
+        None
+    } else {
+        let t = temp_name_in(&recipes_dir(), "recipe");
+        let json = serde_json::to_vec(&recipe)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if let Err(e) = fs::write(&t, json) {
+            for c in &chunks {
+                if let Some(t) = &c.tmp {
+                    let _ = fs::remove_file(t);
+                }
+            }
+            return Err(e);
+        }
+        Some(t)
+    };
+    Ok(Staged {
+        tmp: None,
+        chunks,
+        recipe_tmp,
+        chunked: true,
+        sha256,
+        bytes: total,
+        mode: mode_of(meta),
+        mtime_ns: super::journal::mtime_ns(meta),
+        link: None,
+    })
+}
+
 impl Staged {
-    /// Where the object will be once committed (empty for a link).
+    /// What the journal will point at once committed: the object, or the
+    /// recipe for a chunked file (empty for a link).
     pub fn object(&self) -> PathBuf {
         if self.link.is_some() {
             PathBuf::new()
+        } else if self.chunked {
+            recipe_path(&self.sha256)
         } else {
-            objects_dir().join(&self.sha256[..2]).join(&self.sha256)
+            object_path(&self.sha256)
         }
     }
 
-    /// Give the copy its name. An object already there is trusted only
-    /// when it hashes to its name; one that does not is replaced, so a
-    /// corrupt object is never reused by a later stash.
+    /// Every path in the tin this stash will depend on: the object, or the
+    /// recipe and each of its chunks. A run lists them before any exists
+    /// under its name, so a `cig tin gc` during the hop keeps them.
+    pub fn pending_paths(&self) -> Vec<PathBuf> {
+        if self.link.is_some() {
+            return Vec::new();
+        }
+        let mut out = vec![self.object()];
+        for c in &self.chunks {
+            out.push(object_path(&c.sha256));
+        }
+        out
+    }
+
+    /// Give the copies their names. A chunk the tin already held is checked
+    /// to be there still; the rest are pressed, then the recipe.
     pub fn commit(self) -> io::Result<Stashed> {
         if let Some(target) = self.link {
             return Ok(Stashed {
@@ -178,26 +428,51 @@ impl Staged {
             });
         }
         let object = self.object();
-        let bucket = object.parent().expect("an object has a bucket");
-        fs::create_dir_all(bucket)?;
-        let existing_ok = object.is_file()
-            && fs::metadata(&object).map(|m| m.len()).ok() == Some(self.bytes)
-            && sha256_file(&object).ok().as_deref() == Some(self.sha256.as_str());
-        if existing_ok {
-            let _ = fs::remove_file(&self.tmp);
-        } else {
-            // The flush goes through a handle that works on a read-only
-            // file too, then the object is named and its directory synced,
-            // so the journal entry that follows never points at a name the
-            // disk has not learned yet.
-            super::journal::sync_file(&self.tmp)?;
-            make_read_only(&self.tmp)?;
-            if object.exists() {
-                lift_read_only(&object);
-                let _ = fs::remove_file(&object);
+        if self.chunked {
+            let mut chunks = self.chunks.into_iter();
+            let mut failed: Option<io::Error> = None;
+            for c in chunks.by_ref() {
+                let target = object_path(&c.sha256);
+                let r = match &c.tmp {
+                    Some(tmp) => press(tmp, &target, c.len, &c.sha256),
+                    // Held by the tin when the file was read; a `cig tin gc`
+                    // that raced the stash is the one thing that takes it.
+                    None if target.is_file() => Ok(()),
+                    None => Err(io::Error::other(format!(
+                        "chunk {} left the tin while the file was being kept (a gc ran meanwhile)",
+                        &c.sha256[..12]
+                    ))),
+                };
+                if let Err(e) = r {
+                    failed = Some(e);
+                    break;
+                }
             }
-            fs::rename(&self.tmp, &object)?;
-            let _ = super::journal::sync_dir_pub(bucket);
+            if let Some(e) = failed {
+                for c in chunks {
+                    if let Some(t) = &c.tmp {
+                        let _ = fs::remove_file(t);
+                    }
+                }
+                if let Some(t) = &self.recipe_tmp {
+                    let _ = fs::remove_file(t);
+                }
+                return Err(e);
+            }
+            if let Some(tmp) = &self.recipe_tmp {
+                let bucket = object.parent().expect("a recipe has a bucket");
+                fs::create_dir_all(bucket)?;
+                super::journal::sync_file(tmp)?;
+                if object.exists() {
+                    lift_read_only(&object);
+                    let _ = fs::remove_file(&object);
+                }
+                fs::rename(tmp, &object)?;
+                let _ = make_read_only(&object);
+                let _ = super::journal::sync_dir_pub(bucket);
+            }
+        } else if let Some(tmp) = &self.tmp {
+            press(tmp, &object, self.bytes, &self.sha256)?;
         }
         Ok(Stashed {
             object,
@@ -247,6 +522,15 @@ pub fn take(path: &Path) -> io::Result<Stashed> {
         )));
     }
     fs::create_dir_all(objects_dir())?;
+    if meta.len() >= CHUNK_FILE_MIN {
+        // A large file is read and kept as chunks, so a hop's output that
+        // is the original with one change shares every other chunk with it.
+        let st = prepare_chunked(path, &meta)?.commit()?;
+        // A file another program holds open (Windows) stays where it is for
+        // now; its bytes are kept all the same.
+        let _ = fs::remove_file(path);
+        return Ok(st);
+    }
     let tmp = temp_name("take");
     match fs::rename(path, &tmp) {
         Ok(()) => {}
@@ -265,7 +549,10 @@ pub fn take(path: &Path) -> io::Result<Stashed> {
     let sha256 = sha256_file(&tmp)?;
     let bytes = fs::metadata(&tmp)?.len();
     let staged = Staged {
-        tmp,
+        tmp: Some(tmp),
+        chunks: Vec::new(),
+        recipe_tmp: None,
+        chunked: false,
         sha256,
         bytes,
         mode: mode_of(&meta),
@@ -273,6 +560,140 @@ pub fn take(path: &Path) -> io::Result<Stashed> {
         link: None,
     };
     staged.commit()
+}
+
+/// Write the bytes a snapshot holds to `dest`, verified: a whole tin
+/// object is hashed as it is copied and must match its name, a recipe's
+/// chunks each match theirs and add up to the recipe's hash, and either
+/// must match the hash the journal recorded. A snapshot in a run's own
+/// directory is copied with its mode, as it always was. On any failure
+/// `dest` is removed, so nothing that does not hash as named is ever left
+/// where a file is about to be restored.
+pub fn materialize(snapshot: &Path, expect_sha256: &str, dest: &Path) -> io::Result<()> {
+    let result = materialize_inner(snapshot, expect_sha256, dest);
+    if result.is_err() {
+        let _ = fs::remove_file(dest);
+    }
+    result
+}
+
+fn materialize_inner(snapshot: &Path, expect_sha256: &str, dest: &Path) -> io::Result<()> {
+    if is_recipe(snapshot) {
+        let recipe = read_recipe(snapshot)?;
+        if !expect_sha256.is_empty() && recipe.sha256 != expect_sha256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "recipe {} is for other bytes than the journal recorded (sha256 {} against {}); refusing to restore from it",
+                    snapshot.display(),
+                    &recipe.sha256[..12],
+                    &expect_sha256[..expect_sha256.len().min(12)]
+                ),
+            ));
+        }
+        let mut out = io::BufWriter::new(fs::File::create(dest)?);
+        let mut whole = Sha256::new();
+        for (i, c) in recipe.chunks.iter().enumerate() {
+            let object = object_path(&c.sha256);
+            let data = fs::read(&object).map_err(|e| {
+                io::Error::new(
+                    e.kind(),
+                    format!(
+                        "chunk {} of {} (tin object {}) is missing: {e}; refusing to restore from the recipe",
+                        i + 1,
+                        recipe.chunks.len(),
+                        &c.sha256[..12]
+                    ),
+                )
+            })?;
+            if data.len() as u64 != c.len || hex::encode(Sha256::digest(&data)) != c.sha256 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "tin object {} is corrupt (chunk {} of {} of the recipe); refusing to restore from it",
+                        &c.sha256[..12],
+                        i + 1,
+                        recipe.chunks.len()
+                    ),
+                ));
+            }
+            whole.update(&data);
+            out.write_all(&data)?;
+        }
+        out.flush()?;
+        out.get_ref().sync_all()?;
+        if hex::encode(whole.finalize()) != recipe.sha256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "the chunks of recipe {} do not add up to its hash; refusing to restore from it",
+                    snapshot.display()
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    if holds(snapshot) && !expect_sha256.is_empty() {
+        // A shared object is checked against its name every time it is
+        // read back: a corrupt tin never writes garbage.
+        let (actual, _) = copy_hashing(snapshot, dest)?;
+        if actual != expect_sha256 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "tin object {} is corrupt (sha256 {} on disk); refusing to restore from it",
+                    snapshot.display(),
+                    &actual[..12]
+                ),
+            ));
+        }
+        return Ok(());
+    }
+    fs::copy(snapshot, dest)?;
+    #[cfg(unix)]
+    fs::set_permissions(dest, fs::metadata(snapshot)?.permissions())?;
+    Ok(())
+}
+
+/// Everything a restore from this snapshot would need, checked without
+/// writing: the recipe reads and names the right bytes, every chunk is
+/// there and hashes to its name. One line per problem.
+pub fn check_recipe(snapshot: &Path, expect_sha256: &str) -> Vec<String> {
+    let recipe = match read_recipe(snapshot) {
+        Ok(r) => r,
+        Err(e) => return vec![format!("recipe {} cannot be read: {e}", snapshot.display())],
+    };
+    let mut problems = Vec::new();
+    if !expect_sha256.is_empty() && recipe.sha256 != expect_sha256 {
+        problems.push(format!(
+            "recipe {} is for other bytes than the journal recorded",
+            snapshot.display()
+        ));
+    }
+    for (i, c) in recipe.chunks.iter().enumerate() {
+        let object = object_path(&c.sha256);
+        if !object.is_file() {
+            problems.push(format!(
+                "chunk {} of {} (tin object {}) is missing",
+                i + 1,
+                recipe.chunks.len(),
+                &c.sha256[..12]
+            ));
+            continue;
+        }
+        match sha256_file(&object) {
+            Ok(actual) if actual == c.sha256 => {}
+            Ok(actual) => problems.push(format!(
+                "tin object {} is corrupt (chunk {} of {}; sha256 {} on disk)",
+                &c.sha256[..12],
+                i + 1,
+                recipe.chunks.len(),
+                &actual[..12]
+            )),
+            Err(e) => problems.push(format!("tin object {}: cannot read: {e}", &c.sha256[..12])),
+        }
+    }
+    problems
 }
 
 /// Is this snapshot path an object in the tin (shared by content), as
@@ -309,6 +730,14 @@ pub fn referenced() -> HashSet<PathBuf> {
             for e in j.entries() {
                 for b in e.before.iter().chain(e.took.iter()) {
                     match &b.before {
+                        super::journal::Before::File { snapshot, .. } if is_recipe(snapshot) => {
+                            out.insert(snapshot.clone());
+                            if let Ok(r) = read_recipe(snapshot) {
+                                for c in &r.chunks {
+                                    out.insert(object_path(&c.sha256));
+                                }
+                            }
+                        }
                         super::journal::Before::File { snapshot, .. }
                         | super::journal::Before::Dir { snapshot }
                             if holds(snapshot) =>
@@ -332,10 +761,11 @@ pub fn referenced() -> HashSet<PathBuf> {
     out
 }
 
-/// Every object in the tin, with its size.
-pub fn objects() -> Vec<(PathBuf, u64)> {
+/// Every entry of one bucketed store (`objects/` or `recipes/`) named by a
+/// hash, with its size.
+fn hashed_entries(store: &Path) -> Vec<(PathBuf, u64)> {
     let mut out = Vec::new();
-    let Ok(buckets) = fs::read_dir(objects_dir()) else {
+    let Ok(buckets) = fs::read_dir(store) else {
         return out;
     };
     for bucket in buckets.flatten() {
@@ -356,14 +786,64 @@ pub fn objects() -> Vec<(PathBuf, u64)> {
     out
 }
 
-/// What the tin holds: objects and bytes.
-pub fn du() -> (usize, u64) {
-    let all = objects();
-    let bytes = all.iter().map(|(_, b)| b).sum();
-    (all.len(), bytes)
+/// Every object in the tin (whole files and chunks alike), with its size.
+pub fn objects() -> Vec<(PathBuf, u64)> {
+    hashed_entries(&objects_dir())
 }
 
-/// Re-hash every object against its name. Returns one line per problem.
+/// Every recipe in the tin, with the size of the recipe file itself.
+pub fn recipes() -> Vec<(PathBuf, u64)> {
+    hashed_entries(&recipes_dir())
+}
+
+/// What the tin holds, stored and logical.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Usage {
+    /// Objects on disk: whole files and chunks.
+    pub objects: usize,
+    /// Bytes the objects take.
+    pub stored: u64,
+    /// Recipes: chunked files.
+    pub recipes: usize,
+    /// Bytes the kept files would take written out: every recipe's file,
+    /// plus every object that is not a chunk of one.
+    pub logical: u64,
+}
+
+/// What the tin holds: objects and bytes stored, next to what the files
+/// they keep would take, so the saving from chunking is visible.
+pub fn du() -> Usage {
+    let all = objects();
+    let mut chunk_names: HashSet<String> = HashSet::new();
+    let mut logical = 0u64;
+    let recipes = recipes();
+    for (p, _) in &recipes {
+        if let Ok(r) = read_recipe(p) {
+            logical += r.bytes;
+            for c in r.chunks {
+                chunk_names.insert(c.sha256);
+            }
+        }
+    }
+    for (p, size) in &all {
+        let name = p
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !chunk_names.contains(&name) {
+            logical += size;
+        }
+    }
+    Usage {
+        objects: all.len(),
+        stored: all.iter().map(|(_, b)| b).sum(),
+        recipes: recipes.len(),
+        logical,
+    }
+}
+
+/// Re-hash every object against its name, and check every recipe names
+/// chunks the tin holds. Returns one line per problem.
 pub fn verify() -> Vec<String> {
     let mut problems = Vec::new();
     for (p, _) in objects() {
@@ -381,15 +861,34 @@ pub fn verify() -> Vec<String> {
             Err(e) => problems.push(format!("{}: cannot read: {e}", p.display())),
         }
     }
+    for (p, _) in recipes() {
+        match read_recipe(&p) {
+            Ok(r) => {
+                for (i, c) in r.chunks.iter().enumerate() {
+                    if !object_path(&c.sha256).is_file() {
+                        problems.push(format!(
+                            "{} names chunk {} of {} (object {}), which is missing; a restore from it would be refused",
+                            p.display(),
+                            i + 1,
+                            r.chunks.len(),
+                            &c.sha256[..12]
+                        ));
+                    }
+                }
+            }
+            Err(e) => problems.push(format!("{}: {e}", p.display())),
+        }
+    }
     problems
 }
 
-/// Remove every object no live run refers to. Returns (removed, bytes).
+/// Remove every object and recipe no live run refers to. Returns
+/// (removed, bytes).
 pub fn gc() -> (usize, u64) {
     let keep = referenced();
     let mut removed = 0;
     let mut bytes = 0;
-    for (p, size) in objects() {
+    for (p, size) in objects().into_iter().chain(recipes()) {
         if keep.contains(&p) {
             continue;
         }
@@ -511,6 +1010,218 @@ mod tests {
             let twice = take(&f).unwrap();
             assert_eq!(twice.object, taken.object);
             assert_eq!(objects().len(), 1);
+        });
+    }
+
+    /// Deterministic pseudo-random bytes: chunk boundaries depend on the
+    /// bytes, so the same seed gives the same chunks every time.
+    fn noise(len: usize, seed: u64) -> Vec<u8> {
+        let mut x = (seed << 1) | 1;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                (x >> 24) as u8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_one_byte_change_in_a_large_file_stores_one_new_chunk() {
+        with_home(|root| {
+            let f = root.join("big.bin");
+            let mut data = noise(1 << 20, 7);
+            fs::write(&f, &data).unwrap();
+            let first = stash(&f).unwrap();
+            assert!(is_recipe(&first.object), "{}", first.object.display());
+            let n = objects().len();
+            assert!((4..=64).contains(&n), "{n} chunks for 1 MiB");
+            assert_eq!(recipes().len(), 1);
+            let u = du();
+            assert_eq!(u.logical, 1 << 20);
+            assert_eq!(u.stored, 1 << 20);
+            data[500_000] ^= 0xff;
+            fs::write(&f, &data).unwrap();
+            let second = stash(&f).unwrap();
+            assert_ne!(second.sha256, first.sha256);
+            assert_eq!(objects().len(), n + 1, "one chunk changed: one new object");
+            assert_eq!(recipes().len(), 2);
+            let u = du();
+            assert_eq!(u.logical, 2 << 20);
+            assert!(
+                u.stored < (1 << 20) + u64::from(CHUNK_MAX),
+                "stored {} for two versions of 1 MiB",
+                u.stored
+            );
+            // The same content again costs nothing.
+            stash(&f).unwrap();
+            assert_eq!(objects().len(), n + 1);
+            assert_eq!(recipes().len(), 2);
+        });
+    }
+
+    #[test]
+    fn an_insert_at_the_start_of_a_file_changes_one_chunk() {
+        with_home(|root| {
+            let f = root.join("big.bin");
+            let data = noise(1 << 20, 11);
+            fs::write(&f, &data).unwrap();
+            stash(&f).unwrap();
+            let n = objects().len();
+            let mut shifted = b"seven b".to_vec();
+            shifted.extend_from_slice(&data);
+            fs::write(&f, &shifted).unwrap();
+            stash(&f).unwrap();
+            // The first chunk changes; a boundary right after it may move.
+            assert!(
+                objects().len() <= n + 2,
+                "{} new objects after a 7-byte insert at the start",
+                objects().len() - n
+            );
+        });
+    }
+
+    #[test]
+    fn a_restore_from_chunks_is_byte_identical_and_hash_checked() {
+        with_home(|root| {
+            let f = root.join("big.bin");
+            let data = noise(300_000, 3);
+            fs::write(&f, &data).unwrap();
+            let st = stash(&f).unwrap();
+            let dest = root.join("restored.bin");
+            materialize(&st.object, &st.sha256, &dest).unwrap();
+            assert_eq!(fs::read(&dest).unwrap(), data);
+            fs::remove_file(&dest).unwrap();
+            // Corrupt one chunk in place: same length, other bytes.
+            let recipe = read_recipe(&st.object).unwrap();
+            let victim = object_path(&recipe.chunks[1].sha256);
+            lift_read_only(&victim);
+            let good = fs::read(&victim).unwrap();
+            let mut bad = good.clone();
+            bad[0] ^= 1;
+            fs::write(&victim, &bad).unwrap();
+            let err = materialize(&st.object, &st.sha256, &dest).unwrap_err();
+            assert!(err.to_string().contains("corrupt"), "{err}");
+            assert!(!dest.exists(), "nothing is left where the restore failed");
+            assert_eq!(check_recipe(&st.object, &st.sha256).len(), 1);
+            assert_eq!(verify().len(), 1);
+            fs::write(&victim, &good).unwrap();
+            assert!(verify().is_empty());
+            // A journal that recorded other bytes under this recipe is refused too.
+            let err = materialize(&st.object, "0000000000000000", &dest).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("other bytes than the journal recorded"),
+                "{err}"
+            );
+            assert!(!dest.exists());
+        });
+    }
+
+    #[test]
+    fn a_missing_chunk_refuses_the_restore_and_writes_nothing() {
+        with_home(|root| {
+            let f = root.join("big.bin");
+            fs::write(&f, noise(200_000, 5)).unwrap();
+            let st = stash(&f).unwrap();
+            let recipe = read_recipe(&st.object).unwrap();
+            let gone = object_path(&recipe.chunks[0].sha256);
+            lift_read_only(&gone);
+            fs::remove_file(&gone).unwrap();
+            let dest = root.join("restored.bin");
+            let err = materialize(&st.object, &st.sha256, &dest).unwrap_err();
+            assert!(err.to_string().contains("is missing"), "{err}");
+            assert!(!dest.exists());
+            let problems = check_recipe(&st.object, &st.sha256);
+            assert_eq!(problems.len(), 1, "{problems:?}");
+            assert!(problems[0].contains("missing"), "{problems:?}");
+            assert_eq!(verify().len(), 1);
+            // The next stash of the same file puts the chunk back.
+            stash(&f).unwrap();
+            assert!(gone.is_file());
+            materialize(&st.object, &st.sha256, &dest).unwrap();
+        });
+    }
+
+    #[test]
+    fn gc_keeps_every_chunk_a_live_recipe_names() {
+        with_home(|root| {
+            use super::super::journal::{Before, BeforeState, Journal};
+            use super::super::runs::RunRecord;
+            use super::super::Op;
+            let live = root.join("live.bin");
+            fs::write(&live, noise(400_000, 9)).unwrap();
+            let kept = stash(&live).unwrap();
+            let stray = root.join("stray.bin");
+            fs::write(&stray, noise(400_000, 10)).unwrap();
+            let gone = stash(&stray).unwrap();
+            let small = root.join("small.txt");
+            fs::write(&small, "small\n").unwrap();
+            let gone_small = stash(&small).unwrap();
+            // A run whose journal refers to the live recipe.
+            let rec = RunRecord::begin(Path::new("s.cig"), "", &[], "run");
+            rec.save().unwrap();
+            let mut j = Journal::open(Some(rec.dir())).unwrap();
+            j.record_with_before(
+                1,
+                Op::HopChanged {
+                    path: live.clone(),
+                    change: "modified".into(),
+                    tinned: true,
+                    kept: Some("tin".into()),
+                    left: None,
+                },
+                vec![BeforeState {
+                    path: live.clone(),
+                    before: Before::File {
+                        snapshot: kept.object.clone(),
+                        sha256: kept.sha256.clone(),
+                        bytes: kept.bytes,
+                        mode: kept.mode,
+                        mtime_ns: kept.mtime_ns,
+                    },
+                }],
+                None,
+                false,
+            )
+            .unwrap();
+            let live_chunks = read_recipe(&kept.object).unwrap().chunks.len();
+            let (removed, _) = gc();
+            assert!(removed >= 3, "{removed}");
+            assert!(kept.object.is_file());
+            for c in read_recipe(&kept.object).unwrap().chunks {
+                assert!(object_path(&c.sha256).is_file());
+            }
+            assert_eq!(objects().len(), live_chunks);
+            assert!(!gone.object.exists() && !gone_small.object.exists());
+            assert_eq!(recipes().len(), 1);
+            assert!(verify().is_empty());
+        });
+    }
+
+    /// An object a 1.4 cig wrote (a large file kept whole, named by its
+    /// hash) restores as it always did.
+    #[test]
+    fn a_1_4_whole_file_object_still_restores() {
+        with_home(|root| {
+            let data = noise(200_000, 12);
+            let sha = hex::encode(Sha256::digest(&data));
+            let object = object_path(&sha);
+            fs::create_dir_all(object.parent().unwrap()).unwrap();
+            fs::write(&object, &data).unwrap();
+            make_read_only(&object).unwrap();
+            assert!(holds(&object) && !is_recipe(&object));
+            let dest = root.join("restored.bin");
+            materialize(&object, &sha, &dest).unwrap();
+            assert_eq!(fs::read(&dest).unwrap(), data);
+            assert_eq!(du().logical, 200_000);
+            fs::remove_file(&dest).unwrap();
+            // Still named by its content: a corrupt one is refused.
+            lift_read_only(&object);
+            fs::write(&object, noise(200_000, 13)).unwrap();
+            assert!(materialize(&object, &sha, &dest).is_err());
+            assert!(!dest.exists());
         });
     }
 

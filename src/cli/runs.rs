@@ -250,10 +250,16 @@ fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
     } else if let Some(b) = &chain.broken_at {
         (false, format!("BROKEN at line {}: {}", b.line, b.reason))
     } else {
+        let renamed = match &chain.run {
+            Some(r) if *r != rec.id => {
+                format!(" (written as run {r}; the directory was renamed since)")
+            }
+            _ => String::new(),
+        };
         (
             true,
             format!(
-                "intact: {} line{}, each carrying the hash of the one before it",
+                "intact: {} line{}, each carrying the hash of the one before it{renamed}",
                 chain.lines,
                 if chain.lines == 1 { "" } else { "s" }
             ),

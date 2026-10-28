@@ -462,6 +462,10 @@ for.
 | `cig run /dev/zero`; `cig frobnicate` | **read forever; exit 2 (a script error's code)**; now `E801`, and exit 3 | fixed 1.1.1 | `a_device_as_the_script_is_refused_and_a_bad_invocation_exits_3` |
 | a hop deletes a folder of a thousand files it did not name in `touches` | one warning for the folder, with the glob that would have kept it and a few of the files; `cig runs <id>` has every one | 1.4.3 | `changes_outside_touches_are_reported_once_per_folder` |
 | `cig unburn <id> --give-back --dry-run` | the files the rollback set aside, what is at each path now and whether it changed since; nothing written, and a changed path refused without `--force` | 1.4.3 | `give_back_dry_run_lists_what_it_would_restore_and_changes_nothing` |
+| a hop changes one byte of a 1 MiB file it said it might touch, fifty times | the tin stores the chunk that changed, not the file again; the file comes back byte for byte from its recipe | 1.5.0 | `a_hop_edit_to_a_large_file_stores_the_chunk_that_changed` |
+| delete or corrupt one chunk of a recipe, then restore | refused before anything at the path is touched; nothing half-written | 1.5.0 | `a_missing_chunk_refuses_the_restore_and_writes_nothing` |
+| edit a journal line after the run, then `unburn` | the line no longer fits its neighbours: `cig runs <id> --verify` names it, `unburn` refuses with `E760` unless `--force` | 1.5.0 | `unburn_refuses_a_broken_chain` |
+| remove or reorder a journal line | the chain breaks at that line | 1.5.0 | `a_removed_journal_line_breaks_the_chain` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

@@ -259,7 +259,26 @@ globs stashed there before it runs, one object per distinct content, so a
 formatter that changes three lines of a file stores that file about once
 and fifty runs of the same chain store it once. On rollback a modified or
 deleted file comes back from its object, which is re-hashed against its
-name first: a corrupt object is refused, never written. The file's own mode
+name first: a corrupt object is refused, never written.
+
+**Chunks and recipes.** A file of 64 KiB or more is not one object but a
+*recipe* (`tin/recipes/<sha256 of the file>`): the ordered list of its
+chunks, each an object named by its own hash, with the hash and size of
+the whole. The chunks are content-defined (FastCDC, 16 KiB at least, 64 KiB
+on average, 256 KiB at most), so their boundaries depend on the bytes and
+not on offsets: a one-byte change in a 200 MB lockfile stores the chunk it
+landed in, an insert at the start moves one boundary, and fifty runs that
+each change the file a little cost a tin a small multiple of what changed.
+A restore streams the chunks into a staging file beside the destination,
+checking each against its name and the whole against the hash the journal
+recorded, and a missing or corrupt chunk refuses the restore before
+anything at the path is touched. `cig tin` reports the bytes stored next to
+the bytes the kept files would take written out, so the saving is visible;
+`cig tin verify` checks every recipe names chunks the tin holds; `gc` keeps
+every chunk a live recipe names. Smaller files cost exactly what they did
+before, and a large file a 1.4 cig kept whole restores as it always did.
+Measured in [FINDINGS.md](FINDINGS.md): twenty one-byte edits of a 200 MB
+file cost the tin 202 MB, where 1.4 stored 200 MB a run. The file's own mode
 and modification time travel in the journal and are put back with the
 bytes, so a `chmod` by the hop is undone and `make` sees the time it saw
 before. A symbolic link is kept as a link: its target is all there is, the
@@ -281,13 +300,28 @@ hop watching and the tin never look into; `.git`, `node_modules`, `target`,
 `.venv`, `venv`, `__pycache__`, `.gradle`, `.terraform` and `.cigscript` are
 skipped everywhere. Those trees are rebuilt, not restored.
 
-Every record says what shape it is in: `run.json` and `after.json` carry
-`"format": 1`, and the first line of `journal.jsonl` is `{"format":1}` (a
-marker, so a cig from before formats reads past it). A newer cig reads every
-older format and never rewrites an old record in place; a format it does not
-know is refused by its number with the version that wrote it (`E808`), and
-`cig unburn` hands the run to that version from the humidor instead of
-guessing.
+Every record says what shape it is in: `run.json` carries `"format": 1`,
+`after.json` `"format": 2`, and the first line of `journal.jsonl` is
+`{"format":2,"prev":"…"}` (a marker, so a cig from before formats reads
+past it). A newer cig reads every older format and never rewrites an old
+record in place; a format it does not know is refused by its number with
+the version that wrote it (`E808`), and `cig unburn` hands the run to that
+version from the humidor instead of guessing.
+
+**The hash chain.** From format 2 (1.5.0) every line of the journal carries
+`prev`: the SHA-256 of the line before it exactly as written, and the first
+line that of the run's id. When the record is saved, `run.json` keeps the
+hash of the last line (`journal_head`). `cig runs <id> --verify` walks the
+chain and reports the first line that does not fit (edited, removed or
+reordered), compares the head with the record (lines added or removed
+since), and checks every snapshot and tin object a rollback would need
+against its recorded hash. `cig unburn` walks the chain before it changes
+anything and refuses a broken one with `E760`; `--force` restores from the
+journal as it is, knowingly. A format 1 journal has no chain, is read as it
+always was, and the markers an unburn appends to it carry no `prev`. This
+is tamper evidence, not secrecy: anyone who can write the journal can
+recompute the chain, unless the head is kept somewhere they cannot write
+(a note of `journal_head` elsewhere makes the record checkable against it).
 
 A run's status is one of `running`, `ok`, `failed`, `rolled_back`,
 `unburned`, `unburn_failed`, or `interrupted` (derived when a `running`

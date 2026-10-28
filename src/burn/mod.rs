@@ -616,6 +616,9 @@ fn scan(root: &Path, max_depth: usize, cap: usize) -> Scan {
     // that is inside the pack. A link that leads out of the pack is a door,
     // not a part of it, so nothing behind it is ever journaled.
     let ignore = tin::ignore_set(root);
+    // The state directory is never part of a pack, wherever CIGSCRIPT_HOME
+    // put it: the tin watching itself would stash its own objects.
+    let home = runs::home_dir();
     let mut walk = walkdir::WalkDir::new(root)
         .min_depth(1)
         .max_depth(max_depth)
@@ -623,7 +626,7 @@ fn scan(root: &Path, max_depth: usize, cap: usize) -> Scan {
         .into_iter()
         .filter_entry(|e| {
             let n = e.file_name().to_string_lossy();
-            if tin::SKIPPED_ALWAYS.contains(&n.as_ref()) {
+            if tin::SKIPPED_ALWAYS.contains(&n.as_ref()) || e.path() == home {
                 return false;
             }
             match (&ignore, e.path().strip_prefix(root)) {
@@ -1057,8 +1060,7 @@ impl Kernel {
                     if let Some(dir) = self.journal.run_dir() {
                         let list: String = staged
                             .iter()
-                            .map(|(_, st)| st.object())
-                            .filter(|o| !o.as_os_str().is_empty())
+                            .flat_map(|(_, st)| st.pending_paths())
                             .map(|o| format!("{}\n", o.display()))
                             .collect();
                         if !list.is_empty() {

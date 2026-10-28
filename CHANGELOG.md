@@ -3,6 +3,32 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.5.0 — unreleased
+
+- **The tin in chunks** (#82). A file of 64 KiB or more under `touches` is
+  cut into content-defined chunks (FastCDC: 16 KiB at least, 64 KiB on
+  average, 256 KiB at most), each an object named by its own hash, and the
+  file becomes a *recipe* (`tin/recipes/<sha256>`): the ordered chunks, the
+  hash and the size of the whole. A one-byte change stores the chunk it
+  landed in, not the file again; an insert moves one boundary. A restore
+  checks every chunk against its name and the whole against the hash the
+  journal recorded, and refuses (writing nothing) on a missing or corrupt
+  chunk. `cig tin` reports what is stored next to what the kept files would
+  take; `gc` keeps every chunk a live recipe names. What a rollback
+  displaces into the tin is chunked the same way, so a hop's output that is
+  the original with one change shares every other chunk with it. Objects a
+  1.4 cig wrote (large files kept whole) restore as they always did.
+- **The hash chain** (#88). Journal format 2: the first line carries the
+  hash of the run's id and every later line the hash of the line before it
+  as written; `run.json` records the head when the record is saved.
+  `cig runs <id> --verify` walks the chain, compares the head with the
+  record and checks every snapshot and tin object a rollback would need.
+  `cig unburn` refuses a journal whose chain is broken (`E760`) unless
+  `--force`. A format 1 journal is read as it always was and gains no
+  chain. This is tamper evidence, not secrecy: whoever can write the
+  journal can recompute the chain, unless the head is kept somewhere they
+  cannot write.
+
 ## 1.4.3 — 2026-10-28
 
 - **Changes outside `touches` are reported once per folder** (#90). A hop

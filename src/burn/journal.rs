@@ -126,6 +126,8 @@ pub const JOURNAL_FORMAT: u32 = 2;
 pub struct Chain {
     /// The format the journal declared (0 for one from before 1.2.0).
     pub format: u32,
+    /// The run id the first line names (format 2), which the chain seeds from.
+    pub run: Option<String>,
     /// Lines read, the format line included and a damaged last line aside.
     pub lines: usize,
     /// The first line whose `prev` is not the hash of the line before it.
@@ -156,14 +158,19 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-/// What the first line of a run's journal carries as `prev`: the hash of
-/// the run's id, so a journal moved under another run's name is seen.
-fn chain_seed(run_dir: &Path) -> String {
-    let id = run_dir
+/// The id a run directory was made under, for the chain's first line.
+fn dir_id(run_dir: &Path) -> String {
+    run_dir
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-    sha256_hex(id.as_bytes())
+        .unwrap_or_default()
+}
+
+/// What the first line of a run's journal carries as `prev`: the hash of
+/// the run's id, which the line names too (`run`), so a renamed directory
+/// still verifies and `--verify` can say the name no longer matches.
+fn chain_seed(run_id: &str) -> String {
+    sha256_hex(run_id.as_bytes())
 }
 
 pub struct Journal {
@@ -223,9 +230,10 @@ impl Journal {
                     // The first line names the format and seeds the chain.
                     // It has no `op`, so a cig from before formats reads it
                     // as a marker and goes on.
+                    let id = dir_id(dir);
                     let line = format!(
-                        "{{\"format\":{JOURNAL_FORMAT},\"prev\":\"{}\"}}",
-                        chain_seed(dir)
+                        "{{\"format\":{JOURNAL_FORMAT},\"run\":\"{id}\",\"prev\":\"{}\"}}",
+                        chain_seed(&id)
                     );
                     f.write_all(line.as_bytes())?;
                     f.write_all(b"\n")?;
@@ -264,8 +272,9 @@ impl Journal {
         let mut format = 0;
         let mut chain = Chain::default();
         // What this line's `prev` must be: the hash of the line before it,
-        // or of the run's id for the first.
-        let mut expect = chain_seed(run_dir);
+        // or of the run's id for the first (the id the first line names;
+        // the directory's name when it does not, as 1.4 journals do not).
+        let mut expect = chain_seed(&dir_id(run_dir));
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         for (i, line) in lines.iter().enumerate() {
             let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
@@ -295,6 +304,10 @@ impl Journal {
                     }
                     format = f as u32;
                     chain.format = format;
+                    if let Some(id) = v.get("run").and_then(|r| r.as_str()) {
+                        expect = chain_seed(id);
+                        chain.run = Some(id.to_string());
+                    }
                 }
             }
             // From format 2 on, every line names the hash of the line before
@@ -735,6 +748,15 @@ impl Journal {
                                 state.path.display(),
                                 snapshot.display()
                             ));
+                        } else if super::tin::is_recipe(snapshot) {
+                            for p in super::tin::check_recipe(snapshot, sha256) {
+                                problems.push(format!(
+                                    "op {}: {} for {}",
+                                    entry.seq,
+                                    p,
+                                    state.path.display()
+                                ));
+                            }
                         } else if !sha256.is_empty() {
                             match sha256_file(snapshot) {
                                 Ok(actual) if &actual == sha256 => {}
@@ -1678,25 +1700,16 @@ fn restore(
                     format!("snapshot {} is missing", snapshot.display()),
                 ));
             }
-            if super::tin::holds(snapshot) && !sha256.is_empty() {
-                // A shared object is checked against its name every time it
-                // is read back: a corrupt tin never writes garbage.
-                let actual = sha256_file(snapshot)?;
-                if actual != *sha256 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "tin object {} is corrupt (sha256 {} on disk); refusing to restore from it",
-                            snapshot.display(),
-                            &actual[..12]
-                        ),
-                    ));
-                }
-            }
             let _ = mode;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
+            // The before-image comes beside the destination first, verified
+            // as it is written (a tin object against its name, a recipe's
+            // chunks against theirs), so nothing that fails the check ever
+            // reaches the path.
+            let staged = staging_path(path);
+            super::tin::materialize(snapshot, sha256, &staged)?;
             if keep {
                 // Whatever is at the path now (the hop's output, or a save
                 // made while it ran) goes to the tin before the old bytes
@@ -1719,15 +1732,19 @@ fn restore(
                         // in place so every link sees them, instead of
                         // swapping in a new file and leaving the other
                         // names with the run's content.
-                        let mut src = fs::File::open(snapshot)?;
-                        let mut dst = fs::OpenOptions::new()
-                            .write(true)
-                            .truncate(true)
-                            .open(path)?;
-                        io::copy(&mut src, &mut dst)?;
-                        dst.sync_all()?;
-                        drop(dst);
-                        fs::set_permissions(path, fs::metadata(snapshot)?.permissions())?;
+                        let copied = (|| -> io::Result<()> {
+                            let mut src = fs::File::open(&staged)?;
+                            let mut dst = fs::OpenOptions::new()
+                                .write(true)
+                                .truncate(true)
+                                .open(path)?;
+                            io::copy(&mut src, &mut dst)?;
+                            dst.sync_all()?;
+                            drop(dst);
+                            fs::set_permissions(path, fs::metadata(&staged)?.permissions())
+                        })();
+                        let _ = fs::remove_file(&staged);
+                        copied?;
                         #[cfg(unix)]
                         if let Some(m) = mode {
                             use std::os::unix::fs::PermissionsExt;
@@ -1740,10 +1757,8 @@ fn restore(
                     }
                 }
             }
-            // Stage beside the destination, then swap in, so a failure
-            // half-way leaves whatever is there untouched.
-            let staged = staging_path(path);
-            copy_file_with_mode(snapshot, &staged)?;
+            // Then swap in, so a failure half-way leaves whatever is there
+            // untouched.
             #[cfg(unix)]
             if let Some(m) = mode {
                 use std::os::unix::fs::PermissionsExt;

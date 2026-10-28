@@ -20,17 +20,28 @@ pub enum TinCommand {
 pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
     match cmd.unwrap_or(TinCommand::Du) {
         TinCommand::Du => {
-            let (objects, bytes) = tin::du();
+            let u = tin::du();
             let referenced = tin::referenced().len();
             if ctx.json {
                 outln!(
                     "{}",
-                    serde_json::json!({"objects": objects, "bytes": bytes, "referenced": referenced, "dir": tin::dir()})
+                    serde_json::json!({"objects": u.objects, "bytes": u.stored, "stored": u.stored, "recipes": u.recipes, "logical": u.logical, "referenced": referenced, "dir": tin::dir()})
                 );
             } else {
                 outln!(
-                    "{objects} object{} ({bytes} bytes), {referenced} still referred to by a run, in {}",
-                    if objects == 1 { "" } else { "s" },
+                    "{} object{} ({} bytes stored) keeping {} bytes of files{}; {referenced} still referred to by a run, in {}",
+                    u.objects,
+                    if u.objects == 1 { "" } else { "s" },
+                    u.stored,
+                    u.logical,
+                    if u.recipes == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            ", {} of them chunked under a recipe",
+                            u.recipes
+                        )
+                    },
                     cigscript::crash::tilde(&tin::dir())
                 );
             }
@@ -38,7 +49,7 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
         }
         TinCommand::Verify => {
             let problems = tin::verify();
-            let (objects, _) = tin::du();
+            let objects = tin::du().objects;
             if ctx.json {
                 outln!(
                     "{}",
@@ -71,7 +82,7 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
         }
         TinCommand::Gc => {
             let (removed, bytes) = tin::gc();
-            let (kept, _) = tin::du();
+            let kept = tin::du().objects;
             if ctx.json {
                 outln!(
                     "{}",
