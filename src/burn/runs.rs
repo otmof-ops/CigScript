@@ -75,6 +75,10 @@ pub struct RunRecord {
     /// it with the journal on disk, so lines added or removed since show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub journal_head: Option<String>,
+    /// Set when the run came here in a parcel: where from, when, and how
+    /// its paths map to this machine (the journal reads through the map).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported: Option<serde_json::Value>,
     /// Process id of the run, to tell an interrupted run from a live one.
     #[serde(default)]
     pub pid: Option<u32>,
@@ -133,6 +137,7 @@ impl RunRecord {
             rollback_took: 0,
             pack: Vec::new(),
             journal_head: None,
+            imported: None,
             pid: Some(std::process::id()),
             pid_started: if mode == "dry-run" {
                 None
@@ -177,6 +182,7 @@ impl RunRecord {
             rollback_took: 0,
             pack: Vec::new(),
             journal_head: None,
+            imported: None,
             pid: None,
             pid_started: None,
             trial: None,

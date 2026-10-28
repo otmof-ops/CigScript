@@ -119,4 +119,33 @@ Result "killed run: interrupted, then unburned" (($st -eq 'interrupted') -and ((
 # Self-update: which asset would it fetch here?
 Fresh; Cig update --check; Info "cig update --check" "exit $code; $out"
 
+# The hash chain: a run verifies; an edited journal breaks at the line that no longer fits
+Fresh; Script "burn {`n  fs.write_text(`"a.txt`", `"1`")`n  fs.write_text(`"b.txt`", `"2`")`n}`n"
+Cig run s.cig; $id = (Get-ChildItem "$env:CIGSCRIPT_HOME\runs" | Select-Object -First 1).Name
+Cig runs $id --verify
+$intact = ($script:code -eq 0) -and ($script:out -match 'chain\s+intact')
+$jp = "$env:CIGSCRIPT_HOME\runs\$id\journal.jsonl"
+$lines = [IO.File]::ReadAllLines($jp); $lines[1] = $lines[1].Replace('a.txt', 'z.txt'); [IO.File]::WriteAllLines($jp, $lines)
+Cig runs $id --verify
+Result 'hash chain: intact run verifies, edited journal breaks' ($intact -and $script:code -ne 0 -and $script:out -match 'BROKEN at line 3') $script:out
+
+# Sealed: a hidden file under touches comes back, and its bytes are nowhere under the state directory
+Fresh; New-Item -ItemType Directory p | Out-Null; [IO.File]::WriteAllText("$PWD\p\.env", "SETTING=probe-hidden-value`n")
+Script "pack { `"./p`" }`nburn {`n  proc.run(`"powershell`", [`"-NoProfile`", `"-Command`", `"Set-Content .env rotated`"], {cwd: `"p`", touches: [`"**`"]})`n  cough `"boom`"`n}`n"
+Cig run s.cig
+$back = (Get-Content "$PWD\p\.env" -Raw) -eq "SETTING=probe-hidden-value`n"
+$clear = Get-ChildItem -Recurse -File $env:CIGSCRIPT_HOME | Where-Object { (Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue) -match 'probe-hidden-value' }
+Result 'sealed: a hidden file comes back and is never in the clear' ($back -and -not $clear -and $script:out -match '\(sealed\)') $script:out
+
+# The parcel: a run imported into another state directory unburns there
+Fresh; New-Item -ItemType Directory p | Out-Null; [IO.File]::WriteAllText("$PWD\p\a.txt", "original`n")
+Script "pack { `"./p`" }`nburn {`n  proc.run(`"powershell`", [`"-NoProfile`", `"-Command`", `"Set-Content a.txt changed; Set-Content b.txt new`"], {cwd: `"p`", touches: [`"**`"]})`n}`n"
+Cig run s.cig; $id = (Get-ChildItem "$env:CIGSCRIPT_HOME\runs" | Select-Object -First 1).Name
+Cig parcel $id --out run.cigparcel
+$home1 = $env:CIGSCRIPT_HOME; $env:CIGSCRIPT_HOME = "$home1-2"; New-Item -ItemType Directory $env:CIGSCRIPT_HOME | Out-Null
+Cig unparcel run.cigparcel --root "p=$PWD\p"; $imported = $script:code
+Cig unburn $id
+$env:CIGSCRIPT_HOME = $home1
+Result 'parcel: imported elsewhere and unburned' ($imported -eq 0 -and $script:code -eq 0 -and (Get-Content "$PWD\p\a.txt" -Raw) -eq "original`n" -and -not (Test-Path "$PWD\p\b.txt")) $script:out
+
 "== windows probe: $pass passed, $fail failed"

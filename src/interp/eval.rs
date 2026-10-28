@@ -416,6 +416,8 @@ impl Interp {
                                 state: state_json,
                                 line: unburn.as_ref().map(|b| b.span.line).unwrap_or(span.line),
                                 label: label_text,
+                                command: None,
+                                cwd: None,
                             },
                             mark,
                         )

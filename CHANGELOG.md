@@ -3,6 +3,65 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.6.0 — 2026-10-28
+
+- **The box** (#85). `proc.run(cmd, args, {box: true})` runs the hop over a
+  copy-on-write layer on the pack: on Linux, in its own user and mount
+  namespaces with each root mounted as overlayfs over itself (the real root
+  the read-only lower layer, an upper directory under the run taking every
+  write). A hop that fails (or exits outside its contract) has its layer
+  dropped: nothing of it ever reached the pack, whatever the pack's size and
+  whether or not `touches` named anything. A hop that succeeds has its layer
+  applied as native burns (writes, deletes, mkdirs, whiteouts read as
+  deletes, an opaque directory as a replaced one), each journaled with its
+  before-state, so the run is unburnable like any other; the plan line says
+  `(boxed)`. Where the box cannot be made (no unprivileged user namespaces,
+  a kernel before 5.11, macOS, Windows, the BSDs) the hop runs on the tin as
+  usual and the run says so (`E763`); the plan says so before the run. The
+  reflink clone for macOS and Windows is not made yet: there the box falls
+  back, and says so.
+- **Hop watching that scales** (#84). The scan of a pack is read on every
+  core (up to eight threads), kept compact (one arena of relative paths and
+  entries of a few dozen bytes, sorted by path, about 60 bytes an entry),
+  and compared with the scan after the hop in one merge walk; the scan after
+  reads no directory whose modification time is unchanged and old enough
+  for that to mean something, it only stats what is in it. `watch_cap` is a
+  memory guard now, five million entries by default (where 1.4 stopped at
+  50,000 and left what a hop created past that point in place); the rule at
+  the cap is unchanged, nothing that existed is removed. Measured in
+  `docs/FINDINGS.md`.
+- **The parcel** (#86). `cig parcel <run>` writes `<run>.cigparcel`: the
+  run's record, journal and after-state, every snapshot, tin object, recipe,
+  chunk and sealed object its journal refers to, the bytes of every blob
+  git held for it (carried whole), and a manifest naming each file's
+  SHA-256, the cig that wrote it, the pack's roots and the working
+  directory. `cig unparcel <file> --root name=path ...` checks every file
+  against the manifest before it writes anything (a changed byte refuses the
+  whole parcel), needs every root mapped to a place here (`--show` lists
+  them; `--cwd` when the working directory cannot be told from the roots),
+  refuses sealed objects this machine's key does not open unless
+  `--allow-sealed-missing`, places the objects in the tin and the run among
+  the runs, and records in the run's record where it came from and how its
+  paths map. The journal is never rewritten, so its chain still verifies;
+  `cig runs <id>` says `imported`, and `cig unburn <id>` works here with the
+  usual drift check against this machine's files. `E762` names a refusal.
+- **The burn protocol** (#89). Every hop a real run starts gets
+  `CIG_JOURNAL`, a file it may append JSON lines to: `write`, `delete` and
+  `create` say what it changed (with the hash of the bytes before, and where
+  it kept a copy of them), `compensate` says how to undo it (a command, no
+  shell). The kernel never trusts a hop's word about bytes it can check: a
+  reported path outside the pack is refused (`E752`), a `create` the scan
+  saw before the hop is dropped, a claim about a file the tin kept is
+  checked against the tin, and a change not under `touches` becomes
+  reversible only when the tool kept the bytes and they hash as claimed
+  (`(reported by the hop)` in the record); the rest stays irreversible with
+  the reason (`E761`). A reported compensation is journaled like a block's
+  and runs on rollback and `cig unburn`, from the directory it names, with
+  `CIG_RUN_ID` set. cig is the first speaker: a `cig run` a hop started
+  appends its own undo, `cig unburn <its run>`, so the parent's rollback
+  puts it back through its own exact journal. `docs/PROTOCOL.md` is the
+  contract, with the lines in Python, Node and bash.
+
 ## 1.5.0 — 2026-10-28
 
 - **The tin in chunks** (#82). A file of 64 KiB or more under `touches` is

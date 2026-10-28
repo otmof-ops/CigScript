@@ -5538,3 +5538,653 @@ fn without_the_key_a_restore_refuses_and_names_the_file() {
     assert_eq!(gc["removed"], 1, "{gc}");
     assert!(sealed_objects(&sb).is_empty());
 }
+
+// ----- the burn protocol (#89): a hop that knows what it changed says so
+
+/// A tool that rewrites a file, keeps the bytes before, and reports what it
+/// did through CIG_JOURNAL, honestly or not, as told.
+#[cfg(unix)]
+const REPORTING_TOOL: &str = r#"import hashlib, json, os, shutil, sys
+def report(**line):
+    p = os.environ.get("CIG_JOURNAL")
+    if p:
+        with open(p, "a") as f:
+            f.write(json.dumps(line) + "\n")
+path, mode = sys.argv[1], sys.argv[2]
+before = hashlib.sha256(open(path, "rb").read()).hexdigest()
+shutil.copy(path, path + ".orig")
+open(path, "w").write("rewritten by the tool\n")
+if mode == "honest":
+    report(op="write", path=path, before="sha256:" + before, saved=path + ".orig")
+elif mode == "liar":
+    report(op="write", path=path, before="sha256:" + "0" * 64, saved=path + ".orig")
+elif mode == "nocopy":
+    os.remove(path + ".orig")
+    report(op="write", path=path, before="sha256:" + before)
+elif mode == "outside":
+    open(sys.argv[3], "w").write("stray\n")
+    report(op="write", path=sys.argv[3], before="absent")
+elif mode == "undo":
+    report(op="compensate", label="migration 0042", undo=["sh", "-c", "echo undone > undone.txt"], cwd=".")
+"#;
+
+#[cfg(unix)]
+fn reporting_script(mode: &str, extra: &str) -> String {
+    format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"python3\", [\"../tool.py\", \"db/schema.sql\", \"{mode}\"{extra}], {{cwd: \"p\"}})\n  cough \"boom\"\n}}\n"
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn a_tool_that_reports_its_write_is_reversible_without_touches() {
+    let sb = Sandbox::new();
+    sb.write("tool.py", REPORTING_TOOL);
+    sb.write("p/db/schema.sql", "create table a;\n");
+    sb.write("s.cig", &reporting_script("honest", ""));
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/db/schema.sql"), "create table a;\n", "{err}");
+    assert!(err.contains("(reported by the hop)"), "{err}");
+    assert!(!err.contains("E761"), "{err}");
+    assert!(
+        !sb.exists("p/db/schema.sql.orig"),
+        "the tool's copy was a hop-created file: {err}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(
+        shown.contains("hop modified") && shown.contains("(reported by the hop)"),
+        "{shown}"
+    );
+    assert!(sb.exists(&format!("home/runs/{id}/hops")));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reported_before_state_that_does_not_match_is_irreversible() {
+    let sb = Sandbox::new();
+    sb.write("tool.py", REPORTING_TOOL);
+    sb.write("p/db/schema.sql", "create table a;\n");
+    sb.write("s.cig", &reporting_script("liar", ""));
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(
+        sb.read("p/db/schema.sql"),
+        "rewritten by the tool\n",
+        "{err}"
+    );
+    assert!(
+        err.contains("warning[E761 burn]") && err.contains("does not hash to the before it claims"),
+        "{err}"
+    );
+    assert!(err.contains("cannot undo hop modified"), "{err}");
+    // A report with no copy of the bytes is honest about being irreversible.
+    sb.write("p/db/schema.sql", "create table a;\n");
+    sb.write("s.cig", &reporting_script("nocopy", ""));
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/db/schema.sql"), "rewritten by the tool\n");
+    assert!(err.contains("kept no copy of the bytes before it"), "{err}");
+    assert!(sb.cig(&["explain", "E761"]).status.success());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reported_compensation_runs_on_rollback() {
+    let sb = Sandbox::new();
+    sb.write("tool.py", REPORTING_TOOL);
+    sb.write("p/db/schema.sql", "create table a;\n");
+    sb.write("s.cig", &reporting_script("undo", ""));
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/undone.txt"), "undone\n", "{err}");
+    assert!(
+        err.contains("compensated ran the compensation for migration 0042"),
+        "{err}"
+    );
+    assert!(
+        err.contains("compensated run python3"),
+        "the hop is covered: {err}"
+    );
+    // Deferred: a run that went through is undone later by the same command.
+    fs::remove_file(sb.path().join("p/undone.txt")).unwrap();
+    sb.write("p/db/schema.sql", "create table a;\n");
+    sb.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"python3\", [\"../tool.py\", \"db/schema.sql\", \"undo\"], {cwd: \"p\"})\n}\n",
+    );
+    let out = sb.cig(&["run", "t.cig"]);
+    let text = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text}");
+    assert!(
+        text.contains("(0 irreversible)"),
+        "the hop is compensated: {text}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let plan = sb.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("compensate  compensation for migration 0042"),
+        "{plan}"
+    );
+    let done = sb.run_ok(&["unburn", &id]);
+    assert!(
+        done.contains("ran the compensation for migration 0042"),
+        "{done}"
+    );
+    assert_eq!(sb.read("p/undone.txt"), "undone\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_reported_path_outside_the_pack_is_refused() {
+    let sb = Sandbox::new();
+    sb.write("tool.py", REPORTING_TOOL);
+    sb.write("p/db/schema.sql", "create table a;\n");
+    let outside = sb.path().join("elsewhere.txt");
+    sb.write(
+        "s.cig",
+        &reporting_script("outside", &format!(", \"{}\"", outside.display())),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("warning[E761 burn]") && err.contains("outside the pack"),
+        "{err}"
+    );
+    assert!(err.contains("E752"), "{err}");
+    assert_eq!(
+        fs::read_to_string(&outside).unwrap(),
+        "stray\n",
+        "never rolled back"
+    );
+}
+
+/// cig is the protocol's first speaker: a run a hop started reports its own
+/// undo, and the parent's rollback puts it back through its own journal.
+#[cfg(unix)]
+#[test]
+fn a_nested_cig_run_is_undone_by_the_parents_rollback() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    sb.write(
+        "p/child.cig",
+        "burn {\n  fs.write_text(\"from-child.txt\", \"child\")\n}\n",
+    );
+    sb.write(
+        "s.cig",
+        &format!(
+            "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"{}\", [\"run\", \"child.cig\"], {{cwd: \"p\"}})\n  cough \"boom\"\n}}\n",
+            env!("CARGO_BIN_EXE_cig")
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(!sb.exists("p/from-child.txt"), "{err}");
+    assert!(
+        err.contains("ran the compensation for cig run child.cig"),
+        "{err}"
+    );
+    let runs = sb.runs();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let child = runs.iter().find(|r| r["script"] == "child.cig").unwrap();
+    assert_eq!(child["status"], "unburned", "{child}");
+}
+
+// ----- the parcel (#86): a run's undo on another machine
+
+/// A run on "machine A": a pack at `p`, a hop that edits one file and makes
+/// another, and a native write.
+#[cfg(unix)]
+fn parcelled_run(sb: &Sandbox) -> String {
+    sb.write("p/a.txt", "alpha v1\n");
+    sb.write("p/c.txt", "gamma v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo 'alpha v2' > a.txt; echo beta > b.txt\"], {cwd: \"p\", touches: [\"**\"]})\n  fs.write_text(\"p/c.txt\", \"gamma v2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    sb.runs()[0]["id"].as_str().unwrap().to_string()
+}
+
+/// Machine B: another state directory, the pack as the run left it.
+#[cfg(unix)]
+fn machine_b(a: &Sandbox) -> Sandbox {
+    let b = Sandbox::new();
+    fs::create_dir_all(b.path().join("p")).unwrap();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        fs::copy(a.path().join("p").join(f), b.path().join("p").join(f)).unwrap();
+    }
+    b
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parcel_unburns_on_another_machine() {
+    let a = Sandbox::new();
+    let id = parcelled_run(&a);
+    let out = a.run_ok(&["parcel", &id, "--out", "run.cigparcel"]);
+    assert!(out.trim().ends_with("run.cigparcel"), "{out}");
+    let parcel = a.path().join("run.cigparcel");
+    let b = machine_b(&a);
+    let show = b.run_ok(&["unparcel", "--show", parcel.to_str().unwrap()]);
+    assert!(
+        show.contains(&format!("run       {id}")) && show.contains("root      p ="),
+        "{show}"
+    );
+    let root = format!("p={}", b.path().join("p").display());
+    let imported = b.run_ok(&["unparcel", parcel.to_str().unwrap(), "--root", &root]);
+    assert_eq!(imported.trim(), id, "{imported}");
+    let shown = b.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("imported  from")
+            && shown.contains("chain     intact")
+            && shown.contains("objects   every snapshot"),
+        "{shown}"
+    );
+    let plan = b.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("unchanged since") && !plan.contains("changed since:"),
+        "{plan}"
+    );
+    b.run_ok(&["unburn", &id]);
+    assert_eq!(b.read("p/a.txt"), "alpha v1\n");
+    assert!(!b.exists("p/b.txt"));
+    assert_eq!(b.read("p/c.txt"), "gamma v1\n");
+    assert_eq!(b.runs()[0]["status"], "unburned");
+    // Machine A is untouched, and its own unburn still works.
+    assert_eq!(a.read("p/a.txt"), "alpha v2\n");
+    a.run_ok(&["unburn", &id]);
+    assert_eq!(a.read("p/a.txt"), "alpha v1\n");
+    // The same parcel a second time: the run is here already.
+    let err = b.run_err(&["unparcel", parcel.to_str().unwrap(), "--root", &root], 1);
+    assert!(
+        err.contains("E762") && err.contains("already here"),
+        "{err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parcel_with_a_wrong_hash_is_refused_whole() {
+    let a = Sandbox::new();
+    let id = parcelled_run(&a);
+    a.run_ok(&["parcel", &id, "--out", "run.cigparcel"]);
+    // Change one byte of one object inside the parcel, then pack it again.
+    let work = a.path().join("work");
+    fs::create_dir_all(&work).unwrap();
+    let tar = |args: &[&str]| {
+        let out = Command::new("tar")
+            .args(args)
+            .current_dir(a.path())
+            .output()
+            .expect("tar");
+        assert!(
+            out.status.success(),
+            "tar {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    tar(&["xzf", "run.cigparcel", "-C", "work"]);
+    let mut objects = Vec::new();
+    for bucket in fs::read_dir(work.join("tin/objects")).unwrap().flatten() {
+        for e in fs::read_dir(bucket.path()).unwrap().flatten() {
+            objects.push(e.path());
+        }
+    }
+    assert!(!objects.is_empty());
+    let mut bytes = fs::read(&objects[0]).unwrap();
+    bytes.push(b'!');
+    fs::write(&objects[0], bytes).unwrap();
+    tar(&["czf", "bad.cigparcel", "-C", "work", "."]);
+    let b = machine_b(&a);
+    let root = format!("p={}", b.path().join("p").display());
+    let err = b.run_err(
+        &[
+            "unparcel",
+            a.path().join("bad.cigparcel").to_str().unwrap(),
+            "--root",
+            &root,
+        ],
+        1,
+    );
+    assert!(
+        err.contains("error[E762 burn]") && err.contains("does not hash as the manifest says"),
+        "{err}"
+    );
+    assert!(b.runs().is_empty(), "nothing was imported");
+    assert!(!b.exists("home/tin/objects"), "no object was placed");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unmapped_root_refuses_with_its_name() {
+    let a = Sandbox::new();
+    let id = parcelled_run(&a);
+    a.run_ok(&["parcel", &id, "--out", "run.cigparcel"]);
+    let b = machine_b(&a);
+    let err = b.run_err(
+        &["unparcel", a.path().join("run.cigparcel").to_str().unwrap()],
+        1,
+    );
+    assert!(
+        err.contains("root `p` (") && err.contains("--root p=/path/to/it"),
+        "{err}"
+    );
+    assert!(b.runs().is_empty());
+    // A root mapped to a place that is not there is refused too.
+    let err = b.run_err(
+        &[
+            "unparcel",
+            a.path().join("run.cigparcel").to_str().unwrap(),
+            "--root",
+            "p=/nowhere/at/all",
+        ],
+        1,
+    );
+    assert!(err.contains("not a directory here"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parcel_carries_only_the_objects_its_run_needs() {
+    let a = Sandbox::new();
+    let first = parcelled_run(&a);
+    a.write("p/d.txt", "delta v1\n");
+    a.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo 'delta v2' > d.txt\"], {cwd: \"p\", touches: [\"d.txt\"]})\n}\n",
+    );
+    a.run_ok(&["run", "t.cig"]);
+    let second = a.runs()[0]["id"].as_str().unwrap().to_string();
+    assert_ne!(first, second);
+    let object_of = |id: &str| -> String {
+        let shown: serde_json::Value =
+            serde_json::from_str(&a.run_ok(&["--json", "runs", id])).unwrap();
+        shown["journal"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|e| {
+                e["before"]
+                    .as_array()?
+                    .iter()
+                    .find_map(|b| {
+                        b["snapshot"]
+                            .as_str()
+                            .filter(|s| s.contains("/tin/objects/"))
+                    })
+                    .map(|s| s.rsplit('/').next().unwrap().to_string())
+            })
+            .unwrap_or_else(|| panic!("{shown}"))
+    };
+    let (mine, theirs) = (object_of(&first), object_of(&second));
+    a.run_ok(&["parcel", &first, "--out", "first.cigparcel"]);
+    let listed = Command::new("tar")
+        .args(["tzf", "first.cigparcel"])
+        .current_dir(a.path())
+        .output()
+        .expect("tar");
+    let names = String::from_utf8_lossy(&listed.stdout).to_string();
+    assert!(names.contains(&mine), "{names}");
+    assert!(!names.contains(&theirs), "{names}");
+    assert!(
+        names.contains("manifest.json") && names.contains("run/journal.jsonl"),
+        "{names}"
+    );
+    assert!(!names.contains("run/hops/"), "{names}");
+}
+
+// ----- hop watching that scales (#84): no cap past which changes go irreversible
+
+/// Makes `n` small files under `p`, a thousand to a directory.
+#[cfg(unix)]
+fn big_pack(sb: &Sandbox, n: usize) {
+    for d in 0..n.div_ceil(1000) {
+        let dir = sb.path().join(format!("p/d{d:04}"));
+        fs::create_dir_all(&dir).unwrap();
+        let count = (n - d * 1000).min(1000);
+        for i in 0..count {
+            fs::write(dir.join(format!("f{i:04}.txt")), "x").unwrap();
+        }
+    }
+}
+
+/// 1.4 stopped reading a pack at 50,000 entries and left what a hop created
+/// past that point in place. The scan has no such point now.
+#[cfg(unix)]
+#[test]
+fn a_created_file_past_the_old_cap_is_removed_on_rollback() {
+    let sb = Sandbox::new();
+    big_pack(&sb, 60_000);
+    sb.write("p/config.ini", "original\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo CHANGED > config.ini; echo new > d0059/made.txt; rm d0030/f0007.txt\"], {cwd: \"p\", touches: [\"config.ini\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(!err.contains("saw only part of it"), "{err}");
+    assert_eq!(sb.read("p/config.ini"), "original\n", "{err}");
+    assert!(
+        !sb.exists("p/d0059/made.txt"),
+        "the created file survived: {err}"
+    );
+    assert!(err.contains("restored hop created"), "{err}");
+    assert!(
+        err.contains("d0030/f0007.txt is not under touches"),
+        "{err}"
+    );
+    assert!(
+        sb.exists("p/d0030/f0006.txt"),
+        "a file that existed was removed"
+    );
+}
+
+/// Half a million entries, a hop that creates, edits and deletes among
+/// them, everything undone. Heavy: `cargo test --release -- --ignored`.
+#[cfg(unix)]
+#[test]
+#[ignore = "heavy: makes 500,000 files; run with --ignored, in release mode"]
+fn a_hop_in_a_500k_entry_pack_is_fully_reversible() {
+    let sb = Sandbox::new();
+    big_pack(&sb, 500_000);
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo new > d0400/made.txt; echo changed > d0200/f0500.txt; rm d0100/f0001.txt\"], {cwd: \"p\", touches: [\"d0200/**\", \"d0100/**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let started = std::time::Instant::now();
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    let took = started.elapsed();
+    assert!(!err.contains("saw only part of it"), "{err}");
+    assert!(!sb.exists("p/d0400/made.txt"), "{err}");
+    assert_eq!(sb.read("p/d0200/f0500.txt"), "x", "{err}");
+    assert_eq!(sb.read("p/d0100/f0001.txt"), "x", "{err}");
+    assert!(
+        took < std::time::Duration::from_secs(300),
+        "a run over 500k entries took {took:?}"
+    );
+}
+
+/// The scan of a million entries, before and after a hop, stays under the
+/// memory budget: the whole run under 400 MB of resident memory on Linux.
+/// Heavy: `cargo test --release -- --ignored`.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "heavy: makes 1,000,000 files; run with --ignored, in release mode"]
+fn scan_memory_stays_under_the_budget_for_a_million_entries() {
+    let sb = Sandbox::new();
+    big_pack(&sb, 1_000_000);
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo new > d0999/made.txt\"], {cwd: \"p\"})\n  cough \"boom\"\n}\n",
+    );
+    let out = Command::new("/usr/bin/time")
+        .args(["-f", "MAXRSS=%M", env!("CARGO_BIN_EXE_cig"), "run", "s.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .output()
+        .expect("time");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    let rss_kb: u64 = err
+        .lines()
+        .find_map(|l| l.strip_prefix("MAXRSS="))
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(!err.contains("saw only part of it"), "{err}");
+    assert!(!sb.exists("p/d0999/made.txt"), "{err}");
+    assert!(
+        rss_kb < 400 * 1024,
+        "a million entries took {} MB of resident memory",
+        rss_kb / 1024
+    );
+}
+
+// ----- the box (#85): a failing hop's changes never land
+
+/// The box needs unprivileged user namespaces and overlayfs; where the
+/// machine has neither, the hop falls back to the tin and the run says so.
+/// These tests exercise the box where it can be made, and the fallback's
+/// wording where it cannot.
+#[cfg(target_os = "linux")]
+fn fell_back(err: &str) -> bool {
+    err.contains("the box cannot be made here") || err.contains("the box could not be made here")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failing_hop_in_a_box_changes_nothing() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write("p/gone.txt", "doomed\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo changed > keep.txt; rm gone.txt; echo new > made.txt; mkdir sub; echo deep > sub/d.txt; exit 3\"], {cwd: \"p\", box: true, ok: 0})\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    if fell_back(&err) {
+        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        assert!(err.contains("warning[E763 burn]"), "{err}");
+        return;
+    }
+    assert!(err.contains("error[E553 runtime]"), "{err}");
+    assert!(
+        err.contains("layer was dropped") && err.contains("nothing of it reached the pack"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/keep.txt"), "original\n");
+    assert_eq!(sb.read("p/gone.txt"), "doomed\n");
+    assert!(!sb.exists("p/made.txt") && !sb.exists("p/sub"));
+    // Nothing of the pack was journaled: the hop alone, and no rollback.
+    let rec = &sb.runs()[0];
+    assert_eq!(rec["burns"], 1, "{rec}");
+    assert!(!err.contains("restored"), "{err}");
+    let id = rec["id"].as_str().unwrap();
+    assert!(
+        !sb.exists(&format!("home/runs/{id}/box/1")),
+        "the layer was not dropped"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_succeeding_hop_in_a_box_is_applied_and_unburnable() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write("p/gone.txt", "doomed\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo changed > keep.txt; rm gone.txt; echo new > made.txt; mkdir sub; echo deep > sub/d.txt; ln -s keep.txt link.txt\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        return;
+    }
+    assert!(
+        err.contains("box: `sh -c") && err.contains("applied: 5 paths written, 1 removed"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/keep.txt"), "changed\n");
+    assert!(!sb.exists("p/gone.txt"));
+    assert_eq!(sb.read("p/made.txt"), "new\n");
+    assert_eq!(sb.read("p/sub/d.txt"), "deep\n");
+    assert_eq!(
+        fs::read_link(sb.path().join("p/link.txt")).unwrap(),
+        Path::new("keep.txt")
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("write") && shown.contains("delete") && shown.contains("mkdir"),
+        "{shown}"
+    );
+    assert!(shown.contains("chain     intact"), "{shown}");
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/keep.txt"), "original\n");
+    assert_eq!(sb.read("p/gone.txt"), "doomed\n");
+    assert!(!sb.exists("p/made.txt") && !sb.exists("p/sub") && !sb.exists("p/link.txt"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hop_that_deletes_and_replaces_folders_applies_correctly() {
+    let sb = Sandbox::new();
+    sb.write("p/dir/a.txt", "a\n");
+    sb.write("p/dir/b.txt", "b\n");
+    sb.write("p/dir/sub/c.txt", "c\n");
+    sb.write("p/other/x.txt", "x\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"rm -rf other; rm -rf dir; mkdir dir; echo fresh > dir/new.txt\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        eprintln!("the box could not be made on this machine; the fallback ran: {err}");
+        return;
+    }
+    assert!(!sb.exists("p/other"), "{err}");
+    assert_eq!(sb.read("p/dir/new.txt"), "fresh\n");
+    assert!(
+        !sb.exists("p/dir/a.txt") && !sb.exists("p/dir/b.txt") && !sb.exists("p/dir/sub"),
+        "the replaced folder kept old entries: {err}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/dir/a.txt"), "a\n");
+    assert_eq!(sb.read("p/dir/b.txt"), "b\n");
+    assert_eq!(sb.read("p/dir/sub/c.txt"), "c\n");
+    assert_eq!(sb.read("p/other/x.txt"), "x\n");
+    assert!(!sb.exists("p/dir/new.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn when_the_box_cannot_be_made_the_hop_falls_back_to_the_tin_and_says_so() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo changed > keep.txt; echo new > made.txt\"], {cwd: \"p\", box: true, touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let dry = sb.cig_env(
+        &["run", "--dry-run", "s.cig"],
+        &[("CIG_INTERNAL_NO_BOX", "1")],
+    );
+    let plan = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        plan.contains("(boxed)") && plan.contains("the box cannot be made here"),
+        "{plan}"
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_NO_BOX", "1")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("warning[E763 burn]: the box cannot be made here")
+            && err.contains("runs on the tin instead"),
+        "{err}"
+    );
+    // The tin did its usual work.
+    assert_eq!(sb.read("p/keep.txt"), "original\n", "{err}");
+    assert!(!sb.exists("p/made.txt"), "{err}");
+    assert!(sb.cig(&["explain", "E763"]).status.success());
+}

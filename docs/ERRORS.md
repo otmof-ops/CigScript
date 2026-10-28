@@ -1287,6 +1287,9 @@ folds and packs: refusals when automation is composed.
 | [`E758`](#e758-a-Windows-device-name-used-as-a-file) | a Windows device name used as a file | can't see any ciggies bro | name the file something else |
 | [`E759`](#e759-the-pack-is-in-use-by-another-run) | the pack is in use by another run | can't see any ciggies bro | wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap |
 | [`E760`](#e760-the-journal's-chain-is-broken) | the journal's chain is broken | can't see any ciggies bro | cig runs <id> --verify names the first line that does not fit; cig unburn <id> --force restores from the journal as it is |
+| [`E761`](#e761-a-hop's-report-could-not-be-used) | a hop's report could not be used | can't see any ciggies bro | docs/PROTOCOL.md has the line shapes; report paths inside the pack, and keep a copy of the before-bytes (`saved`) or give an `undo` command |
+| [`E762`](#e762-a-parcel-could-not-be-written-or-imported) | a parcel could not be written or imported | can't see any ciggies bro | cig unparcel --show <file> lists the roots to map; --root name=path for each, --cwd when the working directory cannot be told, --allow-sealed-missing to import what this machine cannot open |
+| [`E763`](#e763-the-box-could-not-be-made,-or-its-layer-not-applied) | the box could not be made, or its layer not applied | can't see any ciggies bro | the warning needs nothing done unless the box was the point: Linux 5.11 or later with user namespaces allowed (kernel.apparmor_restrict_unprivileged_userns=0 on Ubuntu); the error names the path that refused |
 
 ### E750 literal path outside the pack
 
@@ -1472,6 +1475,62 @@ Every line of a run's journal carries the hash of the line before it (format 2, 
 2. lines were removed, or the journal was replaced with another run's (no probe; a suggestion, not a finding). **Remedy:** the record cannot be trusted as it is; look at the files themselves before restoring anything
 
 Related: `E703`, `E704`.
+
+
+### E761 a hop's report could not be used
+
+*burn · since 1.6.0 · arises in run, light*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+The hop spoke the burn protocol (it appended to the file CIG_JOURNAL names), and a line of what it said could not be taken at its word: it was not JSON, named a path outside the pack, claimed a before-state that does not match what the tin kept, or reported a change without a copy of the bytes before it. The kernel never trusts a hop's word about bytes it can check; the change stays as the scan saw it, irreversible where the tin has nothing.
+
+**What to type next:** docs/PROTOCOL.md has the line shapes; report paths inside the pack, and keep a copy of the before-bytes (`saved`) or give an `undo` command
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the tool reported a write or delete without `saved`, or with a copy that does not hash to the `before` it claims (no probe; a suggestion, not a finding). **Remedy:** save the before-bytes before writing and name the copy in `saved`; or report a `compensate` line, which undoes the change by command
+2. the tool reported a path outside the pack, or a line that is not JSON (no probe; a suggestion, not a finding). **Remedy:** widen pack { } if the path is the pack's; one JSON object per line, with `op` and `path`
+
+Related: `E752`, `E757`.
+
+
+### E762 a parcel could not be written or imported
+
+*burn · since 1.6.0 · arises in unburn, runs*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+A parcel is a run's record and every object its journal needs in one file, with a manifest naming each file's hash. An import checks every file against the manifest, needs every root of the pack mapped to a place here, and needs the key for any sealed object; when any of that fails, nothing is imported. Writing one fails when the run's objects cannot be read, a blob git no longer has among them.
+
+**What to type next:** cig unparcel --show <file> lists the roots to map; --root name=path for each, --cwd when the working directory cannot be told, --allow-sealed-missing to import what this machine cannot open
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a root of the pack is not mapped, or the working directory cannot be told from the roots (no probe; a suggestion, not a finding). **Remedy:** `cig unparcel --show <file>`, then `--root name=/path/here` for each root, and `--cwd` when asked
+2. a file does not hash as the manifest says: the parcel was changed, or cut short, after it was written (no probe; a suggestion, not a finding). **Remedy:** get the parcel again from where it was made; nothing of it was imported
+3. the parcel holds sealed objects this machine's key does not open (no probe; a suggestion, not a finding). **Remedy:** copy the key that sealed them (the keyring entry cigscript/tin-seal, or ~/.cigscript/tin/seal.key), or `--allow-sealed-missing`
+
+Related: `E703`, `E704`.
+
+
+### E763 the box could not be made, or its layer not applied
+
+*burn · since 1.6.0 · arises in run, light*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+A hop asked to run in the box (`{box: true}`): over a copy-on-write layer on the pack, applied only when the hop succeeds. As a warning: the box could not be made here (no user namespaces, a kernel before 5.11, another operating system, a filesystem overlayfs cannot layer over), so the hop ran on the tin as usual. As an error: the hop succeeded but a change in its layer could not be applied to the pack; what was applied before it is in the journal, and the run's rollback puts it back.
+
+**What to type next:** the warning needs nothing done unless the box was the point: Linux 5.11 or later with user namespaces allowed (kernel.apparmor_restrict_unprivileged_userns=0 on Ubuntu); the error names the path that refused
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. unprivileged user namespaces are off, or restricted by AppArmor (Ubuntu 23.10 and later), or the kernel is older than 5.11 (no probe; a suggestion, not a finding). **Remedy:** `sysctl kernel.apparmor_restrict_unprivileged_userns=0` and `kernel.unprivileged_userns_clone=1`, or run the hop without `box`
+2. the operating system has no overlayfs (macOS, Windows, the BSDs) (no probe; a suggestion, not a finding). **Remedy:** the hop runs on the tin there; `touches` keeps what it may change
+3. a path in the layer could not be written to the pack (permissions, a device full) (probe `path-permissions`). **Remedy:** the run rolled back what was applied; fix the path and run again
+
+Related: `E757`, `E752`.
 
 
 ## usage (`E800`–`E849`)

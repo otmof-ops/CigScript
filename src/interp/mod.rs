@@ -88,6 +88,11 @@ impl Interp {
         &mut self,
         comp: &crate::burn::journal::Compensation,
     ) -> Result<(), Diagnostic> {
+        // A hop's own undo (the burn protocol) is a command, not source.
+        if comp.command.is_some() {
+            return crate::burn::protocol::run_command(comp)
+                .map_err(|m| Diagnostic::new(Kind::Runtime, m));
+        }
         let program = crate::syntax::parse(&comp.source)?;
         let scope = Scope::child(&self.globals);
         if let Some(name) = &comp.state_name {

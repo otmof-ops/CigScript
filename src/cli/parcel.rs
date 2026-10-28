@@ -1,0 +1,212 @@
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-License-Identifier: Apache-2.0
+
+//! `cig parcel <run>` and `cig unparcel <file>`: a run's undo, carried to
+//! another machine.
+
+use super::{exit, Ctx};
+use cigscript::burn::journal::Journal;
+use cigscript::burn::parcel;
+use cigscript::burn::runs;
+use std::path::{Path, PathBuf};
+
+pub fn parcel(ctx: &Ctx, id: &str, out: Option<PathBuf>) -> i32 {
+    let rec = match runs::find(id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            eprintln!("{} no run matches `{id}`", ctx.red("error[E803 usage]:"));
+            eprintln!("  = hint: `cig runs` lists them; give more of the id if it is ambiguous");
+            eprintln!("  = explain: cig explain E803");
+            return exit::USAGE;
+        }
+        Err(e) => {
+            eprintln!("{} {e}", ctx.red("error[E803 usage]:"));
+            eprintln!("  = explain: cig explain E803");
+            return exit::USAGE;
+        }
+    };
+    let journal = match Journal::load(&rec.dir()) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!(
+                "{} cannot load the journal for {}: {e}",
+                ctx.red("error[E703 burn]:"),
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E703");
+            return exit::SCRIPT_ERROR;
+        }
+    };
+    let out = out.unwrap_or_else(|| PathBuf::from(format!("{}.{}", rec.id, parcel::EXT)));
+    match parcel::write(&rec, &journal, &out) {
+        Ok(w) => {
+            if ctx.json {
+                outln!("{}", serde_json::to_string(&w).unwrap_or_default());
+            } else {
+                outln!("{}", w.path.display());
+                let roots: Vec<String> = w
+                    .manifest
+                    .roots
+                    .iter()
+                    .map(|r| format!("{}={}", r.name, r.path.display()))
+                    .collect();
+                eprintln!(
+                    "{} run {} parcelled: {} file{}, {} bytes{}{}; on the other machine: cig unparcel {} {}",
+                    ctx.green("parcel:"),
+                    rec.id,
+                    w.files,
+                    if w.files == 1 { "" } else { "s" },
+                    w.bytes,
+                    if w.manifest.sealed.objects > 0 {
+                        format!(
+                            ", {} sealed (the key {} must be there too)",
+                            w.manifest.sealed.objects,
+                            w.manifest.sealed.key.as_deref().unwrap_or("?")
+                        )
+                    } else {
+                        String::new()
+                    },
+                    if w.manifest.git_blobs > 0 {
+                        format!(", {} blob{} git held carried whole", w.manifest.git_blobs, if w.manifest.git_blobs == 1 { "" } else { "s" })
+                    } else {
+                        String::new()
+                    },
+                    w.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default(),
+                    roots
+                        .iter()
+                        .map(|r| format!("--root {r}"))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+            }
+            exit::OK
+        }
+        Err(e) => {
+            eprintln!(
+                "{} cannot write the parcel of {}: {e}",
+                ctx.red("error[E762 burn]:"),
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E762");
+            exit::SCRIPT_ERROR
+        }
+    }
+}
+
+/// `--root name=path`, parsed.
+pub fn parse_root(s: &str) -> Result<(String, PathBuf), String> {
+    match s.split_once('=') {
+        Some((name, path)) if !name.trim().is_empty() && !path.trim().is_empty() => {
+            Ok((name.trim().to_string(), PathBuf::from(path.trim())))
+        }
+        _ => Err(format!("--root wants name=path, got `{s}`")),
+    }
+}
+
+pub fn unparcel(
+    ctx: &Ctx,
+    file: &Path,
+    roots: Vec<String>,
+    cwd: Option<PathBuf>,
+    allow_sealed_missing: bool,
+    show: bool,
+) -> i32 {
+    if show {
+        return match parcel::read_manifest(file) {
+            Ok(m) => {
+                if ctx.json {
+                    outln!("{}", serde_json::to_string(&m).unwrap_or_default());
+                } else {
+                    outln!("run       {}", m.run);
+                    outln!("written   {} by cig {}", m.created, m.cig);
+                    outln!(
+                        "from      {}{} (working directory {})",
+                        if m.origin.host.is_empty() {
+                            String::new()
+                        } else {
+                            format!("{}:", m.origin.host)
+                        },
+                        m.origin.state_dir.display(),
+                        m.origin.cwd
+                    );
+                    for r in &m.roots {
+                        outln!(
+                            "root      {} = {}  (map it: --root {}=/path/here)",
+                            r.name,
+                            r.path.display(),
+                            r.name
+                        );
+                    }
+                    outln!(
+                        "files     {}{}{}",
+                        m.files.len(),
+                        if m.sealed.objects > 0 {
+                            format!(
+                                ", {} sealed under key {}",
+                                m.sealed.objects,
+                                m.sealed.key.as_deref().unwrap_or("?")
+                            )
+                        } else {
+                            String::new()
+                        },
+                        if m.git_blobs > 0 {
+                            format!(", {} git blobs carried whole", m.git_blobs)
+                        } else {
+                            String::new()
+                        }
+                    );
+                }
+                exit::OK
+            }
+            Err(e) => {
+                eprintln!("{} {}: {e}", ctx.red("error[E762 burn]:"), file.display());
+                eprintln!("  = explain: cig explain E762");
+                exit::SCRIPT_ERROR
+            }
+        };
+    }
+    let mut mapping = parcel::Mapping {
+        roots: Vec::new(),
+        cwd,
+        allow_sealed_missing,
+    };
+    for r in roots {
+        match parse_root(&r) {
+            Ok(pair) => mapping.roots.push(pair),
+            Err(e) => {
+                eprintln!("{} {e}", ctx.red("error[E800 usage]:"));
+                return exit::USAGE;
+            }
+        }
+    }
+    match parcel::import(file, &mapping) {
+        Ok(done) => {
+            if ctx.json {
+                outln!("{}", serde_json::to_string(&done).unwrap_or_default());
+            } else {
+                outln!("{}", done.id);
+                eprintln!(
+                    "{} run {} imported from {} ({} file{} checked); cig unburn {} works here, against this machine's files{}",
+                    ctx.green("unparcel:"),
+                    done.id,
+                    done.origin,
+                    done.files,
+                    if done.files == 1 { "" } else { "s" },
+                    done.id,
+                    if done.sealed_unopenable {
+                        "; its sealed objects do not open with this machine's key, and a restore from one will refuse"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            exit::OK
+        }
+        Err(e) => {
+            eprintln!("{} {e}", ctx.red("error[E762 burn]:"));
+            eprintln!("  = hint: nothing was imported; cig unparcel --show {} lists what the parcel holds and the roots to map", file.display());
+            eprintln!("  = explain: cig explain E762");
+            exit::SCRIPT_ERROR
+        }
+    }
+}

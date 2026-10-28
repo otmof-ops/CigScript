@@ -79,6 +79,9 @@ struct Options {
     touches: Vec<String>,
     /// Globs among them whose files are secrets, kept sealed.
     touches_sealed: Vec<String>,
+    /// Run in the box: a copy-on-write layer over the pack, applied only
+    /// when the hop succeeds.
+    boxed: bool,
 }
 
 impl Options {
@@ -102,6 +105,7 @@ impl Options {
             sep: ',',
             touches: Vec::new(),
             touches_sealed: Vec::new(),
+            boxed: false,
         };
         let Some(opts) = opt_map(a, index, name, s)? else {
             return Ok(o);
@@ -128,6 +132,7 @@ impl Options {
                         }
                     }
                 }
+                ("box", v) => o.boxed = v.truthy(),
                 ("touches_sealed", Value::Str(g)) => o.touches_sealed = vec![g.to_string()],
                 ("touches_sealed", Value::List(l)) => {
                     for item in l.borrow().iter() {
@@ -214,7 +219,7 @@ impl Options {
                 (other, _) => {
                     return Err(runtime(format!("{name}: unknown option `{other}`"))
                         .at(s)
-                        .with_hint("use one of cwd, env, clean_env, timeout_ms, grace_ms, stdin, check, ok, encoding, header, sep, touches, touches_sealed"))
+                        .with_hint("use one of cwd, env, clean_env, timeout_ms, grace_ms, stdin, check, ok, encoding, header, sep, touches, touches_sealed, box"))
                 }
             }
         }
@@ -580,7 +585,13 @@ fn quoted_for_crt(arg: &str) -> String {
 /// fails as not found (E551) rather than let the platform search again by
 /// rules of its own (the current directory among them). A path nothing
 /// resolves is handed over as written, so the platform's reason is told.
-fn command(cmd: &str, args: &[String], o: &Options) -> Option<Command> {
+fn command(
+    cmd: &str,
+    args: &[String],
+    o: &Options,
+    journal: Option<&std::path::Path>,
+    boxed: Option<&crate::burn::overlay::Layers>,
+) -> Option<Command> {
     let resolved = resolve_program_on(cmd, o.cwd.as_deref(), child_path(o));
     let is_path = cmd.contains('/') || cmd.contains(std::path::MAIN_SEPARATOR);
     if resolved.is_none() && !is_path {
@@ -683,6 +694,15 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Option<Command> {
     } else if let Ok(id) = std::env::var("CIG_RUN_ID") {
         c.env("CIG_RUN_ID", id);
     }
+    // The burn protocol: where a tool that knows what it changes may say so.
+    match journal {
+        Some(p) => {
+            c.env(crate::burn::protocol::ENV, p);
+        }
+        None => {
+            c.env_remove(crate::burn::protocol::ENV);
+        }
+    }
     for (k, v) in &o.env {
         c.env(k, v);
     }
@@ -691,6 +711,33 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Option<Command> {
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
+    // The box: between fork and exec the child enters its own user and
+    // mount namespaces and mounts each root as an overlay over itself.
+    #[cfg(target_os = "linux")]
+    if let Some(layers) = boxed {
+        use std::os::unix::process::CommandExt;
+        let here = o
+            .cwd
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        match crate::burn::overlay::Setup::new(layers, &here) {
+            Ok(setup) => {
+                // SAFETY: the closure makes only async-signal-safe calls
+                // (unshare, open, write, mount, chdir) on data prepared
+                // before the fork.
+                unsafe {
+                    c.pre_exec(move || setup.apply());
+                }
+            }
+            Err(e) => {
+                let _ = std::fs::write(layers.dir.join("why"), format!("{e}\n"));
+                return None;
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = boxed;
     Some(c)
 }
 
@@ -1123,12 +1170,14 @@ fn run_child(
     args: &[String],
     o: &Options,
     s: Span,
+    journal: Option<&std::path::Path>,
+    boxed: Option<&crate::burn::overlay::Layers>,
 ) -> Result<Raw, Diagnostic> {
     let started = Instant::now();
     let deadline = started + Duration::from_millis(o.timeout_ms);
     check_cwd(name, o, s)?;
     install_signal_forwarding();
-    let mut c = command(cmd, args, o).ok_or_else(|| {
+    let mut c = command(cmd, args, o, journal, boxed).ok_or_else(|| {
         spawn_error(
             name,
             cmd,
@@ -1465,6 +1514,7 @@ fn hop(
         cwd: o.cwd.clone(),
         touches: o.touches.clone(),
         touches_sealed: o.touches_sealed.clone(),
+        boxed: o.boxed,
     };
     if !o.touches.is_empty() && i.kernel.pack().is_none() {
         return Err(cigscript_burn(format!(
@@ -1474,21 +1524,136 @@ fn hop(
         .at(s)
         .with_hint("declare pack { \".\" } (or the roots the hop writes under) as the first statement"));
     }
+    let mark = i.kernel.mark();
     if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
+    }
+    let report = i.kernel.hop_journal();
+    // The box: the hop writes into a layer over the pack. Where the box
+    // cannot be made, the hop runs on the tin and says so.
+    let layers: Option<crate::burn::overlay::Layers> = if o.boxed {
+        match i.kernel.box_prepare() {
+            Some(Ok(l)) => Some(l),
+            Some(Err(why)) => {
+                let _ = writeln!(
+                    i.err,
+                    "warning[E763 burn]: the box cannot be made here ({why}); `{}` runs on the tin instead",
+                    hop_label(cmd, args)
+                );
+                None
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    if let Some(l) = layers.as_ref() {
+        let ran = run_child(name, cmd, args, o, s, report.as_deref(), Some(l));
+        // The box could not be made after all (the kernel refused the
+        // namespaces or the mount): the hop runs again, on the tin.
+        let fell_back = match &ran {
+            Err(d) if d.code == "E550" || d.code == "E552" => crate::burn::overlay::why(l),
+            _ => None,
+        };
+        if let Some(why) = fell_back {
+            let _ = writeln!(
+                i.err,
+                "warning[E763 burn]: the box could not be made here ({why}); `{}` runs on the tin instead",
+                hop_label(cmd, args)
+            );
+            crate::burn::overlay::discard(l);
+        } else {
+            let claims = report
+                .as_deref()
+                .map(crate::burn::protocol::read)
+                .unwrap_or_default();
+            for warning in &claims.warnings {
+                let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
+            }
+            // The hop's own undo, if it gave one, is journaled whatever
+            // happens to the layer; its file claims are not needed, the
+            // layer is exact.
+            let compensations: Vec<crate::burn::protocol::Claim> = claims
+                .claims
+                .into_iter()
+                .filter(|c| matches!(c, crate::burn::protocol::Claim::Compensate { .. }))
+                .collect();
+            let raw = match ran {
+                Ok(raw) => raw,
+                Err(d) => {
+                    crate::burn::overlay::discard(l);
+                    let _ = writeln!(
+                        i.err,
+                        "{}",
+                        format_args!(
+                            "box: `{}` failed, so its layer was dropped; nothing of it reached the pack",
+                            hop_label(cmd, args)
+                        )
+                    );
+                    return Err(d);
+                }
+            };
+            let out = decode(name, "stdout", &raw.out, o.encoding, s)?;
+            let err = decode(name, "stderr", &raw.err, Encoding::Lossy, s)?;
+            let value = result_map(raw.code, &out, &err, raw.duration_ms, false);
+            if let Err(d) = enforce_contract(i, name, &hop_label(cmd, args), &raw, o, value, s) {
+                crate::burn::overlay::discard(l);
+                let _ = writeln!(
+                    i.err,
+                    "box: `{}` exited outside its contract, so its layer was dropped; nothing of it reached the pack",
+                    hop_label(cmd, args)
+                );
+                return Err(d);
+            }
+            let applied = i.kernel.box_apply(l).map_err(|e| {
+                cigscript_burn(format!("{name}: {e}"))
+                    .code("E763")
+                    .at(s)
+                    .with_hint("what was applied before the failure is in the journal; the run's rollback puts it back")
+            })?;
+            if !compensations.is_empty() {
+                i.kernel
+                    .hop_compensations(compensations, o.cwd.as_deref(), mark);
+            }
+            let _ = writeln!(
+                i.err,
+                "{}",
+                format_args!(
+                    "box: `{}` applied: {} path{} written, {} removed",
+                    hop_label(cmd, args),
+                    applied.created.len(),
+                    if applied.created.len() == 1 { "" } else { "s" },
+                    applied.deleted.len()
+                )
+            );
+            return Ok(Some((raw, out, err)));
+        }
     }
     let watch = i
         .kernel
         .pack_watch_begin(o.cwd.as_deref(), &o.touches, &o.touches_sealed);
-    let ran = run_child(name, cmd, args, o, s);
+    let ran = run_child(name, cmd, args, o, s, report.as_deref(), None);
+    // What the hop said it changed (the burn protocol), read once it is over.
+    let claims = report
+        .as_deref()
+        .map(crate::burn::protocol::read)
+        .unwrap_or_default();
+    for warning in &claims.warnings {
+        let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
+    }
     if let Some(mut w) = watch {
         // Printed here and taken out, so the watch's end does not say them again.
         for warning in std::mem::take(&mut w.warnings) {
             let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
         }
-        let writes = i.kernel.pack_watch_end(w);
+        let writes = i
+            .kernel
+            .pack_watch_end(w, claims.claims, o.cwd.as_deref(), mark);
         for warning in i.kernel.take_late_warnings() {
             let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
+        }
+        for warning in i.kernel.take_claim_warnings() {
+            let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
         }
         if !writes.outside.is_empty() {
             let shown: Vec<String> = writes
@@ -1734,6 +1899,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         cwd: o.cwd.clone(),
         touches: o.touches.clone(),
         touches_sealed: o.touches_sealed.clone(),
+        boxed: o.boxed,
     };
     if i.effect("proc.pipe", op, s)? == Decision::Simulate {
         return Ok(result_map(0, "", "", 0, true));
@@ -1753,7 +1919,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let mut stdin_thread: Option<std::thread::JoinHandle<()>> = None;
     let mut previous_out: Option<std::process::ChildStdout> = None;
     for (n, (cmd, args)) in stages.iter().enumerate() {
-        let Some(mut c) = command(cmd, args, &o) else {
+        let Some(mut c) = command(cmd, args, &o, None, None) else {
             for mut earlier in children.drain(..) {
                 kill_group(&mut earlier, 0, job.as_ref());
             }

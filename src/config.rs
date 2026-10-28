@@ -43,8 +43,8 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ),
     (
         "watch_cap",
-        "50000",
-        "how many entries of a pack hop watching reads before it stops; past it, what a hop creates is irreversible and the hop says so (a .cigignore brings a pack under)",
+        "5000000",
+        "the memory guard on hop watching: how many entries of a pack it reads before it stops (about 60 bytes each); past it, what a hop creates is irreversible and the hop says so",
     ),
     (
         "seal",

@@ -245,7 +245,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.5.0/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.0/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.5.0 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.0 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.5.0-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.6.0-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -472,6 +472,16 @@ for.
 | a hop under `touches: ["**"]` rewrites `id_rsa` and deletes `.env`, then the run fails | both come back byte for byte, and not a byte of either is in the clear anywhere under the state directory | 1.5.0 | `a_private_key_under_touches_is_never_stored_in_the_clear` |
 | flip one byte of a sealed object, then `unburn` | refused before anything is touched; the tag does not fit | 1.5.0 | `a_tampered_sealed_object_refuses_the_restore` |
 | the key is gone (a wiped keyring, a new machine), then `unburn` | refused, naming the file; `cig tin gc --sealed-orphans` clears what nothing can open | 1.5.0 | `without_the_key_a_restore_refuses_and_names_the_file` |
+| a tool rewrites a file no `touches` named, keeps the bytes before and reports both through `CIG_JOURNAL` | reversible all the same: the copy is hashed, kept, and put back on rollback | 1.6.0 | `a_tool_that_reports_its_write_is_reversible_without_touches` |
+| a tool reports a path outside the pack, or a before-hash its copy does not match | refused with the reason (`E761`); nothing journaled on its word | 1.6.0 | `a_reported_path_outside_the_pack_is_refused` |
+| a hop starts a `cig run` of its own, then the parent fails | the child reported its undo; the parent's rollback unburns the child through its own journal | 1.6.0 | `a_nested_cig_run_is_undone_by_the_parents_rollback` |
+| `cig parcel` a run, carry the file to a machine with a different home and the pack at another path, `cig unparcel --root`, `cig unburn` | every file checked against the manifest, the paths read through the map, the chain still intact; the run is undone there, the original machine untouched | 1.6.0 | `a_parcel_unburns_on_another_machine` |
+| change one byte inside a parcel, then `cig unparcel` | the whole parcel refused (`E762`); nothing placed | 1.6.0 | `a_parcel_with_a_wrong_hash_is_refused_whole` |
+| a hop creates a file in a 60,000-entry pack, where 1.4 stopped scanning at 50,000 | removed on rollback like any other; the scan has no point past which a change goes irreversible | 1.6.0 | `a_created_file_past_the_old_cap_is_removed_on_rollback` |
+| a hop creates, edits and deletes among 500,000 entries | everything undone, under five minutes (heavy; `cargo test --release -- --ignored`) | 1.6.0 | `a_hop_in_a_500k_entry_pack_is_fully_reversible` |
+| a hop in the box rewrites, deletes and creates files, then exits outside its contract | nothing of it reached the pack: the layer is dropped, there is nothing to roll back (Linux) | 1.6.0 | `a_failing_hop_in_a_box_changes_nothing` |
+| a hop in the box deletes one folder and replaces another whole | applied as native burns from the layer's whiteouts and opaque directory; `unburn` brings both folders back as they were (Linux) | 1.6.0 | `a_boxed_hop_that_deletes_and_replaces_folders_applies_correctly` |
+| `{box: true}` where the box cannot be made | the plan says so before the run, the hop runs on the tin, the run says so (`E763`) | 1.6.0 | `when_the_box_cannot_be_made_the_hop_falls_back_to_the_tin_and_says_so` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

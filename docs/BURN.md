@@ -204,10 +204,13 @@ irreversible with the detail (`hop modified`, `hop deleted`) unless the tin
 kept them, a directory it deleted or replaced with a file is made again on
 rollback (`(directory)`), and changes in the child's working directory
 outside the pack are reported as `E752`. The scan skips `.git`,
-`node_modules`, `target` and `.cigscript`, never hashes content, and stops
-at `watch_cap` entries (50,000): past the cap it warns up front, journals
-nothing as created and asks the disk before calling a file deleted, so a
-rollback never removes a file that existed before the run. One run at a
+`node_modules`, `target` and `.cigscript`, never hashes content, reads the
+tree on every core into a compact sorted list (about 60 bytes an entry, so a
+million entries is a laptop's business), reuses the scan before the hop for
+every directory whose modification time has not moved, and stops only at
+`watch_cap` entries (five million, a memory guard): past the cap it warns up
+front, journals nothing as created and asks the disk before calling a file
+deleted, so a rollback never removes a file that existed before the run. One run at a
 time holds a pack: a second run on the same or an overlapping pack is
 refused with `E759` while the first runs, because hop watching would read
 its writes as the hop's.
@@ -223,7 +226,10 @@ journaled. Hops inside such a block are labelled `compensated` in the plan,
 the journal and the rollback report, never `irreversible`; a block that
 fails half-way records no compensation, so its hops stay honestly
 irreversible. No pack reverses `git push`; that is what the compensation is
-for, and the pack and the compensation are two halves of one feature.
+for, and the pack and the compensation are two halves of one feature. A
+hop can supply the compensation itself through the burn protocol
+([PROTOCOL.md](PROTOCOL.md)): a `compensate` line in `CIG_JOURNAL` is
+journaled like a block's `unburn` and runs the same way, as a command.
 
 ## Chains
 
@@ -387,6 +393,59 @@ Run ids sort chronologically (UTC). `cig runs` lists them, `cig runs <id>`
 shows one with its journal, `cig runs --prune N` keeps the newest N, and
 `CIGSCRIPT_HOME` relocates the whole state directory (tests use this to stay
 isolated).
+
+## The box
+
+The tin makes a hop's changes undoable after they happen; the box makes a
+failing hop's changes never happen. `proc.run(cmd, args, {box: true})`
+runs the hop, on Linux, in its own user and mount namespaces, with each
+pack root mounted as overlayfs over itself: the real root is the read-only
+lower layer and an upper directory under the run directory takes every
+write, so other programs reading the pack while the hop runs see nothing
+of it. A hop that fails, or exits outside its contract, has its layer
+dropped: nothing of it reached the pack, whatever the pack's size and
+whether or not `touches` named anything, and the run says `layer was
+dropped`. A hop that succeeds has its layer applied to the pack as native
+burns, outer paths first: a file in the layer is a write (the real file's
+before-bytes journaled first, sealed when it is a secret), a whiteout is a
+delete, an opaque directory a delete and the entries that follow, a new
+directory a mkdir, a link a write; each is journaled with its before-state
+exactly as `fs.write_text` and `fs.rm` are, so the run is unburnable like
+any other and the record reads as native ops. The plan says `(boxed)`, and
+says before the run when the box cannot be made here. It cannot where
+unprivileged user namespaces are off (Ubuntu's AppArmor restricts them
+since 23.10: `sysctl kernel.apparmor_restrict_unprivileged_userns=0`), on
+a kernel before 5.11, on a filesystem overlayfs cannot layer over, and on
+macOS, Windows and the BSDs, which have no overlayfs; there the hop runs on
+the tin as usual, with `touches` keeping what it may change, and the run
+says so (`E763`). A hop's own undo (the burn protocol) is journaled for a
+boxed hop too.
+
+## The parcel
+
+A run's undo lives on the machine that ran it: the record under
+`~/.cigscript/runs/<id>/`, its snapshots, and the tin objects it refers to.
+`cig parcel <run>` writes them as one file, `<run>.cigparcel` (a gzipped
+tar): `run/` with the record, the journal and the after-state and every
+snapshot; `tin/` with every object, recipe, chunk and sealed object the
+journal refers to, and nothing another run holds; `git/` with the bytes of
+every blob git held for the run, carried whole so the other machine needs
+no repository; and `manifest.json` naming each file's SHA-256, the cig
+that wrote it, the pack's roots (each with a name, its last component) and
+the working directory. `cig unparcel <file>` checks every file against the
+manifest before it writes anything, and a byte changed refuses the whole
+parcel (`E762`); every root must be mapped to a place here (`--root
+build=/srv/app/build`; `--show` lists them, `--cwd` sets the working
+directory when it cannot be told from the roots, which it can when a root
+sits under it by the same relative path); sealed objects this machine's
+key does not open are refused unless `--allow-sealed-missing`. The objects
+go into the tin (a content-named one already there is kept when it hashes
+to its name), the run among the runs, and its record says where it came
+from and how its paths map (`imported`). The journal itself is never
+rewritten, so its chain still verifies; the record's map is applied as it
+is read. From then on `cig runs <id>` lists it as imported and
+`cig unburn <id>` works here, with the usual drift check (`E704`) against
+this machine's files.
 
 ## What it can't undo, and says so
 

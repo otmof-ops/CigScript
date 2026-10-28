@@ -35,6 +35,7 @@ to die in step C.
 | `grace_ms` | after SIGTERM, how long before SIGKILL; 500 ms by default |
 | `stdin` | text fed to the child's stdin |
 | `touches` | globs, relative to the pack root, of the files the child may change (`"*"` the root's own files, `"**"` everything under it, `"src/**"` a tree, `"package.json"` one file). Each existing file under them is kept in the tin before the child runs, so a file it modifies or deletes comes back on rollback, byte for byte and hash-verified, with its mode and modification time, where it would otherwise be listed as irreversible. A glob written with a leading `?` (`"?yarn.lock"`) may match nothing without a word: a file the project does not have yet. A symbolic link comes back as a link with or without `touches`. Needs a `pack { }` (`E757`) |
+| `box` | `true` runs the hop in the box: over a copy-on-write layer on the pack (overlayfs in a user namespace; Linux), applied only when the hop succeeds, dropped when it fails, so nothing of a failing hop ever reaches the pack. Where the box cannot be made the hop runs on the tin and the run says so (`E763`). `BURN.md`, "The box" |
 | `touches_sealed` | globs among `touches` whose files are secrets: kept in the tin like the rest, and kept sealed (encrypted at rest; `BURN.md`, "Sealed"). Secret-shaped names (`.env`, `*.pem`, `id_rsa*`, ...) and a pack root's `.cigseal` are sealed without being named here |
 | `ok` | the exit-code contract: an int or a list of ints; `null` for none. It wins over `check` whatever the order of the keys |
 | `check` | `true` means the contract `[0]`, `false` none; ignored when `ok` is given |
@@ -215,10 +216,13 @@ most here:
   first runs. A cig that a hop starts is the exception: it sees the run's
   id as `CIG_RUN_ID` (every hop does) and works inside the parent's pack,
   since the parent waits for it.
-- **The scan has a cap** (`watch_cap`, 50,000 entries). Past it the kernel
-  cannot tell a file the hop made from one it never reached, so it warns
-  up front, journals nothing as created, and asks the disk before it calls
-  a file deleted. A `.cigignore` at the pack root keeps a big tree out.
+- **The scan is compact and parallel, with a memory guard** (`watch_cap`,
+  five million entries). It reads the pack on every core into a sorted list
+  of about 60 bytes an entry, and the scan after the hop reuses it for
+  every directory whose modification time has not moved. Past the guard the
+  kernel cannot tell a file the hop made from one it never reached, so it
+  warns up front, journals nothing as created, and asks the disk before it
+  calls a file deleted. A `.cigignore` at the pack root keeps a big tree out.
 - **A link that leads out of the pack is a door.** What lies behind it is
   not walked and never journaled; a write through it is reported as
   outside the pack (`E752`); a rollback never removes a path whose real
@@ -243,11 +247,25 @@ it may use only its state map `s`, modules and builtins (`E754` otherwise);
 hops inside the block show as `compensated` in the plan. `LANGUAGE.md` has
 the shape.
 
+## The burn protocol
+
+A tool that knows what it changed can say so. Every hop a real run starts
+gets `CIG_JOURNAL`, a file it may append JSON lines to: `write`, `delete`
+and `create` with the path, the hash of the bytes before and where a copy
+of them was kept; `compensate` with the command that undoes the work. The
+kernel checks every word it can (a path outside the pack is refused, a copy
+that does not hash as claimed is not used, a `create` the scan saw before
+is dropped) and journals what holds: a change the tool kept the bytes for
+is reversible without `touches`, a compensation runs on rollback and
+`cig unburn` like a block's. [PROTOCOL.md](PROTOCOL.md) is the contract,
+with the lines in Python, Node and bash. A `cig run` started by a hop
+speaks it itself, so a parent's rollback undoes the child through the
+child's own journal.
+
 ## What a hop cannot do yet
 
-The burn protocol (a child that speaks `CIG_DRY_RUN=1` and reports its own
-effects so the kernel can plan and journal them), adapters for `git`, `gh`,
-`docker` and friends as subtools, and shape assertions at the boundary are
-the next seams of `HAMMER.md` (sections 4 and 7). Until then a hop is honest about being opaque: the plan
-shows it, the label says irreversible, and the ghost filesystem does not
-pretend to know what it would have written.
+Adapters for `git`, `gh`, `docker` and friends as subtools, and shape
+assertions at the boundary, are the next seams of `HAMMER.md` (sections 4
+and 7). Until then a hop that speaks no protocol is honest about being
+opaque: the plan shows it, the label says irreversible, and the ghost
+filesystem does not pretend to know what it would have written.

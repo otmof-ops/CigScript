@@ -17,6 +17,7 @@ mod crash;
 mod doctor;
 mod explain;
 mod language;
+mod parcel;
 mod pin;
 mod repl;
 mod report;
@@ -166,6 +167,31 @@ pub enum Command {
         /// The constraint to write: 1.2 (any 1.2.x), 1.2.0 (exactly), >=1.2.0; default the installed major.minor.
         #[arg(long, value_name = "CONSTRAINT")]
         to: Option<String>,
+    },
+    /// Pack a run's record, the tin objects it needs and its compensations into one file, for `cig unburn` on another machine.
+    Parcel {
+        /// The run id, or a unique prefix of it.
+        id: String,
+        /// Write here instead of ./<run>.cigparcel.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Import a parcel: every file checked against its manifest, the pack's roots mapped to where they are here.
+    Unparcel {
+        /// The .cigparcel file.
+        file: PathBuf,
+        /// Where a root of the pack lives here: name=path (the name is the root's last component; --show lists them).
+        #[arg(long, value_name = "NAME=PATH")]
+        root: Vec<String>,
+        /// The run's working directory here, when it cannot be told from the roots.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Import even the sealed objects this machine's key cannot open.
+        #[arg(long)]
+        allow_sealed_missing: bool,
+        /// Only list what the parcel holds and the roots to map.
+        #[arg(long)]
+        show: bool,
     },
     /// The tin: the before-bytes of files hops may change; du, verify, gc.
     Tin {
@@ -332,6 +358,14 @@ pub fn main() -> i32 {
         Command::Versions { command } => versions::versions(&ctx, command),
         Command::Pin { file, to } => pin::pin_cmd(&ctx, &file, to),
         Command::Tin { command } => tin::tin_cmd(&ctx, command),
+        Command::Parcel { id, out } => parcel::parcel(&ctx, &id, out),
+        Command::Unparcel {
+            file,
+            root,
+            cwd,
+            allow_sealed_missing,
+            show,
+        } => parcel::unparcel(&ctx, &file, root, cwd, allow_sealed_missing, show),
     }
 }
 
