@@ -83,6 +83,11 @@ pub struct Entry {
     /// after the entry; the newest marker is the current list.
     #[serde(skip)]
     pub took: Vec<BeforeState>,
+    /// What the newest `--give-back` of this entry left at each path it
+    /// put back, so the next one can tell an edit made since from its own
+    /// work. Kept in the same marker line as `took`.
+    #[serde(skip)]
+    pub left_after: Vec<LeftState>,
     /// An irreversible op inside a `burn { } unburn { }` block: the
     /// compensation covers it, so the plan says `compensated`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -235,6 +240,10 @@ impl Journal {
                         if let Ok(states) = serde_json::from_value::<Vec<BeforeState>>(t.clone()) {
                             e.took = states;
                         }
+                        e.left_after = v
+                            .get("left")
+                            .and_then(|l| serde_json::from_value::<Vec<LeftState>>(l.clone()).ok())
+                            .unwrap_or_default();
                     }
                 }
                 continue;
@@ -407,6 +416,7 @@ impl Journal {
             undone: false,
             restored: false,
             took: Vec::new(),
+            left_after: Vec::new(),
             compensated,
             compensation,
         };
@@ -676,16 +686,23 @@ impl Journal {
     /// was. `cig unburn <id> --give-back`.
     pub fn give_back(&mut self) -> RollbackReport {
         let mut report = RollbackReport::default();
-        let mut took: Vec<(u64, Vec<BeforeState>)> = Vec::new();
+        let mut took: Vec<(u64, Vec<BeforeState>, Vec<LeftState>)> = Vec::new();
         for entry in self.entries.iter().rev() {
             if entry.took.is_empty() {
                 continue;
             }
             let mut now_taken = Vec::new();
+            let mut left = Vec::new();
             for state in &entry.took {
                 match restore(state, true) {
                     Ok((_, taken)) => {
                         now_taken.extend(taken);
+                        if let Some(l) = PathState::from_before(&state.before) {
+                            left.push(LeftState {
+                                path: state.path.clone(),
+                                state: l,
+                            });
+                        }
                         let text = format!(
                             "{} (the rollback of {} had moved it to the tin)",
                             state.path.display(),
@@ -701,10 +718,38 @@ impl Journal {
                     }
                 }
             }
-            took.push((entry.seq, now_taken));
+            took.push((entry.seq, now_taken, left));
         }
         self.mark_took(took);
         report
+    }
+
+    /// What `--give-back` would do, without doing it: each file the
+    /// rollback moved into the tin, what the tin holds for it, what is at
+    /// the path now, and whether that is still what the rollback left.
+    pub fn give_back_plan(&self) -> Vec<GiveBack> {
+        let mut out = Vec::new();
+        for entry in self.entries.iter().rev() {
+            for state in &entry.took {
+                let (sha256, bytes) = match &state.before {
+                    Before::File { sha256, bytes, .. } => (sha256.clone(), *bytes),
+                    _ => (String::new(), 0),
+                };
+                let left = rollback_left(entry, &state.path);
+                let now = PathState::observe(&state.path);
+                let changed = left.as_ref().is_some_and(|l| !now.same_as(l));
+                out.push(GiveBack {
+                    seq: entry.seq,
+                    path: state.path.clone(),
+                    sha256,
+                    bytes,
+                    now,
+                    left,
+                    changed,
+                });
+            }
+        }
+        out
     }
 
     fn rollback_from(
@@ -719,7 +764,7 @@ impl Journal {
         // over so that a later pass, retrying what failed, skips them.
         let mut done: Vec<u64> = Vec::new();
         // What the pass moved into the tin, by entry.
-        let mut took: Vec<(u64, Vec<BeforeState>)> = Vec::new();
+        let mut took: Vec<(u64, Vec<BeforeState>, Vec<LeftState>)> = Vec::new();
         // The compensation just run failed: the irreversible ops it covers,
         // which follow it in this newest-first order, are not undone, and
         // the report must not call them compensated.
@@ -913,7 +958,7 @@ impl Journal {
                 }
             }
             if !taken_here.is_empty() {
-                took.push((entry.seq, taken_here));
+                took.push((entry.seq, taken_here, Vec::new()));
             }
             if report.failed.len() == failed_before {
                 done.push(entry.seq);
@@ -939,19 +984,29 @@ impl Journal {
         self.append_marker(&markers);
     }
 
-    /// Record what a pass moved into the tin, per entry, in memory and on
-    /// disk. The newest marker for an entry is its current list.
-    fn mark_took(&mut self, took: Vec<(u64, Vec<BeforeState>)>) {
+    /// Record what a pass moved into the tin, per entry, and what it left
+    /// at the paths it gave back, in memory and on disk. The newest marker
+    /// for an entry is its current list.
+    fn mark_took(&mut self, took: Vec<(u64, Vec<BeforeState>, Vec<LeftState>)>) {
         if took.is_empty() {
             return;
         }
         let mut markers = String::new();
-        for (seq, states) in took {
-            if let Ok(json) = serde_json::to_string(&states) {
-                markers.push_str(&format!("{{\"seq\":{seq},\"took\":{json}}}\n"));
+        for (seq, states, left) in took {
+            if let (Ok(json), Ok(left_json)) =
+                (serde_json::to_string(&states), serde_json::to_string(&left))
+            {
+                if left.is_empty() {
+                    markers.push_str(&format!("{{\"seq\":{seq},\"took\":{json}}}\n"));
+                } else {
+                    markers.push_str(&format!(
+                        "{{\"seq\":{seq},\"took\":{json},\"left\":{left_json}}}\n"
+                    ));
+                }
             }
             if let Some(e) = self.entries.iter_mut().find(|e| e.seq == seq) {
                 e.took = states;
+                e.left_after = left;
             }
         }
         self.append_marker(&markers);
@@ -961,6 +1016,55 @@ impl Journal {
     pub fn has_taken(&self) -> bool {
         self.entries.iter().any(|e| !e.took.is_empty())
     }
+}
+
+/// What a pass left at one path it put back, as `cig unburn --give-back`
+/// records it beside what it took.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LeftState {
+    pub path: PathBuf,
+    #[serde(flatten)]
+    pub state: PathState,
+}
+
+/// One file `cig unburn <id> --give-back` would put back.
+#[derive(Clone, Debug, Serialize)]
+pub struct GiveBack {
+    pub seq: u64,
+    pub path: PathBuf,
+    /// The bytes the tin holds for it.
+    pub sha256: String,
+    pub bytes: u64,
+    /// What is at the path now.
+    pub now: PathState,
+    /// What the rollback left at the path, when the journal can tell.
+    pub left: Option<PathState>,
+    /// The path is no longer as the rollback left it: giving back would
+    /// write over work done since.
+    pub changed: bool,
+}
+
+/// What a rollback of `entry` left at `path`, as far as its before-states
+/// say: the file's old bytes, nothing (the path had not existed, or lay
+/// under a directory that had not), a link, a directory. None when the
+/// journal cannot tell.
+fn rollback_left(entry: &Entry, path: &Path) -> Option<PathState> {
+    // A give-back since the rollback put the tin's bytes at the path, and
+    // wrote down that it did.
+    if let Some(l) = entry.left_after.iter().find(|l| l.path == *path) {
+        return Some(l.state.clone());
+    }
+    if let Some(b) = entry.before.iter().find(|b| b.path == *path) {
+        return PathState::from_before(&b.before);
+    }
+    if entry
+        .before
+        .iter()
+        .any(|b| matches!(b.before, Before::Absent) && path.starts_with(&b.path) && b.path != *path)
+    {
+        return Some(PathState::Absent);
+    }
+    None
 }
 
 /// A regular file's (mtime, len) as hop watching records it, or None for
@@ -1159,6 +1263,27 @@ fn dir_fingerprint(dir: &Path) -> (String, u64) {
 }
 
 impl PathState {
+    /// The state a restore of this before-state leaves at its path, when
+    /// that can be said without looking: the old bytes, nothing, a link, a
+    /// directory (its fingerprint unknown).
+    pub fn from_before(before: &Before) -> Option<Self> {
+        match before {
+            Before::Absent => Some(PathState::Absent),
+            Before::File { sha256, bytes, .. } => Some(PathState::File {
+                sha256: sha256.clone(),
+                bytes: *bytes,
+            }),
+            Before::Symlink { target } => Some(PathState::Symlink {
+                target: target.clone(),
+            }),
+            Before::Dir { .. } | Before::Directory { .. } => Some(PathState::Dir {
+                fingerprint: String::new(),
+                entries: 0,
+            }),
+            Before::Moved { .. } => None,
+        }
+    }
+
     pub fn observe(path: &Path) -> Self {
         match fs::symlink_metadata(path) {
             Err(_) => PathState::Absent,

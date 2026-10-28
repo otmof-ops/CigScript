@@ -159,7 +159,9 @@ the hop ran. For a hop entry, a file the rollback removes or rewrites is
 moved into the tin first, the report line says `its bytes went to the tin`,
 `cig runs <id>` lists them under `took`, and `cig unburn <id> --give-back`
 puts them back, moving what is there now into the tin in turn, so the step
-can be reversed again. A directory a hop made is removed only when it is
+can be reversed again; `--give-back --dry-run` lists what it would put back
+and what is there now, and a path changed since the rollback is refused
+without `--force` (`E704`). A directory a hop made is removed only when it is
 empty: what was put in it since stays, and so does it. A file the hop left
 that changed again after the hop ended is left alone, listed with the
 `--force` that restores over it. `cig unburn` holds the pack's lock while

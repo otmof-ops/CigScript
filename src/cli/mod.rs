@@ -106,8 +106,8 @@ pub enum Command {
         /// Restore even if this run was rolled back already or a snapshot is missing.
         #[arg(long)]
         force: bool,
-        /// Put back what this run's rollback moved into the tin: files saved while a hop ran, or the hop's own output.
-        #[arg(long, conflicts_with_all = ["dry_run", "force"])]
+        /// Put back what this run's rollback moved into the tin: files saved while a hop ran, or the hop's own output (--dry-run previews it, --force writes over a path changed since).
+        #[arg(long)]
         give_back: bool,
     },
     /// Look the install over, or diagnose a past run again; asks before it fixes anything (diagnostics).
@@ -307,7 +307,7 @@ pub fn main() -> i32 {
             give_back,
         } => {
             if give_back {
-                runs::give_back(&ctx, &id)
+                runs::give_back(&ctx, &id, dry_run, force)
             } else {
                 runs::unburn(&ctx, &id, dry_run, force)
             }

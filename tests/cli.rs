@@ -4787,3 +4787,129 @@ fn e757_is_printed_once() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert_eq!(err.matches("matches no file").count(), 1, "{err}");
 }
+
+/// A deleted folder outside `touches` is one warning, for the folder, not
+/// one per file; a lone file is still named itself (#90).
+#[cfg(unix)]
+#[test]
+fn changes_outside_touches_are_reported_once_per_folder() {
+    let sb = Sandbox::new();
+    sb.write("p/config.ini", "original\n");
+    sb.write("p/other.txt", "o\n");
+    for i in 0..1200 {
+        sb.write(&format!("p/d01/sub{}/f{i:04}.txt", i % 3), "x");
+    }
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo CHANGED > config.ini; echo new > made.txt; rm -rf d01; echo o2 > other.txt\"], {cwd: \"p\", touches: [\"config.ini\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/config.ini"), "original\n", "{err}");
+    assert!(!sb.exists("p/made.txt"), "{err}");
+    let lines: Vec<&str> = err
+        .lines()
+        .filter(|l| l.contains("not under touches"))
+        .collect();
+    assert_eq!(lines.len(), 2, "{err}");
+    let folder = lines
+        .iter()
+        .find(|l| l.contains("1,200 files under d01/ are not under touches"))
+        .unwrap_or_else(|| panic!("{err}"));
+    assert!(
+        folder.contains("touches: [\"d01/**\"] would keep them")
+            && folder.contains("d01/sub0/f0000.txt")
+            && folder.contains("lists them all"),
+        "{folder}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("p/other.txt is not under touches")
+                && l.contains("touches: [\"*\"] would keep it")),
+        "{err}"
+    );
+    // The full list is on the run.
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &id]);
+    assert_eq!(shown.matches("d01/sub1/f0001.txt").count(), 1, "{shown}");
+    assert_eq!(shown.matches("hop deleted").count(), 1204, "{shown}");
+}
+
+/// `--give-back --dry-run` says what it would put back and changes
+/// nothing; a path changed since the rollback is refused without `--force`
+/// (#91).
+#[cfg(unix)]
+#[test]
+fn give_back_dry_run_lists_what_it_would_restore_and_changes_nothing() {
+    let sb = Sandbox::new();
+    sb.write("p/src/app.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo 'my new notes' > src/notes.txt; echo 'v2 my edit' > src/app.txt\"], {cwd: \"p\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    sb.run_err(&["run", "s.cig"], 1);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let plan = sb.run_ok(&["unburn", &id, "--give-back", "--dry-run"]);
+    assert!(plan.contains("would give back 2 files"), "{plan}");
+    assert!(
+        plan.contains("give back")
+            && plan.contains("src/notes.txt")
+            && plan.contains("src/app.txt"),
+        "{plan}"
+    );
+    assert!(
+        plan.contains("11 bytes") && plan.contains("13 bytes"),
+        "the tin's bytes for each: {plan}"
+    );
+    assert!(
+        plan.contains("(now absent)"),
+        "notes.txt is gone since the rollback: {plan}"
+    );
+    assert!(
+        plan.contains("(now a file, 3 bytes"),
+        "app.txt holds v1 again: {plan}"
+    );
+    assert_eq!(
+        plan.matches("unchanged since the rollback").count(),
+        2,
+        "{plan}"
+    );
+    assert!(plan.contains("nothing was changed"), "{plan}");
+    assert_eq!(sb.read("p/src/app.txt"), "v1\n");
+    assert!(!sb.exists("p/src/notes.txt"));
+    let json = sb.run_ok(&["--json", "unburn", &id, "--give-back", "--dry-run"]);
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        v["would_give_back"].as_array().map(Vec::len),
+        Some(2),
+        "{json}"
+    );
+    assert_eq!(v["would_give_back"][0]["changed"], false, "{json}");
+    // An edit since the rollback: the preview says so, the real give-back
+    // refuses before touching anything, and --force goes ahead.
+    sb.write("p/src/app.txt", "v1 edited since\n");
+    let plan = sb.run_ok(&["unburn", &id, "--give-back", "--dry-run"]);
+    assert!(
+        plan.contains("1 path changed since the rollback") && plan.contains("E704"),
+        "{plan}"
+    );
+    assert_eq!(
+        plan.matches("changed since the rollback").count(),
+        3,
+        "{plan}"
+    );
+    let refused = sb.run_err(&["unburn", &id, "--give-back"], 1);
+    assert!(
+        refused.contains("error[E704 burn]") && refused.contains("src/app.txt"),
+        "{refused}"
+    );
+    assert_eq!(sb.read("p/src/app.txt"), "v1 edited since\n");
+    assert!(
+        !sb.exists("p/src/notes.txt"),
+        "the refusal gave nothing back"
+    );
+    let forced = sb.run_ok(&["unburn", &id, "--give-back", "--force"]);
+    assert!(forced.contains("gave back"), "{forced}");
+    assert_eq!(sb.read("p/src/app.txt"), "v2 my edit\n");
+    assert_eq!(sb.read("p/src/notes.txt"), "my new notes\n");
+}

@@ -230,7 +230,9 @@ run (with the nearest glob that would match; one glob among several
 matching nothing is ordinary, a lockfile the project may have), each glob
 gets a count in the dry run (`touches scr/**: 0 files`), and after the run
 the report names the glob that would have kept a file the hop changed
-outside every glob.
+outside every glob. Several such files under one folder are one line, with
+the smallest directory that covers them, the glob for it and a few of them
+as examples; `cig runs <id>` lists every one.
 
 ## Compensations
 

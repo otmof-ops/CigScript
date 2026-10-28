@@ -180,8 +180,11 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
 }
 
 /// `cig unburn <id> --give-back`: put back what the run's rollback moved
-/// into the tin. What is at those paths now goes to the tin in turn.
-pub fn give_back(ctx: &Ctx, id: &str) -> i32 {
+/// into the tin. What is at those paths now goes to the tin in turn. With
+/// `--dry-run` the list alone, with what is there now and whether it is
+/// still what the rollback left; a path changed since is refused without
+/// `--force`, as a rollback over a later edit is.
+pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     let rec = match runs::find(id) {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -214,6 +217,85 @@ pub fn give_back(ctx: &Ctx, id: &str) -> i32 {
             rec.id
         );
         return exit::OK;
+    }
+    let plan = journal.give_back_plan();
+    let changed: Vec<&cigscript::burn::journal::GiveBack> =
+        plan.iter().filter(|g| g.changed).collect();
+    if dry_run {
+        if ctx.json {
+            outln!(
+                "{}",
+                serde_json::json!({"run": rec.id, "would_give_back": plan})
+            );
+            return exit::OK;
+        }
+        outln!(
+            "{}",
+            ctx.bold(&format!(
+                "would give back {} file{} the rollback of {} moved into the tin",
+                plan.len(),
+                if plan.len() == 1 { "" } else { "s" },
+                rec.id
+            ))
+        );
+        if !changed.is_empty() {
+            outln!(
+                "  {} {} path{} changed since the rollback; a real give-back would refuse [E704] unless --force",
+                ctx.yellow("note:"),
+                changed.len(),
+                if changed.len() == 1 { "" } else { "s" }
+            );
+        }
+        for g in &plan {
+            let column = match (&g.left, g.changed) {
+                (None, _) => ctx.dim("  changed since: unknown"),
+                (Some(_), false) => ctx.dim("  unchanged since the rollback"),
+                (Some(_), true) => ctx.yellow("  changed since the rollback"),
+            };
+            outln!(
+                "  {:>4}  give back  {}  <- {} bytes, sha256 {} (now {}){column}",
+                g.seq,
+                g.path.display(),
+                g.bytes,
+                g.sha256.get(..12).unwrap_or(&g.sha256),
+                g.now.describe()
+            );
+        }
+        outln!("{}", ctx.dim("nothing was changed"));
+        return exit::OK;
+    }
+    if !changed.is_empty() {
+        if !force {
+            eprintln!(
+                "{} cannot give back for {}: {} path{} changed since the rollback; putting the tin's bytes back would overwrite that newer content",
+                ctx.red("error[E704 burn]:"),
+                rec.id,
+                changed.len(),
+                if changed.len() == 1 { "" } else { "s" }
+            );
+            for g in &changed {
+                eprintln!(
+                    "  - {}: the rollback left {}, now {}",
+                    g.path.display(),
+                    g.left
+                        .as_ref()
+                        .map(|l| l.describe())
+                        .unwrap_or_else(|| "something else".to_string()),
+                    g.now.describe()
+                );
+            }
+            eprintln!(
+                "  = hint: look at the files, then pass --force if the tin's bytes are what you want; cig unburn {} --give-back --dry-run shows the changed-since column",
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E704");
+            return exit::SCRIPT_ERROR;
+        }
+        eprintln!(
+            "{} {} path(s) changed since the rollback; --force given, giving back over them",
+            ctx.yellow("note:"),
+            changed.len()
+        );
     }
     let _lock = match cigscript::burn::lock::acquire(&rec.pack, &rec.id) {
         Ok(l) => Some(l),
