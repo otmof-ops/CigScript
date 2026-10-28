@@ -663,7 +663,7 @@ fn hand_back(ctx: &Ctx, rec: &RunRecord, e: &std::io::Error) -> i32 {
 pub fn paint_action(ctx: &Ctx, label: &str) -> String {
     match label {
         "restored" | "compensated" | "gave back" => ctx.green(label),
-        "cannot undo" | "kept" | "left" => ctx.yellow(label),
+        "cannot undo" | "kept" | "left" | "not undone" => ctx.yellow(label),
         "failed" => ctx.red(label),
         other => other.to_string(),
     }

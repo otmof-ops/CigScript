@@ -97,7 +97,9 @@ can see: `cig unburn <id> --give-back`, the pack lock (`E759`) and the
   entries a rollback put back are stamped in the journal, so the next
   `cig unburn <id>` retries what failed and leaves the rest as it is; the
   record lists the failures after a manual unburn too. `--force` restores
-  everything again, as before.
+  everything again, as before. A compensation that fails leaves the ops it
+  covered standing, and the report says `not undone` of them instead of
+  `compensated`.
 - **E758 reads every component** of a path, in either separator, and knows
   `com0`, `lpt0`, the superscript digits, `conin$` and `conout$`; the kernel
   refuses a computed device name with or without a `pack`.

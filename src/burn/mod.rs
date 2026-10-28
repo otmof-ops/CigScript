@@ -15,6 +15,14 @@ pub mod lock;
 pub mod runs;
 pub mod tin;
 
+/// The one lock every test in this crate that sets `CIGSCRIPT_HOME` takes:
+/// the tests share a process and an environment, and `home_dir` reads it.
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 use crate::diagnostics::{burn as burn_error, Diagnostic};
 use journal::Journal;
 use serde::{Deserialize, Serialize};

@@ -4547,3 +4547,35 @@ fn an_empty_path_entry_is_not_the_current_directory() {
     assert_eq!(out.status.code(), Some(1), "{err}");
     assert!(err.contains("error[E551 runtime]"), "{err}");
 }
+
+/// A compensation that fails leaves the ops it covered standing, and the
+/// report says so instead of calling them compensated.
+#[cfg(unix)]
+#[test]
+fn a_failed_compensation_leaves_its_ops_honestly_not_undone() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        concat!(
+            "burn (s) {\n",
+            "  proc.run(\"sh\", [\"-c\", \"echo live > remote.txt\"])\n",
+            "} unburn {\n",
+            "  proc.run(\"sh\", [\"-c\", \"echo undo-broke >&2; exit 7\"], {check: true})\n",
+            "}\n",
+            "burn { cough \"boom\" }\n"
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("compensation for the burn at line 3 failed"),
+        "{err}"
+    );
+    assert!(
+        err.contains("not undone run sh -c 'echo live > remote.txt'")
+            && err.contains("its compensation failed, so it stands"),
+        "{err}"
+    );
+    assert!(!err.contains("compensated run sh"), "{err}");
+    assert_eq!(sb.read("remote.txt"), "live\n");
+    assert_eq!(sb.runs()[0]["status"], "rollback_incomplete");
+}

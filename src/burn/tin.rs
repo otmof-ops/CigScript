@@ -251,11 +251,14 @@ pub fn take(path: &Path) -> io::Result<Stashed> {
     match fs::rename(path, &tmp) {
         Ok(()) => {}
         // Across filesystems, or a file Windows will not let go of yet: copy.
+        // A file another program holds open stays where it is for now; its
+        // bytes are kept all the same, and the caller decides what a file
+        // still at the path means (a restore writes over it in place).
         Err(_) => {
             copy_hashing(path, &tmp).inspect_err(|_| {
                 let _ = fs::remove_file(&tmp);
             })?;
-            fs::remove_file(path)?;
+            let _ = fs::remove_file(path);
         }
     }
     lift_read_only(&tmp);
@@ -452,11 +455,11 @@ mod tests {
         assert!(globs(&["[".to_string()]).is_err());
     }
 
-    /// The tests below point the tin at a scratch home. They share one
-    /// process, so each takes the lock the environment needs.
+    /// The tests below point the tin at a scratch home. Every test in this
+    /// crate that sets `CIGSCRIPT_HOME` takes the same lock, since they
+    /// share one process and one environment.
     fn with_home<T>(f: impl FnOnce(&Path) -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _g = super::super::test_env_lock();
         let tmp = tempfile::tempdir().unwrap();
         let old = std::env::var_os("CIGSCRIPT_HOME");
         std::env::set_var("CIGSCRIPT_HOME", tmp.path().join("home"));

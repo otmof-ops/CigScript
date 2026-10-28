@@ -717,11 +717,16 @@ impl Journal {
         let mut done: Vec<u64> = Vec::new();
         // What the pass moved into the tin, by entry.
         let mut took: Vec<(u64, Vec<BeforeState>)> = Vec::new();
+        // The compensation just run failed: the irreversible ops it covers,
+        // which follow it in this newest-first order, are not undone, and
+        // the report must not call them compensated.
+        let mut undo_failed = false;
         for entry in self.entries.iter().skip(from).rev() {
             if entry.undone || (entry.restored && !again) {
                 continue;
             }
             if let Some(c) = &entry.compensation {
+                undo_failed = false;
                 match runner.as_mut() {
                     Some(run) => match run(c) {
                         Ok(()) => {
@@ -731,6 +736,7 @@ impl Journal {
                             done.push(entry.seq);
                         }
                         Err(e) => {
+                            undo_failed = true;
                             let text =
                                 format!("compensation for the burn at line {} failed: {e}", c.line);
                             report.failed.push(text.clone());
@@ -742,7 +748,14 @@ impl Journal {
                 continue;
             }
             if !entry.reversible {
-                if entry.compensated {
+                if entry.compensated && undo_failed {
+                    let text = format!(
+                        "{} (its compensation failed, so it stands; once the compensation is fixed, cig unburn {run_id} runs it again)",
+                        entry.op.describe()
+                    );
+                    report.irreversible.push(text.clone());
+                    report.actions.push(("not undone".to_string(), text));
+                } else if entry.compensated {
                     report.compensated.push(entry.op.describe());
                     report
                         .actions
@@ -946,26 +959,49 @@ fn displace(path: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
         Err(e) => Err(e),
         Ok(m) if m.file_type().is_symlink() => fs::remove_file(path),
         Ok(m) if m.is_dir() => {
-            for entry in walkdir::WalkDir::new(path)
-                .min_depth(1)
-                .follow_links(false)
-                .contents_first(true)
-            {
-                let entry = entry.map_err(io::Error::other)?;
-                let ft = entry.file_type();
-                if ft.is_dir() {
-                    fs::remove_dir(entry.path())?;
-                } else if ft.is_file() {
-                    take_file(entry.path(), taken)?;
-                } else {
-                    fs::remove_file(entry.path())?;
-                }
-            }
+            displace_tree(path, taken)?;
             fs::remove_dir(path)
         }
         Ok(m) if m.is_file() => take_file(path, taken),
         Ok(_) => fs::remove_file(path),
     }
+}
+
+/// Empty a directory the way `displace` empties a path: files go to the
+/// tin, links and empty directories go, and a tree hop watching never looks
+/// into (`.git`, `node_modules`, `target`: rebuilt, not restored) goes whole.
+fn displace_tree(dir: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        let ft = entry.file_type()?;
+        if ft.is_symlink() {
+            fs::remove_file(&p)?;
+        } else if ft.is_dir() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if super::tin::SKIPPED_ALWAYS.contains(&name.as_str()) {
+                fs::remove_dir_all(&p)?;
+            } else {
+                displace_tree(&p, taken)?;
+                fs::remove_dir(&p)?;
+            }
+        } else if ft.is_file() {
+            let st = super::tin::take(&p)?;
+            taken.push(BeforeState {
+                path: p.clone(),
+                before: Before::File {
+                    snapshot: st.object,
+                    sha256: st.sha256,
+                    bytes: st.bytes,
+                    mode: st.mode,
+                    mtime_ns: st.mtime_ns,
+                },
+            });
+        } else {
+            fs::remove_file(&p)?;
+        }
+    }
+    Ok(())
 }
 
 fn is_symlink(path: &Path) -> bool {
@@ -1309,19 +1345,15 @@ fn restore(
             if !keep {
                 return remove_any(path).map(|()| (None, taken));
             }
-            match fs::symlink_metadata(path) {
-                // A directory the hop made is removed only when it is empty:
-                // what was put in it since is not the hop's, and stays.
-                Ok(m) if m.is_dir() => fs::remove_dir(path).map_err(|e| {
-                    if fs::read_dir(path).map(|mut d| d.next().is_some()).unwrap_or(false) {
-                        io::Error::other(
-                            "it is not empty; what was added to it since the hop stays, and so does it",
-                        )
-                    } else {
-                        e
-                    }
-                })?,
-                _ => displace(path, &mut taken)?,
+            // What is at the path goes to the tin before it goes: the hop's
+            // output, or a save made while the hop ran, either way recoverable.
+            displace(path, &mut taken)?;
+            if fs::symlink_metadata(path).is_ok() {
+                // Windows: another program holds the file, so it could not be
+                // removed; its bytes are kept all the same.
+                return Err(io::Error::other(
+                    "it is held open by another program and could not be removed (its bytes are in the tin); close that program, then `cig unburn <run>` finishes the job",
+                ));
             }
             Ok((None, taken))
         }

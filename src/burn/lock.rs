@@ -182,9 +182,9 @@ mod tests {
     fn a_second_lock_on_the_same_or_an_overlapping_root_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         // The lock directory follows CIGSCRIPT_HOME; this test keeps to its
-        // own by pointing the whole home at the scratch directory.
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // own by pointing the whole home at the scratch directory, under the
+        // lock every test that touches the environment takes.
+        let _g = super::super::test_env_lock();
         let old = std::env::var_os("CIGSCRIPT_HOME");
         std::env::set_var("CIGSCRIPT_HOME", tmp.path().join("home"));
         let root = tmp.path().join("p");
