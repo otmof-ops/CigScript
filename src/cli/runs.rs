@@ -464,6 +464,12 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
     };
     let mut removed = 0;
     for r in all.iter().skip(keep) {
+        // The blobs the run pinned in git go free with its record.
+        if let Ok(text) = std::fs::read_to_string(r.dir().join(cigscript::burn::git::PINS)) {
+            for wt in text.lines().filter(|l| !l.trim().is_empty()) {
+                cigscript::burn::git::unpin(std::path::Path::new(wt.trim()), &r.id);
+            }
+        }
         if std::fs::remove_dir_all(r.dir()).is_ok() {
             removed += 1;
         }

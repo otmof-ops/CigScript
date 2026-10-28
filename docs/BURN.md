@@ -278,7 +278,27 @@ the bytes the kept files would take written out, so the saving is visible;
 every chunk a live recipe names. Smaller files cost exactly what they did
 before, and a large file a 1.4 cig kept whole restores as it always did.
 Measured in [FINDINGS.md](FINDINGS.md): twenty one-byte edits of a 200 MB
-file cost the tin 202 MB, where 1.4 stored 200 MB a run. The file's own mode
+file cost the tin 202 MB, where 1.4 stored 200 MB a run.
+
+**Git blob reuse.** Most files a hop touches in a git project are tracked
+and unchanged since the last commit, and git already holds their bytes in
+`.git/objects`. Such a file (tracked, and clean against the index: the
+bytes on disk hash to the blob the index names, by git's own blob hash) is
+not copied into the tin: the journal records the repository, the blob and
+our SHA-256 (`(git)` in the record), and a restore reads the blob back
+through `git cat-file`, checks it against that hash, and refuses other
+bytes the way a corrupt tin object is refused. A blob reachable only from a
+commit that is later rebased away could be collected by `git gc`, so the
+run pins every blob it refers to under `refs/cig/runs/<run id>`, one tree
+naming them all, until `cig runs --prune` drops the record and the pin with
+it (`git-pins.txt` in the run directory names the repositories). That is
+the choice over falling back to a copy when the blob is unreachable from
+`HEAD`: reachability changes after the fact, a pin does not. A dirty or
+untracked file goes to the tin as before, so does every file in a
+repository the run cannot pin in, and git is only ever read, the pin
+aside: nothing writes to the index or the working tree. `cig runs <id>
+--verify` asks git for each blob's presence and size; a blob git has lost
+is refused with the reason, naming the repository and the pin. The file's own mode
 and modification time travel in the journal and are put back with the
 bytes, so a `chmod` by the hop is undone and `make` sees the time it saw
 before. A symbolic link is kept as a link: its target is all there is, the

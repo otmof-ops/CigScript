@@ -10,6 +10,7 @@
 //! records the intent and tells the builtin to simulate.
 
 pub mod ghost;
+pub mod git;
 pub mod journal;
 pub mod lock;
 pub mod runs;
@@ -198,6 +199,7 @@ impl Op {
                 match (tinned, kept.as_deref()) {
                     (true, Some("link")) => "  (link kept)",
                     (true, Some("dir")) => "  (directory)",
+                    (true, Some("git")) => "  (git)",
                     (true, _) => "  (tin)",
                     (false, _) => "",
                 }
@@ -285,6 +287,9 @@ pub struct Kernel {
     lock: Option<lock::PackLock>,
     /// Warnings the end of a hop's watch produced, waiting to be printed.
     late_warnings: Vec<String>,
+    /// The git blobs this run refers to instead of copying, by repository:
+    /// pinned under `refs/cig/runs/<id>` as one tree, rebuilt as it grows.
+    git_pins: std::collections::BTreeMap<PathBuf, std::collections::BTreeSet<String>>,
 }
 
 /// The `touches` glob nearest to `glob` among the globs that would match an
@@ -826,6 +831,7 @@ impl Kernel {
             compensating_marks: Vec::new(),
             lock: None,
             late_warnings: Vec::new(),
+            git_pins: std::collections::BTreeMap::new(),
         })
     }
 
@@ -949,8 +955,13 @@ impl Kernel {
 
     /// Before a hop: remember the pack's files (and the child's working
     /// directory, when it is outside the pack) by mtime and size.
-    pub fn pack_watch_begin(&self, cwd: Option<&Path>, touches: &[String]) -> Option<PackWatch> {
-        let roots = self.pack.as_ref()?;
+    pub fn pack_watch_begin(
+        &mut self,
+        cwd: Option<&Path>,
+        touches: &[String],
+    ) -> Option<PackWatch> {
+        let roots = self.pack.clone()?;
+        let roots = &roots;
         if self.mode == Mode::DryRun {
             return None;
         }
@@ -1032,19 +1043,101 @@ impl Kernel {
                             if counts.len() == 1 { "es" } else { "" }
                         ));
                     }
-                    let mut staged: Vec<(PathBuf, tin::Staged)> = Vec::new();
+                    // A file git already holds, tracked and clean against the
+                    // index, is referenced from the repository instead of
+                    // copied: the run pins the blobs it refers to first, and
+                    // falls back to the tin for a repository it cannot pin in.
+                    let repos: Vec<Option<git::Repo>> =
+                        roots.iter().map(|r| git::repo_for(r)).collect();
+                    let mut from_git: Vec<(usize, PathBuf, String, String, Seen)> = Vec::new();
+                    let mut to_tin: Vec<PathBuf> = Vec::new();
                     for (path, meta) in &inside {
                         if meta.is_dir() {
                             continue;
                         }
-                        let hit = roots.iter().any(|r| {
+                        let Some(ri) = roots.iter().position(|r| {
                             path.strip_prefix(r)
                                 .map(|rel| set.is_match(rel))
                                 .unwrap_or(false)
-                        });
-                        if !hit {
+                        }) else {
                             continue;
+                        };
+                        if let (Some(repo), Seen::File { len, .. }) = (&repos[ri], meta) {
+                            if let Some((blob, sha256)) = repo.clean_blob(path, *len) {
+                                from_git.push((ri, path.clone(), blob, sha256, meta.clone()));
+                                continue;
+                            }
                         }
+                        to_tin.push(path.clone());
+                    }
+                    if !from_git.is_empty() {
+                        let run_id = self
+                            .journal
+                            .run_dir()
+                            .and_then(|d| d.file_name())
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        let mut pinned_ok: Vec<bool> = vec![false; roots.len()];
+                        for (ri, repo) in repos.iter().enumerate() {
+                            let Some(repo) = repo else { continue };
+                            let blobs: Vec<&String> = from_git
+                                .iter()
+                                .filter(|(i, ..)| *i == ri)
+                                .map(|(_, _, b, ..)| b)
+                                .collect();
+                            if blobs.is_empty() {
+                                continue;
+                            }
+                            let set = self.git_pins.entry(repo.work_tree.clone()).or_default();
+                            for b in blobs {
+                                set.insert(b.clone());
+                            }
+                            match repo.pin(&run_id, set) {
+                                Ok(()) => pinned_ok[ri] = true,
+                                Err(e) => warnings.push(format!(
+                                    "could not pin the blobs this run refers to in {} ({e}); its files are kept in the tin instead",
+                                    repo.work_tree.display()
+                                )),
+                            }
+                        }
+                        if let Some(dir) = self.journal.run_dir() {
+                            let list: String = self
+                                .git_pins
+                                .keys()
+                                .map(|wt| format!("{}\n", wt.display()))
+                                .collect();
+                            let _ = std::fs::write(dir.join(git::PINS), list);
+                        }
+                        for (ri, path, blob, sha256, meta) in from_git {
+                            if !pinned_ok[ri] {
+                                to_tin.push(path);
+                                continue;
+                            }
+                            let repo = repos[ri].as_ref().expect("a pinned repo");
+                            let (len, mtime, mode) = match meta {
+                                Seen::File { mtime, len, mode } => (len, mtime, mode),
+                                _ => (0, 0, 0),
+                            };
+                            tinned.insert(
+                                path,
+                                tin::Stashed {
+                                    object: PathBuf::new(),
+                                    sha256,
+                                    bytes: len,
+                                    mode: if cfg!(unix) { Some(mode) } else { None },
+                                    mtime_ns: Some(mtime),
+                                    link: None,
+                                    git: Some(journal::GitBlob {
+                                        repo: repo.work_tree.clone(),
+                                        blob,
+                                    }),
+                                },
+                            );
+                        }
+                        to_tin.sort();
+                    }
+                    let mut staged: Vec<(PathBuf, tin::Staged)> = Vec::new();
+                    for path in &to_tin {
                         match tin::prepare(path) {
                             Ok(st) => staged.push((path.clone(), st)),
                             Err(e) => warnings.push(format!(
@@ -1296,8 +1389,9 @@ impl Kernel {
                         bytes: st.bytes,
                         mode: st.mode,
                         mtime_ns: st.mtime_ns,
+                        git: st.git.clone(),
                     },
-                    "tin",
+                    if st.git.is_some() { "git" } else { "tin" },
                 )),
                 _ => None,
             };

@@ -32,6 +32,12 @@ pub enum Before {
         /// back on restore so mtime-driven tools see what they saw before.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mtime_ns: Option<u64>,
+        /// Where the bytes are when git holds them: the repository and the
+        /// blob, instead of a copy in the tin (`snapshot` is empty then).
+        /// Our own hash travels too, so the bytes are checked on the way
+        /// back whatever git says.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        git: Option<GitBlob>,
     },
     Dir {
         snapshot: PathBuf,
@@ -53,6 +59,15 @@ pub enum Before {
     Moved {
         to: PathBuf,
     },
+}
+
+/// A blob in a git repository: the bytes a run refers to without copying.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitBlob {
+    /// The work tree, as the disk spells it.
+    pub repo: PathBuf,
+    /// The object id, as the repository hashes (SHA-1, or SHA-256).
+    pub blob: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -679,6 +694,7 @@ impl Journal {
                         bytes: meta.len(),
                         mode: None,
                         mtime_ns: None,
+                        git: None,
                     }
                 },
             });
@@ -710,6 +726,7 @@ impl Journal {
                     bytes: meta.len(),
                     mode: None,
                     mtime_ns: mtime_ns(&meta),
+                    git: None,
                 },
             })
         }
@@ -732,6 +749,30 @@ impl Journal {
             };
             for state in &entry.before {
                 match &state.before {
+                    Before::File {
+                        snapshot,
+                        sha256,
+                        bytes,
+                        git: Some(g),
+                        ..
+                    } => {
+                        // The bytes live in git; a copy in the tin (a parcel
+                        // brought one) stands in when git has lost them.
+                        let fallback = super::tin::object_for(sha256);
+                        if fallback.is_none() || snapshot.as_os_str().is_empty() {
+                            for p in super::git::check_blob(&g.repo, &g.blob, *bytes) {
+                                if fallback.is_some() {
+                                    break;
+                                }
+                                problems.push(format!(
+                                    "op {}: {} for {}",
+                                    entry.seq,
+                                    p,
+                                    state.path.display()
+                                ));
+                            }
+                        }
+                    }
                     Before::File {
                         snapshot, sha256, ..
                     } => {
@@ -1232,6 +1273,7 @@ fn displace(path: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
                 bytes: st.bytes,
                 mode: st.mode,
                 mtime_ns: st.mtime_ns,
+                git: None,
             },
         });
         Ok(())
@@ -1277,6 +1319,7 @@ fn displace_tree(dir: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
                     bytes: st.bytes,
                     mode: st.mode,
                     mtime_ns: st.mtime_ns,
+                    git: None,
                 },
             });
         } else {
@@ -1687,14 +1730,15 @@ fn restore(
             sha256,
             mode,
             mtime_ns,
+            git,
             ..
         } => {
-            if snapshot.as_os_str().is_empty() {
+            if git.is_none() && snapshot.as_os_str().is_empty() {
                 return Err(io::Error::other(
                     "no snapshot was taken (in-memory journal)",
                 ));
             }
-            if !snapshot.is_file() {
+            if git.is_none() && !snapshot.is_file() {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("snapshot {} is missing", snapshot.display()),
@@ -1706,10 +1750,35 @@ fn restore(
             }
             // The before-image comes beside the destination first, verified
             // as it is written (a tin object against its name, a recipe's
-            // chunks against theirs), so nothing that fails the check ever
-            // reaches the path.
+            // chunks against theirs, a git blob against our hash), so
+            // nothing that fails the check ever reaches the path.
             let staged = staging_path(path);
-            super::tin::materialize(snapshot, sha256, &staged)?;
+            match git {
+                Some(g) => {
+                    // A copy in the tin (a parcel brought one) stands in
+                    // when git no longer has the blob.
+                    match super::tin::object_for(sha256) {
+                        Some(object)
+                            if !g.repo.is_dir()
+                                || super::git::check_blob(&g.repo, &g.blob, 0).len() > 1 =>
+                        {
+                            super::tin::materialize(&object, sha256, &staged)?
+                        }
+                        Some(object) => {
+                            if let Err(e) =
+                                super::git::materialize(&g.repo, &g.blob, sha256, &staged)
+                            {
+                                if e.kind() != io::ErrorKind::NotFound {
+                                    return Err(e);
+                                }
+                                super::tin::materialize(&object, sha256, &staged)?;
+                            }
+                        }
+                        None => super::git::materialize(&g.repo, &g.blob, sha256, &staged)?,
+                    }
+                }
+                None => super::tin::materialize(snapshot, sha256, &staged)?,
+            }
             if keep {
                 // Whatever is at the path now (the hop's output, or a save
                 // made while it ran) goes to the tin before the old bytes

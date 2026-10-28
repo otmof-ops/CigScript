@@ -18,6 +18,17 @@ project follows semantic versioning.
   displaces into the tin is chunked the same way, so a hop's output that is
   the original with one change shares every other chunk with it. Objects a
   1.4 cig wrote (large files kept whole) restore as they always did.
+- **Git blob reuse** (#87). A file under `touches` that git already holds,
+  tracked and clean against the index (the bytes on disk hash to the blob
+  the index names), is referenced from the repository's object store
+  instead of copied into the tin: the journal records the repository, the
+  blob and our own SHA-256, and the restore reads the blob back through
+  `git cat-file`, checks it against that hash and refuses other bytes. The
+  run pins every blob it refers to under `refs/cig/runs/<id>` (one tree
+  naming them all) so a `git gc` after a rebase cannot take them; `cig runs
+  --prune` drops the pin with the record. A dirty or untracked file goes to
+  the tin as before; a repository the run cannot pin in is copied too. Git
+  is only ever read, the pin aside. `(git)` in the record names the keeper.
 - **The hash chain** (#88). Journal format 2: the first line carries the
   hash of the run's id and every later line the hash of the line before it
   as written; `run.json` records the head when the record is saved.

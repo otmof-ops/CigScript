@@ -97,7 +97,11 @@ fn bundle(rec: &runs::RunRecord) -> serde_json::Value {
                         "path": r(&b.path.display().to_string()),
                         "state": match &b.before {
                             Before::Absent => "absent".to_string(),
-                            Before::File { bytes, sha256, .. } => format!("file, {bytes} bytes, sha256 {}", &sha256[..sha256.len().min(12)]),
+                            Before::File { bytes, sha256, git, .. } => format!(
+                                "file, {bytes} bytes, sha256 {}{}",
+                                &sha256[..sha256.len().min(12)],
+                                if git.is_some() { " (in git)" } else { "" }
+                            ),
                             Before::Dir { .. } => "directory".to_string(),
                             Before::Directory { .. } => "directory (made again)".to_string(),
                             Before::Symlink { target } => format!("symlink -> {}", r(&target.display().to_string())),

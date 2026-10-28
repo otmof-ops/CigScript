@@ -76,6 +76,20 @@ fn recipe_path(hash: &str) -> PathBuf {
     recipes_dir().join(&hash[..2]).join(hash)
 }
 
+/// The tin's whole object or recipe for these bytes, when it has one: what
+/// a parcel leaves for a file whose bytes git held on the other machine.
+pub fn object_for(sha256: &str) -> Option<PathBuf> {
+    if sha256.len() < 2 {
+        return None;
+    }
+    let o = object_path(sha256);
+    if o.is_file() {
+        return Some(o);
+    }
+    let r = recipe_path(sha256);
+    r.is_file().then_some(r)
+}
+
 /// Is this snapshot path a recipe in the tin (a chunked file)?
 pub fn is_recipe(path: &Path) -> bool {
     path.starts_with(recipes_dir())
@@ -125,6 +139,8 @@ pub struct Stashed {
     pub mtime_ns: Option<u64>,
     /// The target, when the path is a symbolic link.
     pub link: Option<PathBuf>,
+    /// The blob, when git holds the bytes and the tin has no copy.
+    pub git: Option<super::journal::GitBlob>,
 }
 
 /// A copy of a file waiting beside the objects under temporary names,
@@ -425,6 +441,7 @@ impl Staged {
                 mode: None,
                 mtime_ns: None,
                 link: Some(target),
+                git: None,
             });
         }
         let object = self.object();
@@ -481,6 +498,7 @@ impl Staged {
             mode: self.mode,
             mtime_ns: self.mtime_ns,
             link: None,
+            git: None,
         })
     }
 }
@@ -730,6 +748,22 @@ pub fn referenced() -> HashSet<PathBuf> {
             for e in j.entries() {
                 for b in e.before.iter().chain(e.took.iter()) {
                     match &b.before {
+                        super::journal::Before::File {
+                            sha256,
+                            git: Some(_),
+                            ..
+                        } => {
+                            if let Some(o) = object_for(sha256) {
+                                if is_recipe(&o) {
+                                    if let Ok(r) = read_recipe(&o) {
+                                        for c in &r.chunks {
+                                            out.insert(object_path(&c.sha256));
+                                        }
+                                    }
+                                }
+                                out.insert(o);
+                            }
+                        }
                         super::journal::Before::File { snapshot, .. } if is_recipe(snapshot) => {
                             out.insert(snapshot.clone());
                             if let Ok(r) = read_recipe(snapshot) {
@@ -1180,6 +1214,7 @@ mod tests {
                         bytes: kept.bytes,
                         mode: kept.mode,
                         mtime_ns: kept.mtime_ns,
+                        git: None,
                     },
                 }],
                 None,

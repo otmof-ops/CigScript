@@ -5122,3 +5122,199 @@ fn a_hop_edit_to_a_large_file_stores_the_chunk_that_changed() {
     let text = sb.run_ok(&["tin"]);
     assert!(text.contains("chunked under a recipe"), "{text}");
 }
+
+// ----- git blob reuse (#87): a clean tracked file is not copied into the tin
+
+/// A git repository at `p` in the sandbox, with one commit.
+#[cfg(unix)]
+fn git_repo(sb: &Sandbox) {
+    fs::create_dir_all(sb.path().join("p/src")).unwrap();
+    sb.write("p/src/app.txt", "tracked v1\n");
+    sb.write("p/src/other.txt", "other file\n");
+    for args in [
+        &["init", "-q", "."][..],
+        &["add", "."][..],
+        &["-c", "commit.gpgsign=false", "commit", "-q", "-m", "init"][..],
+    ] {
+        let out = git_in(sb, args);
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[cfg(unix)]
+fn git_in(sb: &Sandbox, args: &[&str]) -> Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(sb.path().join("p"))
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@example.com")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("git")
+}
+
+#[cfg(unix)]
+fn git_blob_of(sb: &Sandbox, id: &str) -> (serde_json::Value, String) {
+    let shown: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "runs", id])).unwrap();
+    let entry = shown["journal"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"]["kind"] == "hop_changed")
+        .unwrap_or_else(|| panic!("{shown}"))
+        .clone();
+    let blob = entry["before"][0]["git"]["blob"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    (entry, blob)
+}
+
+#[cfg(unix)]
+#[test]
+fn a_clean_tracked_file_costs_no_tin_space() {
+    let sb = Sandbox::new();
+    git_repo(&sb);
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > src/app.txt\"], {cwd: \"p\", touches: [\"src/**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/src/app.txt"), "tracked v1\n", "{err}");
+    assert!(err.contains("(git)"), "git is named as the keeper: {err}");
+    // The tin holds only what the rollback set aside: the hop's output.
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    assert_eq!(du["objects"], 1, "{du}");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let (entry, blob) = git_blob_of(&sb, &id);
+    assert_eq!(blob.len(), 40, "{entry}");
+    assert_eq!(entry["before"][0]["snapshot"], "", "{entry}");
+    // The run pinned the blob under its ref, and prune lets it go.
+    let refs =
+        String::from_utf8_lossy(&git_in(&sb, &["for-each-ref", "refs/cig/"]).stdout).to_string();
+    assert!(refs.contains(&format!("refs/cig/runs/{id}")), "{refs}");
+    let tree = refs.split_whitespace().next().unwrap().to_string();
+    let listed =
+        String::from_utf8_lossy(&git_in(&sb, &["cat-file", "-p", &tree]).stdout).to_string();
+    assert!(listed.contains(&blob), "{listed}");
+    assert!(sb.exists(&format!("home/runs/{id}/git-pins.txt")));
+    sb.run_ok(&["runs", "--prune", "0"]);
+    let refs =
+        String::from_utf8_lossy(&git_in(&sb, &["for-each-ref", "refs/cig/"]).stdout).to_string();
+    assert!(refs.trim().is_empty(), "{refs}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_restore_from_a_git_blob_is_hash_checked() {
+    let sb = Sandbox::new();
+    git_repo(&sb);
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > src/app.txt\"], {cwd: \"p\", touches: [\"src/**\"]})\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let (_, blob) = git_blob_of(&sb, &id);
+    // Make git answer with other bytes of the same size for that blob.
+    let other = Command::new("git")
+        .args(["hash-object", "-w", "--stdin"])
+        .current_dir(sb.path().join("p"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .and_then(|mut c| {
+            use std::io::Write as _;
+            c.stdin.take().unwrap().write_all(b"tracked v9\n")?;
+            c.wait_with_output()
+        })
+        .unwrap();
+    let other = String::from_utf8_lossy(&other.stdout).trim().to_string();
+    assert!(git_in(&sb, &["replace", "-f", &blob, &other])
+        .status
+        .success());
+    let out = sb.cig(&["unburn", &id]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(
+        text.contains("holds other bytes than the journal recorded"),
+        "{text}"
+    );
+    assert_eq!(sb.read("p/src/app.txt"), "v2\n", "nothing was written");
+    // With git honest again, the retry puts the file back.
+    assert!(git_in(&sb, &["replace", "-d", &blob]).status.success());
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/src/app.txt"), "tracked v1\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dirty_tracked_file_goes_to_the_tin() {
+    let sb = Sandbox::new();
+    git_repo(&sb);
+    sb.write("p/src/app.txt", "tracked v1, edited\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > src/app.txt\"], {cwd: \"p\", touches: [\"src/app.txt\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert_eq!(sb.read("p/src/app.txt"), "tracked v1, edited\n", "{err}");
+    assert!(err.contains("(tin)") && !err.contains("(git)"), "{err}");
+    let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
+    assert_eq!(
+        du["objects"], 2,
+        "the dirty file and the hop's output: {du}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let (entry, blob) = git_blob_of(&sb, &id);
+    assert!(blob.is_empty(), "{entry}");
+    let refs =
+        String::from_utf8_lossy(&git_in(&sb, &["for-each-ref", "refs/cig/"]).stdout).to_string();
+    assert!(refs.trim().is_empty(), "nothing to pin: {refs}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_blob_git_has_lost_refuses_the_restore_with_the_reason() {
+    let sb = Sandbox::new();
+    git_repo(&sb);
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > src/app.txt\"], {cwd: \"p\", touches: [\"src/**\"]})\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let (_, blob) = git_blob_of(&sb, &id);
+    // Someone dropped the pin and ran a gc: the loose object is gone.
+    assert!(
+        git_in(&sb, &["update-ref", "-d", &format!("refs/cig/runs/{id}")])
+            .status
+            .success()
+    );
+    let loose = sb
+        .path()
+        .join("p/.git/objects")
+        .join(&blob[..2])
+        .join(&blob[2..]);
+    assert!(loose.is_file(), "{}", loose.display());
+    fs::remove_file(&loose).unwrap();
+    let shown = sb.cig(&["runs", &id, "--verify"]);
+    assert_eq!(shown.status.code(), Some(1));
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E703 burn]") && err.contains("git no longer has blob"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/src/app.txt"), "v2\n", "nothing was restored");
+}

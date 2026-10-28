@@ -466,6 +466,9 @@ for.
 | delete or corrupt one chunk of a recipe, then restore | refused before anything at the path is touched; nothing half-written | 1.5.0 | `a_missing_chunk_refuses_the_restore_and_writes_nothing` |
 | edit a journal line after the run, then `unburn` | the line no longer fits its neighbours: `cig runs <id> --verify` names it, `unburn` refuses with `E760` unless `--force` | 1.5.0 | `unburn_refuses_a_broken_chain` |
 | remove or reorder a journal line | the chain breaks at that line | 1.5.0 | `a_removed_journal_line_breaks_the_chain` |
+| a hop edits a file git holds, tracked and clean, under `touches` | not copied: the journal names the blob, the run pins it under `refs/cig/runs/<id>`, and the restore checks the bytes git gives back against our hash | 1.5.0 | `a_clean_tracked_file_costs_no_tin_space` |
+| git answers with other bytes for a pinned blob (`git replace`) | refused: the bytes do not hash as the journal recorded, nothing written | 1.5.0 | `a_restore_from_a_git_blob_is_hash_checked` |
+| the pin is dropped and the blob gc'd, then `unburn` | refused before anything is touched (`E703`), naming the repository and the blob | 1.5.0 | `a_blob_git_has_lost_refuses_the_restore_with_the_reason` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).
