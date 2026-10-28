@@ -30,7 +30,9 @@ can see: `cig unburn <id> --give-back`, the pack lock (`E759`) and the
   is left alone, with `--force` for the old bytes on purpose. Two runs on
   one pack would roll back each other's work: a run takes the pack's lock,
   and a second run (or an unburn) on the same or an overlapping pack is
-  refused with `E759`, naming the holder.
+  refused with `E759`, naming the holder. A cig a hop starts (`cig run
+  inner.cig` as a task) shares its parent's pack, since the parent waits
+  for it; every hop now sees the run's id as `CIG_RUN_ID`.
 - **The tin cannot be poisoned** (#73). A file changing while it was being
   stashed left an object that did not hash to its name, and every later
   stash of that content reused it. The copy is hashed as it is written and

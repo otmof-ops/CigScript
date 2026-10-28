@@ -4295,9 +4295,11 @@ fn a_file_saved_during_a_hop_survives_its_rollback() {
     assert_eq!(sb.read("p/src/app.txt"), "v1\n");
 }
 
-/// A file the hop left that changed again after the hop ended is someone
-/// else's work: the automatic rollback leaves it, says so, and `--force`
-/// restores over it on purpose.
+/// A file the hop left that changed again after the hop ended, and that no
+/// later entry of the run accounts for, is someone else's work: the
+/// automatic rollback leaves it, says so, and `--force` restores over it on
+/// purpose. (A process the hop left behind plays the editor; its output is
+/// redirected, so the hop ends when its child does.)
 #[cfg(unix)]
 #[test]
 fn a_file_changed_after_the_hop_is_left_alone_by_the_rollback() {
@@ -4305,7 +4307,7 @@ fn a_file_changed_after_the_hop_is_left_alone_by_the_rollback() {
     sb.write("p/a.txt", "v1\n");
     sb.write(
         "s.cig",
-        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > p/a.txt\"], {touches: [\"**\"]})\n  proc.run(\"sh\", [\"-c\", \"sleep 0.05; echo v3-user-edit > p/a.txt\"])\n  cough \"boom\"\n}\n",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > p/a.txt; ( sleep 0.3; echo v3-user-edit > p/a.txt ) >/dev/null 2>&1 &\"], {touches: [\"**\"]})\n  time.sleep_ms(900)\n  cough \"boom\"\n}\n",
     );
     let err = sb.run_err(&["run", "s.cig"], 1);
     assert!(err.contains("left alone"), "{err}");
@@ -4578,4 +4580,33 @@ fn a_failed_compensation_leaves_its_ops_honestly_not_undone() {
     assert!(!err.contains("compensated run sh"), "{err}");
     assert_eq!(sb.read("remote.txt"), "live\n");
     assert_eq!(sb.runs()[0]["status"], "rollback_incomplete");
+}
+
+/// A cig a hop starts (`cig run inner.cig` as a task) works inside the
+/// parent's pack: the parent waits for it, so nothing interleaves.
+#[cfg(unix)]
+#[test]
+fn a_cig_run_started_by_a_hop_shares_its_parents_pack() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("out")).unwrap();
+    sb.write(
+        "inner.cig",
+        "pack { \"./out\" }\nburn {\n  fs.write_text(\"out/x.txt\", \"1\")\n}\n",
+    );
+    sb.write(
+        "outer.cig",
+        "pack { \".\" }\nburn {\n  stick r = proc.run(env.get(\"CIG_BIN\"), [\"run\", \"inner.cig\"], {check: true})\n  exhale r.err.trim()\n}\n",
+    );
+    let out = sb.cig_env(
+        &["run", "outer.cig"],
+        &[("CIG_BIN", env!("CARGO_BIN_EXE_cig"))],
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{err}\n{stdout}");
+    assert!(
+        !stdout.contains("E759"),
+        "the child run was refused the pack:\n{stdout}"
+    );
+    assert_eq!(sb.read("out/x.txt"), "1");
 }

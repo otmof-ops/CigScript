@@ -107,6 +107,14 @@ pub struct Left {
 }
 
 impl Op {
+    /// The one path a hop-watch op is about.
+    pub fn path(&self) -> Option<&PathBuf> {
+        match self {
+            Op::HopCreated { path, .. } | Op::HopChanged { path, .. } => Some(path),
+            _ => None,
+        }
+    }
+
     /// What a hop left at the path this op is about, when it was a file.
     pub fn left(&self) -> Option<(u64, u64)> {
         match self {

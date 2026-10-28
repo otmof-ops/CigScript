@@ -112,6 +112,22 @@ fn overlap(a: &Path, b: &Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }
 
+/// The run id a holder's note names (`run <id> (pid ...)`).
+fn holder_id(note: &str) -> Option<&str> {
+    note.lines().next()?.strip_prefix("run ")?.split(' ').next()
+}
+
+/// Is the run holding this lock the one that started us? A cig a hop runs
+/// (`cig run inner.cig` as a task) works inside the parent's pack while the
+/// parent waits for it: the parent's hop watch brackets the whole child run,
+/// so nothing interleaves, and the child's own writes are the hop's.
+fn is_parent(note: &str) -> bool {
+    match (holder_id(note), std::env::var("CIG_RUN_ID")) {
+        (Some(id), Ok(parent)) => !id.is_empty() && id == parent,
+        _ => false,
+    }
+}
+
 /// Take the lock on every root for run `id`. Every lock is released again
 /// when any one cannot be taken.
 pub fn acquire(roots: &[PathBuf], id: &str) -> Result<PackLock, Busy> {
@@ -136,6 +152,10 @@ pub fn acquire(roots: &[PathBuf], id: &str) -> Result<PackLock, Busy> {
             }
             let lock = p.with_extension("lock");
             if try_lock(&lock)?.is_none() {
+                if is_parent(&note) {
+                    // Our parent holds it; it waits for us.
+                    return Ok(PackLock { _files: Vec::new() });
+                }
                 return Err(Busy::Held {
                     root: their_root,
                     holder: note.lines().next().unwrap_or("another run").to_string(),
@@ -160,9 +180,14 @@ pub fn acquire(roots: &[PathBuf], id: &str) -> Result<PackLock, Busy> {
                 held.push(f);
             }
             None => {
-                let holder = fs::read_to_string(who_path(&path))
-                    .ok()
-                    .and_then(|n| n.lines().next().map(str::to_string))
+                let note = fs::read_to_string(who_path(&path)).unwrap_or_default();
+                if is_parent(&note) {
+                    return Ok(PackLock { _files: Vec::new() });
+                }
+                let holder = note
+                    .lines()
+                    .next()
+                    .map(str::to_string)
                     .unwrap_or_else(|| "another run".to_string());
                 return Err(Busy::Held {
                     root: key.clone(),

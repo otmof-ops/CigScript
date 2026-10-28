@@ -651,7 +651,12 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Option<Command> {
         }
     }
     c.env("NO_COLOR", "1");
-    if let Ok(id) = std::env::var("CIG_RUN_ID") {
+    // The run's id travels to every hop: a cig the hop starts knows which
+    // run holds the pack it shares (the pack lock lets a child run in), and
+    // a tool can name the run in its own records.
+    if let Some(id) = crate::crash::active_run() {
+        c.env("CIG_RUN_ID", id);
+    } else if let Ok(id) = std::env::var("CIG_RUN_ID") {
         c.env("CIG_RUN_ID", id);
     }
     for (k, v) in &o.env {

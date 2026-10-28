@@ -721,6 +721,22 @@ impl Journal {
         // which follow it in this newest-first order, are not undone, and
         // the report must not call them compensated.
         let mut undo_failed = false;
+        // What the run last left at each path a hop touched: the `left` of
+        // the newest entry for the path. A file the run's own later hop
+        // changed again is the run's, not someone else's.
+        let mut latest_left: std::collections::BTreeMap<PathBuf, Option<(u64, u64)>> =
+            std::collections::BTreeMap::new();
+        for e in self.entries.iter().skip(from).rev() {
+            if e.undone {
+                continue;
+            }
+            if let Some(p) = e.op.path() {
+                latest_left.entry(p.clone()).or_insert_with(|| e.op.left());
+            }
+            for b in &e.before {
+                latest_left.entry(b.path.clone()).or_insert(None);
+            }
+        }
         for entry in self.entries.iter().skip(from).rev() {
             if entry.undone || (entry.restored && !again) {
                 continue;
@@ -790,7 +806,13 @@ impl Journal {
             // someone else's work now: it stays, unless `--force` asks for
             // the old bytes on purpose.
             if hop && !again {
-                if let (Some(left), Some(state)) = (entry.op.left(), entry.before.first()) {
+                if let (Some(left), Some(state)) = (
+                    entry
+                        .before
+                        .first()
+                        .and_then(|st| latest_left.get(&st.path).copied().flatten()),
+                    entry.before.first(),
+                ) {
                     if let Some(now) = file_stamp(&state.path) {
                         if now != left {
                             let text = format!(

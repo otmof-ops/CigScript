@@ -211,7 +211,9 @@ most here:
   left that changed again after the hop ended is left alone (`--force`
   restores over it). And one run at a time holds a pack: a second `cig run`
   on the same or an overlapping pack is refused with `E759` while the
-  first runs.
+  first runs. A cig that a hop starts is the exception: it sees the run's
+  id as `CIG_RUN_ID` (every hop does) and works inside the parent's pack,
+  since the parent waits for it.
 - **The scan has a cap** (`watch_cap`, 50,000 entries). Past it the kernel
   cannot tell a file the hop made from one it never reached, so it warns
   up front, journals nothing as created, and asks the disk before it calls
