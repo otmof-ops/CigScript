@@ -103,27 +103,69 @@ fn open_modes(dir: &Path) {
 /// unprivileged user namespace mount overlayfs (5.11 and later). The real
 /// answer comes when the mount is tried; this only rules out what cannot
 /// work, so the plan can say so before the run.
-pub fn possible() -> Result<(), &'static str> {
+pub fn possible() -> Result<(), String> {
     // Test hook: the fallback, on a machine where the box would work.
     if std::env::var_os("CIG_INTERNAL_NO_BOX").is_some() {
-        return Err("CIG_INTERNAL_NO_BOX is set");
+        return Err("CIG_INTERNAL_NO_BOX is set".to_string());
     }
     #[cfg(target_os = "linux")]
     {
-        if fs::read_to_string("/proc/filesystems")
+        if !(fs::read_to_string("/proc/filesystems")
             .map(|t| t.lines().any(|l| l.trim_end().ends_with("overlay")))
             .unwrap_or(false)
-            || Path::new("/sys/module/overlay").exists()
+            || Path::new("/sys/module/overlay").exists())
         {
-            Ok(())
-        } else {
-            Err("this kernel has no overlayfs")
+            return Err("this kernel has no overlayfs".to_string());
         }
+        // The layers live under the state directory, and overlayfs refuses
+        // an upper directory that sits on an overlay: a container's layer,
+        // or another box. The box does not nest, and says so before the run.
+        let home = super::runs::home_dir();
+        if let Some(at) = overlay_mount_over(&home) {
+            return Err(format!(
+                "the layers would sit on an overlay filesystem ({} is on one, mounted at {}: a container's layer, or another box), which overlayfs refuses as an upper directory; a CIGSCRIPT_HOME on a plain filesystem lets the box be made",
+                home.display(),
+                at.display()
+            ));
+        }
+        Ok(())
     }
     #[cfg(not(target_os = "linux"))]
     {
-        Err("the box is made with overlayfs in a user namespace, which only Linux has")
+        Err("the box is made with overlayfs in a user namespace, which only Linux has".to_string())
     }
+}
+
+/// The mount point of the overlay filesystem `path` sits on, if any: the
+/// longest mount point above it in `/proc/self/mountinfo` whose type is
+/// `overlay`.
+#[cfg(target_os = "linux")]
+fn overlay_mount_over(path: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string("/proc/self/mountinfo").ok()?;
+    let mut best: Option<(PathBuf, String)> = None;
+    for line in text.lines() {
+        // id parent major:minor root mount_point options ... - fstype source superopts
+        let (left, right) = line.split_once(" - ")?;
+        let point = left.split(' ').nth(4)?;
+        let fstype = right.split(' ').next()?;
+        let point = PathBuf::from(
+            point
+                .replace("\\040", " ")
+                .replace("\\011", "\t")
+                .replace("\\134", "\\"),
+        );
+        if !path.starts_with(&point) {
+            continue;
+        }
+        let deeper = best
+            .as_ref()
+            .map(|(b, _)| point.components().count() > b.components().count())
+            .unwrap_or(true);
+        if deeper {
+            best = Some((point, fstype.to_string()));
+        }
+    }
+    best.filter(|(_, t)| t == "overlay").map(|(p, _)| p)
 }
 
 /// What the child does before it becomes the hop's program: new user and

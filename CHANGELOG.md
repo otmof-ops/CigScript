@@ -3,6 +3,17 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.6.3 — 2026-10-29
+
+- **The box does not nest, and says so before the run.** overlayfs refuses
+  an upper directory that sits on an overlay, so a boxed hop whose state
+  directory is inside another box's layer (a cig a boxed task starts, as
+  cig-orchestrator's own suite did), or on a container's layer (Docker's
+  overlay2 root), could not be made, and the fallback said only `errno 22`
+  at the mount. The plan and the `E763` fallback now name the overlay the
+  layers would sit on and the way out (a `CIGSCRIPT_HOME` on a plain
+  filesystem: a tmpfs, a volume).
+
 ## 1.6.2 — 2026-10-29
 
 Two things cig-orchestrator's suite found running on 1.6.1, where a cig home

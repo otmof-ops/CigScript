@@ -245,7 +245,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.2/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.3/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.2 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.3 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.6.2-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.6.3-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -495,6 +495,7 @@ for.
 | a hop makes a tree and `chmod 000`s a directory inside it, then the burn fails | the tree goes whole on rollback, no `Permission denied` and nothing left above it | 1.6.2 | `a_rollback_removes_a_hop_created_tree_with_unreadable_directories` |
 | a boxed hop's run dies in the hop, leaving overlayfs's unreadable work directory under the record | `cig unburn` removes the layers with the rollback, and the record prunes | 1.6.2 | `the_layers_an_interrupted_boxed_hop_left_go_with_the_unburn` |
 | the same, and nobody unburns the dead run | the next `cig run`, of anything, sweeps the layers of every run that is not alive | 1.6.2 | `the_layers_a_dead_run_left_are_swept_when_the_next_run_starts` |
+| a boxed hop starts a `cig run` whose state directory is inside the box, with a boxed hop of its own | the inner plan says before the run that the box cannot be made here, naming the overlay its layers would sit on; the inner hop runs on the tin (`E763`) and the outer box applies the lot (Linux) | 1.6.3 | `a_box_inside_a_box_is_refused_in_the_plan_with_the_reason` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).
