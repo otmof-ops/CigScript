@@ -29,6 +29,10 @@ encrypted at rest, **pressed** is write-once. Chunking (row 9) comes first:
 it makes `touches: ["**"]` cheap enough to be cig-orchestrator's default;
 sealing (row 15) comes before the tin is on by default for real projects.
 
+Done in 1.5.0: rows 9 (the tin in chunks, #82), 10 (git blob reuse, #87),
+11 (the hash chain, #88) and 15 (sealed, #83), each with its tests and wall
+rows; the words settled in LEXICON.md as planned.
+
 Done in 1.2.0 instead of waiting: the tin for whole files (`touches`, `cig tin`, `.cigignore`;
 cig-orchestrator #18 steps 1 to 4 and 8), the pin, the humidor and the trial (#22), crash
 reports that name the function and put the run back (#23, #24), and the `cig.*` namespace.

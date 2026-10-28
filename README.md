@@ -245,7 +245,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.3/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.5.0/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.4.3 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.5.0 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.4.3-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.5.0-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are

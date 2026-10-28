@@ -3,7 +3,7 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## 1.5.0 — unreleased
+## 1.5.0 — 2026-10-28
 
 - **The tin in chunks** (#82). A file of 64 KiB or more under `touches` is
   cut into content-defined chunks (FastCDC: 16 KiB at least, 64 KiB on
