@@ -317,9 +317,17 @@ its owner alone, and a note says so once (`seal_key = file` makes the file
 the rule, and tests use it). The plan says `(sealed)` and counts sealed
 files in a hop's `touches` line; `cig runs <id>` labels the entry
 `(sealed)`; `cig tin` counts sealed objects apart; `cig tin verify` opens
-every one with the key (`--quick` checks the shape alone); and when the key
-is gone (a new machine, a wiped keyring), a restore refuses naming the
-file, and `cig tin gc --sealed-orphans` clears what nothing can open.
+every one with the key (`--quick` checks the shape alone). When the key is
+gone while sealed objects or snapshots depend on it, no new key is made
+behind your back: a restore refuses naming the key and where it was
+(`E703`), a run that would seal says so and keeps the change irreversible
+(`E757`), and the message says what to do, put the key back or move the
+sealed objects away to start over; on a machine with nothing sealed (a new
+one) the first use makes the key. A key file found when the setting asks
+for the keyring is used, never shadowed by a fresh keyring key. `cig tin gc
+--sealed-orphans` clears the sealed objects the key does not open (a parcel
+imported with `--allow-sealed-missing` leaves such), and refuses to guess
+while the key itself is missing.
 
 **Git blob reuse.** Most files a hop touches in a git project are tracked
 and unchanged since the last commit, and git already holds their bytes in
@@ -377,8 +385,11 @@ chain and reports the first line that does not fit (edited, removed or
 reordered), compares the head with the record (lines added or removed
 since), and checks every snapshot and tin object a rollback would need
 against its recorded hash. `cig unburn` walks the chain before it changes
-anything and refuses a broken one with `E760`; `--force` restores from the
-journal as it is, knowingly. A format 1 journal has no chain, is read as it
+anything and refuses a broken one with `E760`, and a head that does not
+match the record the same way (the last line has nothing after it to carry
+its hash; the record carries it, and an unburn or a give-back saves the head
+again after the markers it appends); `--force` restores from the journal as
+it is, knowingly. A format 1 journal has no chain, is read as it
 always was, and the markers an unburn appends to it carry no `prev`. This
 is tamper evidence, not secrecy: anyone who can write the journal can
 recompute the chain, unless the head is kept somewhere they cannot write
@@ -407,9 +418,11 @@ dropped: nothing of it reached the pack, whatever the pack's size and
 whether or not `touches` named anything, and the run says `layer was
 dropped`. A hop that succeeds has its layer applied to the pack as native
 burns, outer paths first: a file in the layer is a write (the real file's
-before-bytes journaled first, sealed when it is a secret), a whiteout is a
-delete, an opaque directory a delete and the entries that follow, a new
-directory a mkdir, a link a write; each is journaled with its before-state
+before-bytes journaled first, sealed when it is a secret or under the hop's
+`touches_sealed`), a whiteout is a delete, an opaque directory a delete,
+then the directory itself (empty, when the hop left it so) and the entries
+that follow, a new directory a mkdir, a link a write; each is journaled with
+its before-state
 exactly as `fs.write_text` and `fs.rm` are, so the run is unburnable like
 any other and the record reads as native ops. The plan says `(boxed)`, and
 says before the run when the box cannot be made here. It cannot where
@@ -419,7 +432,8 @@ a kernel before 5.11, on a filesystem overlayfs cannot layer over, and on
 macOS, Windows and the BSDs, which have no overlayfs; there the hop runs on
 the tin as usual, with `touches` keeping what it may change, and the run
 says so (`E763`). A hop's own undo (the burn protocol) is journaled for a
-boxed hop too.
+boxed hop too. The layers live under the run directory while the hop runs
+and are removed once applied or dropped, so the record prunes as any other.
 
 ## The parcel
 
@@ -445,7 +459,10 @@ from and how its paths map (`imported`). The journal itself is never
 rewritten, so its chain still verifies; the record's map is applied as it
 is read. From then on `cig runs <id>` lists it as imported and
 `cig unburn <id>` works here, with the usual drift check (`E704`) against
-this machine's files.
+this machine's files. A parcel written from an imported run carries that
+run's map too (`prior` in the manifest), so a run can go from A to B to C:
+C's import composes the maps, and a journal that names A's paths, and B's
+where B appended to it (an unburn, a give-back), reads through one map.
 
 ## What it can't undo, and says so
 

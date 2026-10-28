@@ -13,7 +13,6 @@
 use super::journal::{Before, Journal};
 use super::runs::RunRecord;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read};
@@ -40,6 +39,12 @@ pub struct Manifest {
     /// Blobs git held on the machine that ran, carried as plain objects.
     #[serde(default)]
     pub git_blobs: usize,
+    /// When the run was itself imported before this parcel was written: the
+    /// map its record carried (the paths of the machine that ran it, which
+    /// the journal still names, to the paths of the machine this parcel
+    /// comes from), so the next import maps both to its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prior: Vec<(PathBuf, PathBuf)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,10 +76,6 @@ pub struct Written {
     pub files: usize,
     pub bytes: u64,
     pub manifest: Manifest,
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn hostname() -> String {
@@ -145,9 +146,13 @@ pub fn write(rec: &RunRecord, journal: &Journal, out: &Path) -> io::Result<Writt
             .next()
             .map(|c| c.as_os_str().to_string_lossy().to_string())
             .unwrap_or_default();
-        // The hop reports, the tin's pending list and the git pins are the
-        // machine's own business, not the run's record.
-        if first == "hops" || first == super::tin::PENDING || first == super::git::PINS {
+        // The hop reports, the tin's pending list, the git pins and a box's
+        // layers are the machine's own business, not the run's record.
+        if first == "hops"
+            || first == "box"
+            || first == super::tin::PENDING
+            || first == super::git::PINS
+        {
             continue;
         }
         sources.insert(
@@ -242,9 +247,8 @@ pub fn write(rec: &RunRecord, journal: &Journal, out: &Path) -> io::Result<Writt
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     let mut total = 0u64;
     for (name, src) in &sources {
-        let bytes = fs::read(src)?;
-        total += bytes.len() as u64;
-        files.insert(name.clone(), sha256_hex(&bytes));
+        total += fs::metadata(src)?.len();
+        files.insert(name.clone(), super::journal::sha256_file(src)?);
     }
     let manifest = Manifest {
         format: FORMAT,
@@ -269,6 +273,7 @@ pub fn write(rec: &RunRecord, journal: &Journal, out: &Path) -> io::Result<Writt
             },
         },
         git_blobs,
+        prior: path_map_of(&run_dir),
     };
     let tmp = out.with_extension(format!("{EXT}.tmp"));
     let written = (|| -> io::Result<()> {
@@ -408,12 +413,12 @@ fn import_inner(file: &Path, mapping: &Mapping, scratch: &Path) -> Result<Import
     let mut seen = 0usize;
     for (name, expect) in &manifest.files {
         let p = scratch.join(name);
-        let bytes = fs::read(&p).map_err(|_| {
-            format!(
+        if !p.is_file() {
+            return Err(format!(
                 "the parcel's manifest names {name}, which is not in the archive; refusing the whole parcel"
-            )
-        })?;
-        let actual = sha256_hex(&bytes);
+            ));
+        }
+        let actual = super::journal::sha256_file(&p).map_err(|e| format!("{name}: {e}"))?;
         if actual != *expect {
             return Err(format!(
                 "{name} does not hash as the manifest says (sha256 {} recorded, {} in the archive); the parcel was changed after it was written, refusing the whole of it",
@@ -528,6 +533,19 @@ fn import_inner(file: &Path, mapping: &Mapping, scratch: &Path) -> Result<Import
         local_run.clone(),
     ));
     path_map.push((origin_state.join("tin"), super::tin::dir()));
+    // A run imported once before: its journal names the paths of the
+    // machine that ran it, so those map here too, through the machine this
+    // parcel came from.
+    if !manifest.prior.is_empty() {
+        let mut sorted = path_map.clone();
+        sorted.sort_by_key(|(from, _)| std::cmp::Reverse(from.as_os_str().len()));
+        for (older, mid) in &manifest.prior {
+            if path_map.iter().any(|(from, _)| from == older) {
+                continue;
+            }
+            path_map.push((older.clone(), remap(mid, &sorted)));
+        }
+    }
     // 8. Objects into the tin: content-named ones are checked against their
     // name, a stand-in for a git blob is placed as a whole object.
     let tin_dir = super::tin::dir();

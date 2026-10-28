@@ -1787,9 +1787,21 @@ impl Kernel {
     /// unburnable like any other. Returns what was applied, or the first
     /// failure (what was applied before it is in the journal, and the
     /// run's rollback puts it back).
-    pub fn box_apply(&mut self, layers: &overlay::Layers) -> Result<HopWrites, String> {
+    pub fn box_apply(
+        &mut self,
+        layers: &overlay::Layers,
+        touches_sealed: &[String],
+    ) -> Result<HopWrites, String> {
         let mut writes = HopWrites::default();
         let compensated = self.compensating > 0;
+        // The hop's `touches_sealed` globs; a secret's name and a root's
+        // `.cigseal` are judged where the before-bytes are kept.
+        let hop_sealed = if touches_sealed.is_empty() {
+            None
+        } else {
+            tin::globs(touches_sealed).ok()
+        };
+        let hop_sets: Vec<&globset::GlobSet> = hop_sealed.iter().collect();
         for (root, upper, _) in &layers.roots {
             let changes = overlay::changes(root, upper).map_err(|e| {
                 format!(
@@ -1812,7 +1824,11 @@ impl Kernel {
                         }
                         Op::Delete { path: real.clone() }
                     }
-                    overlay::Change::File { .. } | overlay::Change::Link { .. } => Op::Write {
+                    overlay::Change::File { .. } => Op::Write {
+                        path: real.clone(),
+                        sensitive: seal::should_seal(&real, Some(root.as_path()), &hop_sets),
+                    },
+                    overlay::Change::Link { .. } => Op::Write {
                         path: real.clone(),
                         sensitive: false,
                     },

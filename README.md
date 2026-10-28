@@ -245,7 +245,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.0/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.1/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.0 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.1 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.6.0-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.6.1-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -482,6 +482,15 @@ for.
 | a hop in the box rewrites, deletes and creates files, then exits outside its contract | nothing of it reached the pack: the layer is dropped, there is nothing to roll back (Linux) | 1.6.0 | `a_failing_hop_in_a_box_changes_nothing` |
 | a hop in the box deletes one folder and replaces another whole | applied as native burns from the layer's whiteouts and opaque directory; `unburn` brings both folders back as they were (Linux) | 1.6.0 | `a_boxed_hop_that_deletes_and_replaces_folders_applies_correctly` |
 | `{box: true}` where the box cannot be made | the plan says so before the run, the hop runs on the tin, the run says so (`E763`) | 1.6.0 | `when_the_box_cannot_be_made_the_hop_falls_back_to_the_tin_and_says_so` |
+| a hop reports a `compensate` line, but the script has no `pack { }` | the undo still runs on rollback; a file claim with nothing to judge it against is said and dropped (`E761`) | 1.6.1 | `a_hops_compensation_counts_without_a_pack` |
+| the undo a hop reported writes 300 KB to stdout, or fails with a 3000-character last line | the rollback finishes (both pipes are drained while it runs) and the report quotes 200 characters of the line | 1.6.1 | `a_chatty_undo_neither_hangs_the_rollback_nor_floods_the_report` |
+| a boxed hop with `cwd` inside the pack empties a folder and makes it again | the box is made (the working directory is taken from the parent, not through the overlay), the folder is there and empty afterwards, no layer is left under the run, the record prunes (Linux) | 1.6.1 | `a_boxed_hop_that_empties_and_remakes_a_folder_leaves_it_in_place` |
+| a boxed hop names `touches_sealed` and rewrites a file under it | the file's before-bytes are sealed in the run's snapshot, never in the clear (Linux) | 1.6.1 | `a_boxed_hops_touches_sealed_seals_what_it_rewrote` |
+| a parcel is imported on B, written again from B (before or after B's own unburn and give-back), imported on C | the manifest carries B's map too, so C reads a journal naming A's and B's paths through one map: chain intact, every object there, `unburn` works | 1.6.1 | `a_parcel_written_from_an_imported_run_still_unburns_on_a_third_machine` |
+| `proc.pipe` with `touches` rewrites and creates files, then the burn fails | the pack is watched around the whole pipeline: restored and removed like a hop's, and every stage may report through `CIG_JOURNAL`; `box` on a pipeline is refused (`E400`) | 1.6.1 | `a_pipeline_with_touches_is_reversible_like_a_hop` |
+| the tin's key file is gone while sealed objects depend on it | no new key is made: the restore refuses naming the key and where it was (`E703`), a run that would seal says so and keeps the change irreversible (`E757`); the key back, the run unburns | 1.6.1 | `a_missing_seal_key_is_refused_rather_than_replaced` |
+| a script pinned to `>=1.5.0` uses `{box: true}`, or to `>=1.4.0` uses `touches_sealed` | `E309` names the option and the release it arrived in; `cig pin` writes the version a `{sensitive: true}` write needs | 1.6.1 | `a_script_pinned_below_the_box_or_sealed_touches_is_caught` |
+| the last line of a journal is edited (no line follows it to carry its hash) | `--verify` says the head does not match the record, exit 1; `unburn` refuses with `E760` and restores nothing; `--force` proceeds knowingly | 1.6.1 | `a_changed_last_journal_line_refuses_the_unburn` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

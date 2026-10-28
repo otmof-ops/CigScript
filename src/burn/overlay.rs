@@ -56,7 +56,47 @@ pub fn why(layers: &Layers) -> Option<String> {
 
 /// Throw the layers away: nothing of the hop lands.
 pub fn discard(layers: &Layers) {
-    let _ = fs::remove_dir_all(&layers.dir);
+    let _ = remove_tree_force(&layers.dir);
+    // The `box` directory itself, once no hop's layers are left in it.
+    if let Some(parent) = layers.dir.parent() {
+        let _ = fs::remove_dir(parent);
+    }
+}
+
+/// Remove a tree the box left, whatever its modes. overlayfs makes the
+/// inner `work` directory of a work layer unreadable (mode 0), where a
+/// plain `remove_dir_all` stops; the modes are opened first and the tree
+/// goes whole, so a run's record can be pruned after a boxed hop.
+pub fn remove_tree_force(path: &Path) -> io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => {
+            #[cfg(unix)]
+            {
+                let _ = &e;
+                open_modes(path);
+                fs::remove_dir_all(path)
+            }
+            #[cfg(not(unix))]
+            {
+                Err(e)
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+fn open_modes(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            if e.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                open_modes(&e.path());
+            }
+        }
+    }
 }
 
 /// Can this platform make a box at all? Linux, with a kernel that lets an
@@ -340,13 +380,14 @@ fn walk_upper(root: &Path, upper: &Path, dir: &Path, out: &mut Vec<Change>) -> i
             #[cfg(not(target_os = "linux"))]
             let opaque = false;
             if opaque {
+                // The real directory goes whole; the upper's is made in its
+                // place (empty, when the hop left it so) and filled below.
                 out.push(Change::Replaced { real: real.clone() });
-            } else {
-                out.push(Change::Dir {
-                    real: real.clone(),
-                    mode: mode_of(&meta),
-                });
             }
+            out.push(Change::Dir {
+                real: real.clone(),
+                mode: mode_of(&meta),
+            });
             walk_upper(root, upper, &p, out)?;
         } else if meta.is_file() {
             out.push(Change::File { real, upper: p });

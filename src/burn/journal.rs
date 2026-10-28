@@ -1875,10 +1875,7 @@ fn restore(
                     // A copy in the tin (a parcel brought one) stands in
                     // when git no longer has the blob.
                     match super::tin::object_for(sha256) {
-                        Some(object)
-                            if !g.repo.is_dir()
-                                || super::git::check_blob(&g.repo, &g.blob, 0).len() > 1 =>
-                        {
+                        Some(object) if !g.repo.is_dir() => {
                             super::tin::materialize(&object, sha256, &staged)?
                         }
                         Some(object) => {

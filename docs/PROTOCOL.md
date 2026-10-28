@@ -64,7 +64,14 @@ journals as reversible what it cannot put back.
   it names, with `CIG_RUN_ID` set, and a non-zero exit is reported as the
   compensation failing (`E7xx` in the report, the run `rollback_incomplete`).
   The hop and its unverified changes are labelled `compensated` in the plan
-  and the record, as a block's are.
+  and the record, as a block's are. The undo may say as much as it likes on
+  either pipe (both are drained while it runs); the report quotes the first
+  200 characters of its last stderr line.
+- **Without a `pack { }`**, a `compensate` still counts: the hop's own undo
+  needs no pack. A `write`, `delete` or `create` has nothing to be judged
+  against and is said and dropped (`E761`).
+- **A `proc.pipe`** gives every stage the same `CIG_JOURNAL`; the pipeline
+  is one hop, and its report is read once it is over.
 
 What this guarantees: a tool that reports its writes with copies of the
 before-bytes, or an undo command, is as reversible as a native burn without

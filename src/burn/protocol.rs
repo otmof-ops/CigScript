@@ -235,6 +235,23 @@ pub fn run_command(c: &Compensation) -> Result<(), String> {
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("the undo `{}` could not start: {e}", argv.join(" ")))?;
+    // Both pipes are drained while the undo runs: one that says a lot must
+    // not fill a pipe and then wait on it for ever.
+    let out_thread = child.stdout.take().map(|mut p| {
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut buf = Vec::new();
+            let _ = p.read_to_end(&mut buf);
+        })
+    });
+    let err_thread = child.stderr.take().map(|mut p| {
+        std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut buf = Vec::new();
+            let _ = p.read_to_end(&mut buf);
+            buf
+        })
+    });
     use wait_timeout::ChildExt;
     let status = match child
         .wait_timeout(Duration::from_secs(600))
@@ -249,15 +266,17 @@ pub fn run_command(c: &Compensation) -> Result<(), String> {
             ));
         }
     };
-    let mut err = String::new();
-    if let Some(mut e) = child.stderr.take() {
-        use std::io::Read as _;
-        let _ = e.read_to_string(&mut err);
+    if let Some(t) = out_thread {
+        let _ = t.join();
     }
+    let err = err_thread
+        .and_then(|t| t.join().ok())
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
     if status.success() {
         return Ok(());
     }
-    let tail = err.trim().lines().last().unwrap_or("").to_string();
+    let tail = cut(err.trim().lines().last().unwrap_or(""), 200);
     Err(format!(
         "the undo `{}` exited {}{}",
         argv.join(" "),
@@ -271,6 +290,16 @@ pub fn run_command(c: &Compensation) -> Result<(), String> {
             format!("; stderr: `{tail}`")
         }
     ))
+}
+
+/// The first `max` characters of a line, with a word for the rest.
+fn cut(line: &str, max: usize) -> String {
+    let total = line.chars().count();
+    if total <= max {
+        return line.to_string();
+    }
+    let head: String = line.chars().take(max).collect();
+    format!("{head}... ({} more characters)", total - max)
 }
 
 #[cfg(test)]

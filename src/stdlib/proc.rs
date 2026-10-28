@@ -716,10 +716,14 @@ fn command(
     #[cfg(target_os = "linux")]
     if let Some(layers) = boxed {
         use std::os::unix::process::CommandExt;
+        // Absolute: the standard library has already entered the hop's
+        // working directory by the time the closure runs, so a relative one
+        // would be taken from there, not from here.
         let here = o
             .cwd
             .clone()
             .or_else(|| std::env::current_dir().ok())
+            .map(|p| crate::burn::normalize_root(&p.to_string_lossy()))
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
         match crate::burn::overlay::Setup::new(layers, &here) {
             Ok(setup) => {
@@ -1498,6 +1502,71 @@ fn result_map(code: i32, out: &str, err: &str, duration_ms: i64, simulated: bool
     Value::map(m)
 }
 
+/// The end of a hop's watch: its report read (the burn protocol), the
+/// claims judged against the pack, the pack compared with the scan before,
+/// each warning said once. Without a pack, a compensation still counts and
+/// a file claim is said and dropped.
+fn finish_watch(
+    i: &mut Interp,
+    watch: Option<crate::burn::PackWatch>,
+    report: Option<&std::path::Path>,
+    cwd: Option<&std::path::Path>,
+    mark: usize,
+    label: &str,
+) {
+    let mut claims = report.map(crate::burn::protocol::read).unwrap_or_default();
+    for warning in &claims.warnings {
+        let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
+    }
+    if watch.is_none() && !claims.claims.is_empty() {
+        // No pack: nothing to judge a file claim against, so those are
+        // said and dropped; the hop's own undo stands on its own.
+        let (compensations, files): (Vec<_>, Vec<_>) = std::mem::take(&mut claims.claims)
+            .into_iter()
+            .partition(|c| matches!(c, crate::burn::protocol::Claim::Compensate { .. }));
+        if !files.is_empty() {
+            let _ = writeln!(
+                i.err,
+                "warning[E761 burn]: the hop reported {} change{} to files, but the script declares no pack {{ }} to judge them against; they stay as the hop's irreversible work",
+                files.len(),
+                if files.len() == 1 { "" } else { "s" }
+            );
+        }
+        if !compensations.is_empty() {
+            i.kernel.hop_compensations(compensations, cwd, mark);
+        }
+    }
+    if let Some(mut w) = watch {
+        // Printed here and taken out, so the watch's end does not say them again.
+        for warning in std::mem::take(&mut w.warnings) {
+            let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
+        }
+        let writes = i.kernel.pack_watch_end(w, claims.claims, cwd, mark);
+        for warning in i.kernel.take_late_warnings() {
+            let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
+        }
+        for warning in i.kernel.take_claim_warnings() {
+            let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
+        }
+        if !writes.outside.is_empty() {
+            let shown: Vec<String> = writes
+                .outside
+                .iter()
+                .take(5)
+                .map(|p| p.display().to_string())
+                .collect();
+            let _ = writeln!(
+                i.err,
+                "warning[E752 burn]: `{label}` wrote outside the pack: {} path{} ({}{}); the kernel cannot undo them",
+                writes.outside.len(),
+                if writes.outside.len() == 1 { "" } else { "s" },
+                shown.join(", "),
+                if writes.outside.len() > 5 { ", ..." } else { "" }
+            );
+        }
+    }
+}
+
 /// The shared path of every verb: gate the effect, run, decode, enforce.
 /// `None` when the hop was simulated.
 fn hop(
@@ -1605,7 +1674,7 @@ fn hop(
                 );
                 return Err(d);
             }
-            let applied = i.kernel.box_apply(l).map_err(|e| {
+            let applied = i.kernel.box_apply(l, &o.touches_sealed).map_err(|e| {
                 cigscript_burn(format!("{name}: {e}"))
                     .code("E763")
                     .at(s)
@@ -1633,46 +1702,14 @@ fn hop(
         .kernel
         .pack_watch_begin(o.cwd.as_deref(), &o.touches, &o.touches_sealed);
     let ran = run_child(name, cmd, args, o, s, report.as_deref(), None);
-    // What the hop said it changed (the burn protocol), read once it is over.
-    let claims = report
-        .as_deref()
-        .map(crate::burn::protocol::read)
-        .unwrap_or_default();
-    for warning in &claims.warnings {
-        let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
-    }
-    if let Some(mut w) = watch {
-        // Printed here and taken out, so the watch's end does not say them again.
-        for warning in std::mem::take(&mut w.warnings) {
-            let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
-        }
-        let writes = i
-            .kernel
-            .pack_watch_end(w, claims.claims, o.cwd.as_deref(), mark);
-        for warning in i.kernel.take_late_warnings() {
-            let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
-        }
-        for warning in i.kernel.take_claim_warnings() {
-            let _ = writeln!(i.err, "warning[E761 burn]: {warning}");
-        }
-        if !writes.outside.is_empty() {
-            let shown: Vec<String> = writes
-                .outside
-                .iter()
-                .take(5)
-                .map(|p| p.display().to_string())
-                .collect();
-            let _ = writeln!(
-                i.err,
-                "warning[E752 burn]: `{}` wrote outside the pack: {} path{} ({}{}); the kernel cannot undo them",
-                hop_label(cmd, args),
-                writes.outside.len(),
-                if writes.outside.len() == 1 { "" } else { "s" },
-                shown.join(", "),
-                if writes.outside.len() > 5 { ", ..." } else { "" }
-            );
-        }
-    }
+    finish_watch(
+        i,
+        watch,
+        report.as_deref(),
+        o.cwd.as_deref(),
+        mark,
+        &hop_label(cmd, args),
+    );
     let raw = ran?;
     let out = decode(name, "stdout", &raw.out, o.encoding, s)?;
     let err = decode(name, "stderr", &raw.err, Encoding::Lossy, s)?;
@@ -1884,6 +1921,23 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         return Err(runtime("proc.pipe: no stages").at(s));
     }
     let o = Options::parse(a, 1, "proc.pipe", s, None)?;
+    if o.boxed {
+        return Err(type_error(
+            "proc.pipe: `box` is for one hop; a pipeline is several processes and cannot be boxed",
+        )
+        .at(s)
+        .with_hint(
+            "run the stages as one hop, proc.shell(\"a | b\", {box: true}), or drop `box`",
+        ));
+    }
+    if !o.touches.is_empty() && i.kernel.pack().is_none() {
+        return Err(cigscript_burn(
+            "proc.pipe: `touches` was given, but the script declares no pack { }; the kernel has nothing to watch".to_string(),
+        )
+        .code("E757")
+        .at(s)
+        .with_hint("declare pack { \".\" } (or the roots the pipeline writes under) as the first statement"));
+    }
     // One effect for the pipeline; the plan shows it as one hop.
     let summary_args: Vec<String> = stages
         .iter()
@@ -1901,10 +1955,22 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         touches_sealed: o.touches_sealed.clone(),
         boxed: o.boxed,
     };
+    let mark = i.kernel.mark();
     if i.effect("proc.pipe", op, s)? == Decision::Simulate {
         return Ok(result_map(0, "", "", 0, true));
     }
     check_cwd("proc.pipe", &o, s)?;
+    // The pack is watched around the whole pipeline, and every stage may
+    // report through the burn protocol, exactly as one hop does.
+    let report = i.kernel.hop_journal();
+    let watch = i
+        .kernel
+        .pack_watch_begin(o.cwd.as_deref(), &o.touches, &o.touches_sealed);
+    let pipeline_label = stages
+        .iter()
+        .map(|(c, a)| hop_label(c, a))
+        .collect::<Vec<_>>()
+        .join(" | ");
     install_signal_forwarding();
     let started = Instant::now();
     // The clock starts before the first stage does: everything below,
@@ -1919,7 +1985,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let mut stdin_thread: Option<std::thread::JoinHandle<()>> = None;
     let mut previous_out: Option<std::process::ChildStdout> = None;
     for (n, (cmd, args)) in stages.iter().enumerate() {
-        let Some(mut c) = command(cmd, args, &o, None, None) else {
+        let Some(mut c) = command(cmd, args, &o, report.as_deref(), None) else {
             for mut earlier in children.drain(..) {
                 kill_group(&mut earlier, 0, job.as_ref());
             }
@@ -2020,6 +2086,14 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         if let Some(t) = stdin_thread.take() {
             let _ = t.join();
         }
+        finish_watch(
+            i,
+            watch,
+            report.as_deref(),
+            o.cwd.as_deref(),
+            mark,
+            &pipeline_label,
+        );
         return Err(runtime(if timed_out {
             format!(
                 "proc.pipe: the pipeline ran longer than {} ms and was killed",
@@ -2040,6 +2114,14 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     if let Some(t) = stdin_thread.take() {
         let _ = t.join();
     }
+    finish_watch(
+        i,
+        watch,
+        report.as_deref(),
+        o.cwd.as_deref(),
+        mark,
+        &pipeline_label,
+    );
     let out_bytes = out_reader.bytes();
     let errs: Vec<Vec<u8>> = err_readers.iter().map(Capture::bytes).collect();
     let duration_ms = started.elapsed().as_millis() as i64;

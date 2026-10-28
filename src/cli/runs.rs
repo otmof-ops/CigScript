@@ -244,6 +244,28 @@ struct Verified {
 
 /// Walk the journal's chain, compare its head with the record, and check
 /// every snapshot and tin object a rollback would need.
+/// Is this journal the record the run wrote? The first line whose `prev`
+/// does not fit, or, when every line fits, a last line that is not the one
+/// the record saved as the chain's head (edited, or lines added or removed
+/// at the end after the record was written; an unburn or a give-back
+/// saves the head again after the markers it appends).
+fn tampered(rec: &RunRecord, journal: &Journal) -> Option<(usize, String)> {
+    let chain = journal.chain();
+    if let Some(b) = &chain.broken_at {
+        return Some((b.line, b.reason.clone()));
+    }
+    if !chain.checked() {
+        return None;
+    }
+    match &rec.journal_head {
+        Some(h) if *h != journal.head() => Some((
+            chain.lines,
+            "is not the last line the record saved as the chain's head: it was edited, or lines were added or removed at the end".to_string(),
+        )),
+        _ => None,
+    }
+}
+
 fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
     let chain = journal.chain().clone();
     let (chain_ok, chain_text) = if !chain.checked() {
@@ -341,6 +363,32 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             rec.id
         );
         return exit::OK;
+    }
+    // The took markers are read from the journal: a journal that is not
+    // the record is given back from only on purpose, as it is unburned.
+    if let Some((line, reason)) = tampered(&rec, &journal) {
+        if !force && !dry_run {
+            eprintln!(
+                "{} the journal of {} is not the record the run wrote: line {line} {reason}",
+                ctx.red("error[E760 burn]:"),
+                rec.id,
+            );
+            eprintln!(
+                "  = hint: cig runs {} --verify walks the chain; pass --force to give back from the journal as it is, knowing it was changed",
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E760");
+            return exit::SCRIPT_ERROR;
+        }
+        eprintln!(
+            "{} the journal's chain is broken at line {line} ({reason}); {}",
+            ctx.yellow("note:"),
+            if dry_run {
+                "a real give-back would refuse [E760] unless --force"
+            } else {
+                "--force given"
+            }
+        );
     }
     let plan = journal.give_back_plan();
     let changed: Vec<&cigscript::burn::journal::GiveBack> =
@@ -477,7 +525,7 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
                 cigscript::burn::git::unpin(std::path::Path::new(wt.trim()), &r.id);
             }
         }
-        if std::fs::remove_dir_all(r.dir()).is_ok() {
+        if cigscript::burn::overlay::remove_tree_force(&r.dir()).is_ok() {
             removed += 1;
         }
     }
@@ -545,14 +593,12 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     // Every line of a format 2 journal carries the hash of the one before
     // it: a journal that no longer fits itself is not the record, and is
     // restored from only on purpose.
-    if let Some(b) = &journal.chain().broken_at {
+    if let Some((line, reason)) = tampered(&rec, &journal) {
         if !force && !dry_run {
             eprintln!(
-                "{} the journal of {} is not the record the run wrote: line {} {}",
+                "{} the journal of {} is not the record the run wrote: line {line} {reason}",
                 ctx.red("error[E760 burn]:"),
                 rec.id,
-                b.line,
-                b.reason
             );
             eprintln!(
                 "  = hint: cig runs {} --verify walks the chain; pass --force to restore from the journal as it is, knowing it was changed",
@@ -563,17 +609,13 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         }
         if dry_run {
             outln!(
-                "  {} the journal's chain is broken at line {} ({}); a real unburn would refuse [E760] unless --force",
+                "  {} the journal's chain is broken at line {line} ({reason}); a real unburn would refuse [E760] unless --force",
                 ctx.yellow("note:"),
-                b.line,
-                b.reason
             );
         } else {
             eprintln!(
-                "{} the journal's chain is broken at line {} ({}); --force given",
+                "{} the journal's chain is broken at line {line} ({reason}); --force given",
                 ctx.yellow("note:"),
-                b.line,
-                b.reason
             );
         }
     }

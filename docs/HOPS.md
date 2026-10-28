@@ -120,7 +120,11 @@ with a command string built at run time.
 
 **The irreversible label survives the hop.** A hop is journaled as
 irreversible and the plan says so; `proc.pipe` and `proc.shell` are one hop
-each. Nothing launders it.
+each. Nothing launders it. A pipeline takes `touches` and `touches_sealed`
+as a hop does and the pack is watched around the whole of it; `box` is
+refused for a pipeline (`E400`), several processes being more than one box
+holds, and `proc.shell("a | b", {box: true})` boxes the same thing as one
+hop.
 
 **Failure taxonomy with stable codes.** `E550` hop failed (other), `E551`
 command not found, `E552` refused to start, `E553` exit outside the
