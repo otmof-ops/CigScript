@@ -5,6 +5,21 @@ project follows semantic versioning.
 
 ## 1.6.0 — unreleased
 
+- **The parcel** (#86). `cig parcel <run>` writes `<run>.cigparcel`: the
+  run's record, journal and after-state, every snapshot, tin object, recipe,
+  chunk and sealed object its journal refers to, the bytes of every blob
+  git held for it (carried whole), and a manifest naming each file's
+  SHA-256, the cig that wrote it, the pack's roots and the working
+  directory. `cig unparcel <file> --root name=path ...` checks every file
+  against the manifest before it writes anything (a changed byte refuses the
+  whole parcel), needs every root mapped to a place here (`--show` lists
+  them; `--cwd` when the working directory cannot be told from the roots),
+  refuses sealed objects this machine's key does not open unless
+  `--allow-sealed-missing`, places the objects in the tin and the run among
+  the runs, and records in the run's record where it came from and how its
+  paths map. The journal is never rewritten, so its chain still verifies;
+  `cig runs <id>` says `imported`, and `cig unburn <id>` works here with the
+  usual drift check against this machine's files. `E762` names a refusal.
 - **The burn protocol** (#89). Every hop a real run starts gets
   `CIG_JOURNAL`, a file it may append JSON lines to: `write`, `delete` and
   `create` say what it changed (with the hash of the bytes before, and where

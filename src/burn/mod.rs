@@ -13,6 +13,7 @@ pub mod ghost;
 pub mod git;
 pub mod journal;
 pub mod lock;
+pub mod parcel;
 pub mod protocol;
 pub mod runs;
 pub mod seal;

@@ -1608,6 +1608,29 @@ probe = "none"
 remedy = "widen pack { } if the path is the pack's; one JSON object per line, with `op` and `path`"
 
 [[code]]
+code = "E762"
+title = "a parcel could not be written or imported"
+meaning = "A parcel is a run's record and every object its journal needs in one file, with a manifest naming each file's hash. An import checks every file against the manifest, needs every root of the pack mapped to a place here, and needs the key for any sealed object; when any of that fails, nothing is imported. Writing one fails when the run's objects cannot be read, a blob git no longer has among them."
+fix = "cig unparcel --show <file> lists the roots to map; --root name=path for each, --cwd when the working directory cannot be told, --allow-sealed-missing to import what this machine cannot open"
+no = "cant-see-any"
+arises = ["unburn", "runs"]
+tags = ["kernel"]
+since = "1.6.0"
+related = ["E703", "E704"]
+[[code.cause]]
+why = "a root of the pack is not mapped, or the working directory cannot be told from the roots"
+probe = "none"
+remedy = "`cig unparcel --show <file>`, then `--root name=/path/here` for each root, and `--cwd` when asked"
+[[code.cause]]
+why = "a file does not hash as the manifest says: the parcel was changed, or cut short, after it was written"
+probe = "none"
+remedy = "get the parcel again from where it was made; nothing of it was imported"
+[[code.cause]]
+why = "the parcel holds sealed objects this machine's key does not open"
+probe = "none"
+remedy = "copy the key that sealed them (the keyring entry cigscript/tin-seal, or ~/.cigscript/tin/seal.key), or `--allow-sealed-missing`"
+
+[[code]]
 code = "E800"
 title = "usage error"
 meaning = "The command line or the environment is wrong."

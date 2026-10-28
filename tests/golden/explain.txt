@@ -99,6 +99,7 @@ E750-E769  folds and packs: refusals when automation is composed
   E759  the pack is in use by another run  burn
   E760  the journal's chain is broken      burn
   E761  a hop's report could not be used   burn
+  E762  a parcel could not be written or imported burn
 
 E800-E849  the command line and the environment
   E800  usage error                        usage
@@ -1527,6 +1528,28 @@ E761 a hop's report could not be used  (burn, fold family, since 1.6.0)
      remedy: widen pack { } if the path is the pack's; one JSON object per line, with `op` and `path`
 
   arises in: run, light  ·  related: E752, E757  ·  tags: kernel
+
+======== E762 ========
+E762 a parcel could not be written or imported  (burn, fold family, since 1.6.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A parcel is a run's record and every object its journal needs in one file, with a manifest naming each file's hash. An import checks every file against the manifest, needs every root of the pack mapped to a place here, and needs the key for any sealed object; when any of that fails, nothing is imported. Writing one fails when the run's objects cannot be read, a blob git no longer has among them.
+
+  what to type next: cig unparcel --show <file> lists the roots to map; --root name=path for each, --cwd when the working directory cannot be told, --allow-sealed-missing to import what this machine cannot open
+
+  known causes, ranked; doctor checks them in this order
+  1. a root of the pack is not mapped, or the working directory cannot be told from the roots
+     probe: none; a suggestion, not a finding
+     remedy: `cig unparcel --show <file>`, then `--root name=/path/here` for each root, and `--cwd` when asked
+  2. a file does not hash as the manifest says: the parcel was changed, or cut short, after it was written
+     probe: none; a suggestion, not a finding
+     remedy: get the parcel again from where it was made; nothing of it was imported
+  3. the parcel holds sealed objects this machine's key does not open
+     probe: none; a suggestion, not a finding
+     remedy: copy the key that sealed them (the keyring entry cigscript/tin-seal, or ~/.cigscript/tin/seal.key), or `--allow-sealed-missing`
+
+  arises in: unburn, runs  ·  related: E703, E704  ·  tags: kernel
 
 ======== E800 ========
 E800 usage error  (usage, usage family, since 1.0.0)

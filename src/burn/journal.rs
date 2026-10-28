@@ -289,6 +289,9 @@ impl Journal {
     /// Load a finished run's journal for `cig unburn`.
     pub fn load(run_dir: &Path) -> Result<Self, io::Error> {
         let text = fs::read_to_string(run_dir.join("journal.jsonl"))?;
+        // A run that came in a parcel reads through its path map: the
+        // lines stay as written (the chain holds), the paths are ours.
+        let map = super::parcel::path_map_of(run_dir);
         let mut entries: Vec<Entry> = Vec::new();
         let mut truncated = false;
         let mut format = 0;
@@ -370,19 +373,31 @@ impl Journal {
                         e.compensated = true;
                     }
                     if let Some(t) = v.get("took") {
-                        if let Ok(states) = serde_json::from_value::<Vec<BeforeState>>(t.clone()) {
+                        if let Ok(mut states) =
+                            serde_json::from_value::<Vec<BeforeState>>(t.clone())
+                        {
+                            for st in &mut states {
+                                remap_state(st, &map);
+                            }
                             e.took = states;
                         }
-                        e.left_after = v
+                        let mut left = v
                             .get("left")
                             .and_then(|l| serde_json::from_value::<Vec<LeftState>>(l.clone()).ok())
                             .unwrap_or_default();
+                        for l in &mut left {
+                            l.path = super::parcel::remap(&l.path, &map);
+                        }
+                        e.left_after = left;
                     }
                 }
                 continue;
             }
-            let e: Entry = serde_json::from_value(v)
+            let mut e: Entry = serde_json::from_value(v)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            if !map.is_empty() {
+                remap_entry(&mut e, &map);
+            }
             entries.push(e);
         }
         Ok(Self {
@@ -1044,6 +1059,11 @@ impl Journal {
                 }
             }
         }
+        // What the run recorded leaving at each path, by hash: a file whose
+        // time or size differs from the hop's stamp but whose bytes are
+        // still the run's (copied to another machine, touched) is the
+        // run's own work, not someone else's.
+        let after = if again { None } else { self.after_state() };
         for entry in self.entries.iter().skip(from).rev() {
             if entry.undone || (entry.restored && !again) {
                 continue;
@@ -1133,7 +1153,19 @@ impl Journal {
                     entry.before.first(),
                 ) {
                     if let Some(now) = file_stamp(&state.path) {
-                        if now != left {
+                        let same_bytes = || {
+                            after
+                                .as_ref()
+                                .and_then(|a| a.paths.get(&state.path))
+                                .is_some_and(|was| match was {
+                                    PathState::File { sha256, .. } => {
+                                        sha256_file(&state.path).ok().as_deref()
+                                            == Some(sha256.as_str())
+                                    }
+                                    _ => false,
+                                })
+                        };
+                        if now != left && !same_bytes() {
                             let text = format!(
                                 "{}: {} changed after the hop ran, so it was left alone (cig unburn {run_id} --force restores over it)",
                                 entry.op.describe(),
@@ -1692,7 +1724,16 @@ impl Journal {
     pub fn after_state(&self) -> Option<AfterState> {
         let dir = self.run_dir.as_ref()?;
         let text = fs::read_to_string(dir.join("after.json")).ok()?;
-        serde_json::from_str(&text).ok()
+        let mut after: AfterState = serde_json::from_str(&text).ok()?;
+        let map = super::parcel::path_map_of(dir);
+        if !map.is_empty() {
+            after.paths = after
+                .paths
+                .into_iter()
+                .map(|(p, s)| (super::parcel::remap(&p, &map), s))
+                .collect();
+        }
+        Some(after)
     }
 
     /// Which touched paths are no longer as the run left them. Restoring
@@ -2221,6 +2262,46 @@ fn copy_tree_inner(
         sync_dir(to)?;
     }
     Ok(())
+}
+
+/// Read an imported run's before-state through its path map.
+fn remap_state(st: &mut BeforeState, map: &[(PathBuf, PathBuf)]) {
+    st.path = super::parcel::remap(&st.path, map);
+    match &mut st.before {
+        Before::File { snapshot, .. } | Before::Dir { snapshot } => {
+            *snapshot = super::parcel::remap(snapshot, map);
+        }
+        Before::Moved { to } => *to = super::parcel::remap(to, map),
+        Before::Absent | Before::Directory { .. } | Before::Symlink { .. } => {}
+    }
+}
+
+/// Read an imported run's entry through its path map: the op's paths and
+/// every before-state's.
+fn remap_entry(e: &mut Entry, map: &[(PathBuf, PathBuf)]) {
+    let r = |p: &mut PathBuf| *p = super::parcel::remap(p, map);
+    match &mut e.op {
+        Op::Write { path, .. }
+        | Op::Append { path, .. }
+        | Op::Delete { path }
+        | Op::Mkdir { path }
+        | Op::HopCreated { path, .. }
+        | Op::HopChanged { path, .. } => r(path),
+        Op::Move { from, to } | Op::Copy { from, to } => {
+            r(from);
+            r(to);
+        }
+        Op::Proc { cwd: Some(c), .. } => r(c),
+        Op::Proc { .. } | Op::EnvSet { .. } | Op::EnvUnset { .. } | Op::Compensate { .. } => {}
+    }
+    for st in &mut e.before {
+        remap_state(st, map);
+    }
+    if let Some(c) = &mut e.compensation {
+        if let Some(d) = &mut c.cwd {
+            r(d);
+        }
+    }
 }
 
 /// Does the file begin with a sealed object's magic?

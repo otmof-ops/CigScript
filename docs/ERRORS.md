@@ -1288,6 +1288,7 @@ folds and packs: refusals when automation is composed.
 | [`E759`](#e759-the-pack-is-in-use-by-another-run) | the pack is in use by another run | can't see any ciggies bro | wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap |
 | [`E760`](#e760-the-journal's-chain-is-broken) | the journal's chain is broken | can't see any ciggies bro | cig runs <id> --verify names the first line that does not fit; cig unburn <id> --force restores from the journal as it is |
 | [`E761`](#e761-a-hop's-report-could-not-be-used) | a hop's report could not be used | can't see any ciggies bro | docs/PROTOCOL.md has the line shapes; report paths inside the pack, and keep a copy of the before-bytes (`saved`) or give an `undo` command |
+| [`E762`](#e762-a-parcel-could-not-be-written-or-imported) | a parcel could not be written or imported | can't see any ciggies bro | cig unparcel --show <file> lists the roots to map; --root name=path for each, --cwd when the working directory cannot be told, --allow-sealed-missing to import what this machine cannot open |
 
 ### E750 literal path outside the pack
 
@@ -1491,6 +1492,25 @@ The hop spoke the burn protocol (it appended to the file CIG_JOURNAL names), and
 2. the tool reported a path outside the pack, or a line that is not JSON (no probe; a suggestion, not a finding). **Remedy:** widen pack { } if the path is the pack's; one JSON object per line, with `op` and `path`
 
 Related: `E752`, `E757`.
+
+
+### E762 a parcel could not be written or imported
+
+*burn · since 1.6.0 · arises in unburn, runs*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+A parcel is a run's record and every object its journal needs in one file, with a manifest naming each file's hash. An import checks every file against the manifest, needs every root of the pack mapped to a place here, and needs the key for any sealed object; when any of that fails, nothing is imported. Writing one fails when the run's objects cannot be read, a blob git no longer has among them.
+
+**What to type next:** cig unparcel --show <file> lists the roots to map; --root name=path for each, --cwd when the working directory cannot be told, --allow-sealed-missing to import what this machine cannot open
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a root of the pack is not mapped, or the working directory cannot be told from the roots (no probe; a suggestion, not a finding). **Remedy:** `cig unparcel --show <file>`, then `--root name=/path/here` for each root, and `--cwd` when asked
+2. a file does not hash as the manifest says: the parcel was changed, or cut short, after it was written (no probe; a suggestion, not a finding). **Remedy:** get the parcel again from where it was made; nothing of it was imported
+3. the parcel holds sealed objects this machine's key does not open (no probe; a suggestion, not a finding). **Remedy:** copy the key that sealed them (the keyring entry cigscript/tin-seal, or ~/.cigscript/tin/seal.key), or `--allow-sealed-missing`
+
+Related: `E703`, `E704`.
 
 
 ## usage (`E800`–`E849`)

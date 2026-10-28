@@ -82,6 +82,11 @@ fn object_path(hash: &str) -> PathBuf {
     objects_dir().join(&hash[..2]).join(hash)
 }
 
+/// Where the object for this hash would be.
+pub fn object_path_pub(hash: &str) -> PathBuf {
+    object_path(hash)
+}
+
 fn recipe_path(hash: &str) -> PathBuf {
     recipes_dir().join(&hash[..2]).join(hash)
 }

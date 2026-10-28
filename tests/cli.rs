@@ -5724,3 +5724,207 @@ fn a_nested_cig_run_is_undone_by_the_parents_rollback() {
     let child = runs.iter().find(|r| r["script"] == "child.cig").unwrap();
     assert_eq!(child["status"], "unburned", "{child}");
 }
+
+// ----- the parcel (#86): a run's undo on another machine
+
+/// A run on "machine A": a pack at `p`, a hop that edits one file and makes
+/// another, and a native write.
+#[cfg(unix)]
+fn parcelled_run(sb: &Sandbox) -> String {
+    sb.write("p/a.txt", "alpha v1\n");
+    sb.write("p/c.txt", "gamma v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo 'alpha v2' > a.txt; echo beta > b.txt\"], {cwd: \"p\", touches: [\"**\"]})\n  fs.write_text(\"p/c.txt\", \"gamma v2\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    sb.runs()[0]["id"].as_str().unwrap().to_string()
+}
+
+/// Machine B: another state directory, the pack as the run left it.
+#[cfg(unix)]
+fn machine_b(a: &Sandbox) -> Sandbox {
+    let b = Sandbox::new();
+    fs::create_dir_all(b.path().join("p")).unwrap();
+    for f in ["a.txt", "b.txt", "c.txt"] {
+        fs::copy(a.path().join("p").join(f), b.path().join("p").join(f)).unwrap();
+    }
+    b
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parcel_unburns_on_another_machine() {
+    let a = Sandbox::new();
+    let id = parcelled_run(&a);
+    let out = a.run_ok(&["parcel", &id, "--out", "run.cigparcel"]);
+    assert!(out.trim().ends_with("run.cigparcel"), "{out}");
+    let parcel = a.path().join("run.cigparcel");
+    let b = machine_b(&a);
+    let show = b.run_ok(&["unparcel", "--show", parcel.to_str().unwrap()]);
+    assert!(
+        show.contains(&format!("run       {id}")) && show.contains("root      p ="),
+        "{show}"
+    );
+    let root = format!("p={}", b.path().join("p").display());
+    let imported = b.run_ok(&["unparcel", parcel.to_str().unwrap(), "--root", &root]);
+    assert_eq!(imported.trim(), id, "{imported}");
+    let shown = b.run_ok(&["runs", &id, "--verify"]);
+    assert!(
+        shown.contains("imported  from")
+            && shown.contains("chain     intact")
+            && shown.contains("objects   every snapshot"),
+        "{shown}"
+    );
+    let plan = b.run_ok(&["unburn", &id, "--dry-run"]);
+    assert!(
+        plan.contains("unchanged since") && !plan.contains("changed since:"),
+        "{plan}"
+    );
+    b.run_ok(&["unburn", &id]);
+    assert_eq!(b.read("p/a.txt"), "alpha v1\n");
+    assert!(!b.exists("p/b.txt"));
+    assert_eq!(b.read("p/c.txt"), "gamma v1\n");
+    assert_eq!(b.runs()[0]["status"], "unburned");
+    // Machine A is untouched, and its own unburn still works.
+    assert_eq!(a.read("p/a.txt"), "alpha v2\n");
+    a.run_ok(&["unburn", &id]);
+    assert_eq!(a.read("p/a.txt"), "alpha v1\n");
+    // The same parcel a second time: the run is here already.
+    let err = b.run_err(&["unparcel", parcel.to_str().unwrap(), "--root", &root], 1);
+    assert!(
+        err.contains("E762") && err.contains("already here"),
+        "{err}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parcel_with_a_wrong_hash_is_refused_whole() {
+    let a = Sandbox::new();
+    let id = parcelled_run(&a);
+    a.run_ok(&["parcel", &id, "--out", "run.cigparcel"]);
+    // Change one byte of one object inside the parcel, then pack it again.
+    let work = a.path().join("work");
+    fs::create_dir_all(&work).unwrap();
+    let tar = |args: &[&str]| {
+        let out = Command::new("tar")
+            .args(args)
+            .current_dir(a.path())
+            .output()
+            .expect("tar");
+        assert!(
+            out.status.success(),
+            "tar {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    tar(&["xzf", "run.cigparcel", "-C", "work"]);
+    let mut objects = Vec::new();
+    for bucket in fs::read_dir(work.join("tin/objects")).unwrap().flatten() {
+        for e in fs::read_dir(bucket.path()).unwrap().flatten() {
+            objects.push(e.path());
+        }
+    }
+    assert!(!objects.is_empty());
+    let mut bytes = fs::read(&objects[0]).unwrap();
+    bytes.push(b'!');
+    fs::write(&objects[0], bytes).unwrap();
+    tar(&["czf", "bad.cigparcel", "-C", "work", "."]);
+    let b = machine_b(&a);
+    let root = format!("p={}", b.path().join("p").display());
+    let err = b.run_err(
+        &[
+            "unparcel",
+            a.path().join("bad.cigparcel").to_str().unwrap(),
+            "--root",
+            &root,
+        ],
+        1,
+    );
+    assert!(
+        err.contains("error[E762 burn]") && err.contains("does not hash as the manifest says"),
+        "{err}"
+    );
+    assert!(b.runs().is_empty(), "nothing was imported");
+    assert!(!b.exists("home/tin/objects"), "no object was placed");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unmapped_root_refuses_with_its_name() {
+    let a = Sandbox::new();
+    let id = parcelled_run(&a);
+    a.run_ok(&["parcel", &id, "--out", "run.cigparcel"]);
+    let b = machine_b(&a);
+    let err = b.run_err(
+        &["unparcel", a.path().join("run.cigparcel").to_str().unwrap()],
+        1,
+    );
+    assert!(
+        err.contains("root `p` (") && err.contains("--root p=/path/to/it"),
+        "{err}"
+    );
+    assert!(b.runs().is_empty());
+    // A root mapped to a place that is not there is refused too.
+    let err = b.run_err(
+        &[
+            "unparcel",
+            a.path().join("run.cigparcel").to_str().unwrap(),
+            "--root",
+            "p=/nowhere/at/all",
+        ],
+        1,
+    );
+    assert!(err.contains("not a directory here"), "{err}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_parcel_carries_only_the_objects_its_run_needs() {
+    let a = Sandbox::new();
+    let first = parcelled_run(&a);
+    a.write("p/d.txt", "delta v1\n");
+    a.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo 'delta v2' > d.txt\"], {cwd: \"p\", touches: [\"d.txt\"]})\n}\n",
+    );
+    a.run_ok(&["run", "t.cig"]);
+    let second = a.runs()[0]["id"].as_str().unwrap().to_string();
+    assert_ne!(first, second);
+    let object_of = |id: &str| -> String {
+        let shown: serde_json::Value =
+            serde_json::from_str(&a.run_ok(&["--json", "runs", id])).unwrap();
+        shown["journal"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find_map(|e| {
+                e["before"]
+                    .as_array()?
+                    .iter()
+                    .find_map(|b| {
+                        b["snapshot"]
+                            .as_str()
+                            .filter(|s| s.contains("/tin/objects/"))
+                    })
+                    .map(|s| s.rsplit('/').next().unwrap().to_string())
+            })
+            .unwrap_or_else(|| panic!("{shown}"))
+    };
+    let (mine, theirs) = (object_of(&first), object_of(&second));
+    a.run_ok(&["parcel", &first, "--out", "first.cigparcel"]);
+    let listed = Command::new("tar")
+        .args(["tzf", "first.cigparcel"])
+        .current_dir(a.path())
+        .output()
+        .expect("tar");
+    let names = String::from_utf8_lossy(&listed.stdout).to_string();
+    assert!(names.contains(&mine), "{names}");
+    assert!(!names.contains(&theirs), "{names}");
+    assert!(
+        names.contains("manifest.json") && names.contains("run/journal.jsonl"),
+        "{names}"
+    );
+    assert!(!names.contains("run/hops/"), "{names}");
+}

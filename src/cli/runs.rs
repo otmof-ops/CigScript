@@ -145,6 +145,13 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
                 .join(", ")
         );
     }
+    if let Some(imp) = &rec.imported {
+        outln!(
+            "  imported  from {} at {} (paths read through its map)",
+            imp["from"].as_str().unwrap_or("?"),
+            imp["at"].as_str().unwrap_or("?")
+        );
+    }
     outln!("  dir       {}", rec.dir().display());
     if let Some(j) = journal {
         outln!(

@@ -391,6 +391,32 @@ shows one with its journal, `cig runs --prune N` keeps the newest N, and
 `CIGSCRIPT_HOME` relocates the whole state directory (tests use this to stay
 isolated).
 
+## The parcel
+
+A run's undo lives on the machine that ran it: the record under
+`~/.cigscript/runs/<id>/`, its snapshots, and the tin objects it refers to.
+`cig parcel <run>` writes them as one file, `<run>.cigparcel` (a gzipped
+tar): `run/` with the record, the journal and the after-state and every
+snapshot; `tin/` with every object, recipe, chunk and sealed object the
+journal refers to, and nothing another run holds; `git/` with the bytes of
+every blob git held for the run, carried whole so the other machine needs
+no repository; and `manifest.json` naming each file's SHA-256, the cig
+that wrote it, the pack's roots (each with a name, its last component) and
+the working directory. `cig unparcel <file>` checks every file against the
+manifest before it writes anything, and a byte changed refuses the whole
+parcel (`E762`); every root must be mapped to a place here (`--root
+build=/srv/app/build`; `--show` lists them, `--cwd` sets the working
+directory when it cannot be told from the roots, which it can when a root
+sits under it by the same relative path); sealed objects this machine's
+key does not open are refused unless `--allow-sealed-missing`. The objects
+go into the tin (a content-named one already there is kept when it hashes
+to its name), the run among the runs, and its record says where it came
+from and how its paths map (`imported`). The journal itself is never
+rewritten, so its chain still verifies; the record's map is applied as it
+is read. From then on `cig runs <id>` lists it as imported and
+`cig unburn <id>` works here, with the usual drift check (`E704`) against
+this machine's files.
+
 ## What it can't undo, and says so
 
 The irreversible label is the honesty guarantee. It is the one thing that

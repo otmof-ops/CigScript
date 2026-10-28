@@ -475,6 +475,8 @@ for.
 | a tool rewrites a file no `touches` named, keeps the bytes before and reports both through `CIG_JOURNAL` | reversible all the same: the copy is hashed, kept, and put back on rollback | 1.6.0 | `a_tool_that_reports_its_write_is_reversible_without_touches` |
 | a tool reports a path outside the pack, or a before-hash its copy does not match | refused with the reason (`E761`); nothing journaled on its word | 1.6.0 | `a_reported_path_outside_the_pack_is_refused` |
 | a hop starts a `cig run` of its own, then the parent fails | the child reported its undo; the parent's rollback unburns the child through its own journal | 1.6.0 | `a_nested_cig_run_is_undone_by_the_parents_rollback` |
+| `cig parcel` a run, carry the file to a machine with a different home and the pack at another path, `cig unparcel --root`, `cig unburn` | every file checked against the manifest, the paths read through the map, the chain still intact; the run is undone there, the original machine untouched | 1.6.0 | `a_parcel_unburns_on_another_machine` |
+| change one byte inside a parcel, then `cig unparcel` | the whole parcel refused (`E762`); nothing placed | 1.6.0 | `a_parcel_with_a_wrong_hash_is_refused_whole` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).
