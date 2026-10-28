@@ -573,6 +573,20 @@ pub fn inside_roots(path: &Path, roots: &[PathBuf]) -> bool {
     })
 }
 
+/// Is this entry the pack's? A file or directory by where it resolves; a
+/// link by where it sits, since a link to the outside is still an entry
+/// inside, removable without touching what it points to.
+fn entry_inside(p: &Path, meta: &Seen, roots: &[PathBuf]) -> bool {
+    if matches!(meta, Seen::Link { .. }) {
+        match p.parent() {
+            Some(parent) => inside_roots(parent, roots),
+            None => inside_roots(p, roots),
+        }
+    } else {
+        inside_roots(p, roots)
+    }
+}
+
 fn mode_bits(m: &std::fs::Metadata) -> u32 {
     #[cfg(unix)]
     {
@@ -1037,8 +1051,10 @@ impl Kernel {
                         continue;
                     }
                     // A path that reads as inside the pack but leads outside
-                    // it (through a link) is not the pack's to remove.
-                    if !inside_roots(p, &roots) {
+                    // it (through a link) is not the pack's to remove. A link
+                    // the hop made is judged by where it sits, not where it
+                    // points: the entry is the pack's, whatever it leads to.
+                    if !entry_inside(p, meta, &roots) {
                         writes.outside.push(p.clone());
                         continue;
                     }
@@ -1114,7 +1130,7 @@ impl Kernel {
         for (w, before) in &watch.outside {
             let now = scan(w, 3, 5_000).seen;
             for (p, meta) in &now {
-                if meta.is_dir() || inside_roots(p, &roots) {
+                if meta.is_dir() || entry_inside(p, meta, &roots) {
                     continue;
                 }
                 match before.get(p) {
@@ -1124,7 +1140,7 @@ impl Kernel {
                 }
             }
             for (p, meta) in before {
-                if !meta.is_dir() && !now.contains_key(p) && !inside_roots(p, &roots) {
+                if !meta.is_dir() && !now.contains_key(p) && !entry_inside(p, meta, &roots) {
                     writes.outside.push(p.clone());
                 }
             }

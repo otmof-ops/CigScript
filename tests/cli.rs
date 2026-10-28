@@ -4620,3 +4620,32 @@ fn a_cig_run_started_by_a_hop_shares_its_parents_pack() {
     );
     assert_eq!(sb.read("out/x.txt"), "1");
 }
+
+/// A link a hop makes inside the pack is the pack's entry, wherever it
+/// points: rollback removes it, and nothing outside the pack is touched.
+#[cfg(unix)]
+#[test]
+fn a_link_a_hop_creates_to_outside_the_pack_is_removed_on_rollback() {
+    let sb = Sandbox::new();
+    sb.write("outside/target.txt", "o\n");
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    let target = sb.path().join("outside/target.txt");
+    sb.write(
+        "s.cig",
+        &format!(
+            "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"ln\", [\"-s\", \"{}\", \"p/link.txt\"])\n  cough \"boom\"\n}}\n",
+            target.display()
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("restored hop created"), "{err}");
+    assert!(
+        !err.contains("E752"),
+        "the link was taken for a write outside the pack:\n{err}"
+    );
+    assert!(
+        fs::symlink_metadata(sb.path().join("p/link.txt")).is_err(),
+        "the link the hop made is still there"
+    );
+    assert_eq!(sb.read("outside/target.txt"), "o\n");
+}
