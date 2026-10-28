@@ -336,7 +336,10 @@ impl Interp {
                     }
                     roots.push(crate::burn::normalize_root(text));
                 }
-                self.kernel.set_pack(roots);
+                let span = decl.span;
+                self.kernel
+                    .set_pack(roots)
+                    .map_err(|d| Signal::Error(d.or_at(span)))?;
                 Ok(())
             }
             Stmt::Burn {

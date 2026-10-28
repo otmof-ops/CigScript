@@ -48,30 +48,17 @@ fn path_arg(a: &[Value], i: usize, name: &str, s: Span) -> Result<PathBuf, Diagn
 fn same_or_inside(name: &str, from: &Path, to: &Path, s: Span) -> Result<(), Diagnostic> {
     let a = crate::burn::scope_path(from);
     let b = crate::burn::scope_path(to);
-    #[cfg(unix)]
-    let (same_inode, hard_linked) = {
-        use std::os::unix::fs::MetadataExt;
-        match (fs::metadata(from), fs::metadata(to)) {
-            (Ok(x), Ok(y)) => (x.dev() == y.dev() && x.ino() == y.ino(), x.nlink() > 1),
-            _ => (false, false),
-        }
-    };
-    #[cfg(not(unix))]
-    let (same_inode, hard_linked) = (false, false);
+    let same = a == b || crate::burn::same_object(from, to);
     // On a case-insensitive filesystem (APFS, NTFS) `readme.md` and
     // `README.md` are one file, and renaming one to the other is a rename
-    // all the same: the name on disk changes. Two names for one file that
-    // differ in more than case are hard links, and stay refused.
-    let case_only = !hard_linked
-        && a.parent() == b.parent()
-        && match (from.file_name(), to.file_name()) {
-            (Some(x), Some(y)) => {
-                let (x, y) = (x.to_string_lossy(), y.to_string_lossy());
-                x != y && x.to_lowercase() == y.to_lowercase()
-            }
-            _ => false,
-        };
-    if (a == b || same_inode) && !case_only {
+    // all the same: the name on disk changes. A copy onto itself is not,
+    // however the destination is spelled: it is truncated before it is
+    // read. Two directory entries that lead to one file (a hard link, a
+    // symlink beside its target, two files on a case-sensitive filesystem)
+    // are not one name, and stay refused.
+    let alias = same && name == "fs.mv" && case_alias(from, to);
+    if same && !alias {
+        let spellings = crate::burn::case_variants(from, to);
         return Err(runtime(format!(
             "{name}: {} and {} are the same file",
             from.display(),
@@ -80,9 +67,13 @@ fn same_or_inside(name: &str, from: &Path, to: &Path, s: Span) -> Result<(), Dia
         .code("E508")
         .at(s)
         .with_subject(from.display().to_string())
-        .with_hint("give the destination a different name; nothing was changed"));
+        .with_hint(if spellings {
+            "this filesystem reads both spellings as one file; nothing was changed"
+        } else {
+            "give the destination a different name; nothing was changed"
+        }));
     }
-    if !case_only && b.starts_with(&a) && from.is_dir() {
+    if !alias && b.starts_with(&a) && from.is_dir() {
         return Err(runtime(format!(
             "{name}: {} is inside {}, the directory being {}",
             to.display(),
@@ -95,6 +86,24 @@ fn same_or_inside(name: &str, from: &Path, to: &Path, s: Span) -> Result<(), Dia
         .with_hint("choose a destination outside the source; nothing was changed"));
     }
     Ok(())
+}
+
+/// `to` is `from` spelled in another case, and the directory lists no
+/// entry with the destination's spelling: the filesystem folded the
+/// destination onto the source, as a case-insensitive one does. When the
+/// destination's spelling is listed it is an entry of its own, wherever
+/// it leads.
+fn case_alias(from: &Path, to: &Path) -> bool {
+    if !crate::burn::case_variants(from, to) {
+        return false;
+    }
+    let (Some(want), Some(parent)) = (to.file_name(), crate::burn::lexical_parent(from)) else {
+        return false;
+    };
+    match fs::read_dir(parent) {
+        Ok(entries) => !entries.flatten().any(|e| e.file_name() == want),
+        Err(_) => false,
+    }
 }
 
 fn io_err(name: &str, path: &Path, e: io::Error, s: Span) -> Diagnostic {

@@ -116,8 +116,9 @@ can act on. What "flushed" means is the platform's:
 - **Linux and the BSDs:** `fsync` on the snapshot, `fdatasync` on the
   appended entry, `fsync` on the directory that gained the file.
 - **macOS:** `fsync` stops at the drive's cache; every flush here is
-  `F_FULLFSYNC`, which asks the drive to write it out, with `fsync` as the
-  fallback on a filesystem that does not take it.
+  `F_FULLFSYNC` (what the standard library's `sync_all` already is on Apple
+  targets), which asks the drive to write it out, with `fsync` as the
+  fallback on a filesystem that refuses it.
 - **Windows:** `FlushFileBuffers` on the snapshot and the entry; the
   directory is flushed through a handle opened with backup semantics where
   NTFS allows it, and left to the filesystem's own journal where it does not.
@@ -148,7 +149,21 @@ restores what can be restored and reports the rest.
 
 `cig unburn` is idempotent: a run that was rolled back already is refused with
 `E705`, because restoring the old snapshots a second time would overwrite
-whatever happened since. `--force` overrides that too, deliberately.
+whatever happened since. `--force` overrides that too, deliberately. A
+rollback that left some restores failed is the exception: a plain
+`cig unburn <id>` retries those alone and leaves what was put back as it is.
+
+**What a rollback displaces is kept.** A hop's write set was observed, not
+performed, so the kernel cannot tell the hop's bytes from a save made while
+the hop ran. For a hop entry, a file the rollback removes or rewrites is
+moved into the tin first, the report line says `its bytes went to the tin`,
+`cig runs <id>` lists them under `took`, and `cig unburn <id> --give-back`
+puts them back, moving what is there now into the tin in turn, so the step
+can be reversed again. A directory a hop made is removed only when it is
+empty: what was put in it since stays, and so does it. A file the hop left
+that changed again after the hop ended is left alone, listed with the
+`--force` that restores over it. `cig unburn` holds the pack's lock while
+it works, as a run does (`E759` for a run that is using it).
 
 **Interrupted runs.** A run whose process died mid-burn is left with the
 status `running` and no totals. `cig runs` recognises it (the pid is gone,
@@ -173,17 +188,27 @@ kernel refuses any native write outside its roots (`E751`; the checker
 catches literal paths first, `E750`) and prints the pack in the plan header.
 Paths are resolved before they are judged: a symlink inside the pack that
 points outside is outside, and the refusal says where the write would land.
-When a hop's writes are watched, a link inside the pack is followed, so a
-file the child wrote through it is journaled like any other. An empty root
+The same holds for a hop: a link inside the pack that leads outside it is a
+door, not a part of the pack, so nothing behind it is walked or journaled,
+a write through it is reported as outside the pack (`E752`), and a rollback
+never removes a path whose real place is outside the pack. An empty root
 is refused (`E755`): it would have meant the whole working directory.
-A **hop** inside a pack is *observed*: the pack's files are listed by mtime
-and size before the child runs and again after, and the difference is
+A **hop** inside a pack is *observed*: the pack's files (mtime, size,
+mode), directories (mode) and links (target, and what the link leads to)
+are listed before the child runs and again after, and the difference is
 journaled as the hop's write set: files the child created are reversible
 (`hop created`, rollback removes them), files it modified or deleted are
-irreversible with the detail (`hop modified`, `hop deleted`), and changes in
-the child's working directory outside the pack are reported as `E752`. The
-scan skips `.git`, `node_modules`, `target` and `.cigscript`, and never
-hashes content.
+irreversible with the detail (`hop modified`, `hop deleted`) unless the tin
+kept them, a directory it deleted or replaced with a file is made again on
+rollback (`(directory)`), and changes in the child's working directory
+outside the pack are reported as `E752`. The scan skips `.git`,
+`node_modules`, `target` and `.cigscript`, never hashes content, and stops
+at `watch_cap` entries (50,000): past the cap it warns up front, journals
+nothing as created and asks the disk before calling a file deleted, so a
+rollback never removes a file that existed before the run. One run at a
+time holds a pack: a second run on the same or an overlapping pack is
+refused with `E759` while the first runs, because hop watching would read
+its writes as the hop's.
 
 A **compensation** is the other half. `burn (s) { ... } unburn { ... }`
 journals the `unburn` block's source and the state map `s` when the block
@@ -238,9 +263,16 @@ bytes, so a `chmod` by the hop is undone and `make` sees the time it saw
 before. A symbolic link is kept as a link: its target is all there is, the
 journal holds it itself (`(link kept)` in the record), and a link the hop
 retargeted, replaced or deleted comes back as the link it was, whether or
-not `touches` named it. `cig tin` says what the tin holds, `cig tin verify`
-re-hashes every object, and `cig tin gc` removes the objects no run in the
-history refers to (`cig runs --prune N` frees more).
+not `touches` named it. The tin also holds what a rollback displaced (the
+hop's own output, or a save made while it ran) until `--give-back` or `gc`.
+`cig tin` says what the tin holds, `cig tin verify` re-hashes every object,
+and `cig tin gc` removes the objects no run in the history refers to
+(`cig runs --prune N` frees more). An object is named by the hash of the
+copy as it was written, so a file changing while it was stashed cannot
+leave an object that lies about its name, and one already there is reused
+only when it still hashes to its name. A hop lists the objects it stashed
+in its run directory (`tin.pending`) before any exists under its name, so
+a `gc` during the hop keeps them.
 
 A `.cigignore` at a pack root (one glob per line, `#` comments) lists what
 hop watching and the tin never look into; `.git`, `node_modules`, `target`,
@@ -287,8 +319,10 @@ rollback report ("cannot undo"). What the label covers:
 - **Cross-run consistency is checked, not guaranteed.** When a run finishes,
   the kernel records what it left behind (`after.json`: the state of every
   path it touched; a file by hash and size, a directory by a fingerprint of
-  everything inside it, so a file you added to a directory the run created
-  counts as a change and is not swept away with it). `cig unburn` compares
+  its entries' names, kinds, sizes and modification times, so a file you
+  added to a directory the run created counts as a change and is not swept
+  away with it, while an edit that keeps a file's size and puts its time
+  back is not seen). `cig unburn` compares
   that with the disk now and refuses
   with `E704` when anything changed since, naming the later run that touched
   the path when there is one, so runs are unburned newest first; `--force`
@@ -301,9 +335,11 @@ rollback report ("cannot undo"). What the label covers:
   keeps the mode of its root.
 - **Restores are atomic where they can be.** A file comes back beside its
   destination and is swapped in, so a failure half-way leaves what is there
-  untouched; a file that has other hard links is restored in place instead,
-  so every name sees the old bytes. A file the run moved across filesystems
-  is copied back the same way, and when a move back fails the only copy is
-  kept, never removed. What a rollback could not restore is recorded on the
-  run (`rollback_incomplete`; `cig runs <id>` lists the failures) and
-  `cig unburn` refuses to start when it could not record itself.
+  untouched; on Unix a file that has other hard links is restored in place
+  instead, so every name sees the old bytes. A file the run moved across
+  filesystems is copied back the same way, and when a move back fails the
+  only copy is kept, never removed. What a rollback could not restore is
+  recorded on the run (`rollback_incomplete`; `cig runs <id>` lists the
+  failures), a plain `cig unburn <id>` then retries those alone with the
+  rest left as it is (`--force` restores everything again), and `cig unburn`
+  refuses to start when it could not record itself.

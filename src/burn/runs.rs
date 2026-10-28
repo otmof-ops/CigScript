@@ -63,6 +63,13 @@ pub struct RunRecord {
     /// status is `rollback_incomplete` when this is not empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rollback_failed: Vec<String>,
+    /// How many files the rollback moved into the tin instead of
+    /// destroying (`cig unburn <id> --give-back` puts them back).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rollback_took: usize,
+    /// The pack the run declared, so `cig unburn` can take its lock.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pack: Vec<PathBuf>,
     /// Process id of the run, to tell an interrupted run from a live one.
     #[serde(default)]
     pub pid: Option<u32>,
@@ -81,8 +88,14 @@ pub struct RunRecord {
     pub loaded_from: Option<PathBuf>,
 }
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 impl RunRecord {
     /// A fresh record with a unique, sortable id: `YYYYMMDDTHHMMSS-<hash>`.
+    /// A dry run writes no record, so it does not ask the platform for its
+    /// own start time (a process to spawn on some of them).
     pub fn begin(script: &Path, source: &str, args: &[String], mode: &str) -> Self {
         use sha2::{Digest, Sha256};
         let now = chrono::Utc::now();
@@ -112,8 +125,14 @@ impl RunRecord {
             diagnostic: None,
             rolled_back: false,
             rollback_failed: Vec::new(),
+            rollback_took: 0,
+            pack: Vec::new(),
             pid: Some(std::process::id()),
-            pid_started: process_started(std::process::id()),
+            pid_started: if mode == "dry-run" {
+                None
+            } else {
+                process_started(std::process::id())
+            },
             trial: None,
             loaded_from: None,
         }
@@ -149,8 +168,9 @@ impl RunRecord {
             diagnostic: None,
             rolled_back: false,
             rollback_failed: Vec::new(),
+            rollback_took: 0,
+            pack: Vec::new(),
             pid: None,
-
             pid_started: None,
             trial: None,
             loaded_from: None,
@@ -194,10 +214,13 @@ impl RunRecord {
         fs::create_dir_all(&dir)?;
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        // Write-then-rename so a crash never leaves a torn record.
+        // Write, sync, then rename, and sync the directory, so a crash never
+        // leaves a torn record and a power cut never loses a finished one.
         let tmp = dir.join("run.json.tmp");
         fs::write(&tmp, json)?;
-        fs::rename(tmp, dir.join("run.json"))
+        super::journal::sync_file(&tmp)?;
+        fs::rename(tmp, dir.join("run.json"))?;
+        super::journal::sync_dir_pub(&dir)
     }
 
     pub fn finish(&mut self, status: &str, error: Option<String>) {
@@ -247,10 +270,10 @@ pub fn newer_format(what: &str, format: u32, version: &str) -> io::Error {
     )
 }
 
-/// Is a process with this id still alive? Read-only: no signal is sent.
 /// The name and start time of a live process, as this platform tells them:
 /// `(name, started)`, or None when there is no such process (or it cannot
-/// be asked). The start time is an opaque string compared for equality.
+/// be asked). Read-only: no signal is sent. The start time is an opaque
+/// string compared for equality.
 fn process_identity(pid: u32) -> Option<(String, String)> {
     #[cfg(target_os = "linux")]
     {
@@ -267,8 +290,12 @@ fn process_identity(pid: u32) -> Option<(String, String)> {
         // Two questions, two answers: the name and the start time each on
         // a line of their own, whatever ps's column layout on this BSD.
         let ask = |column: &str| -> Option<String> {
+            // One locale and one zone, so the start time reads the same
+            // whichever shell asks: `lstart` is printed through strftime.
             let out = std::process::Command::new("ps")
                 .args(["-p", &pid.to_string(), "-o", column])
+                .env("LC_ALL", "C")
+                .env("TZ", "UTC")
                 .output()
                 .ok()?;
             if !out.status.success() {
@@ -303,6 +330,52 @@ fn process_identity(pid: u32) -> Option<(String, String)> {
     }
     #[cfg(windows)]
     {
+        // The kernel is asked directly: no PowerShell to start for every
+        // run. The creation time is the FILETIME .NET's `ToFileTimeUtc`
+        // gives, so records 1.3.x wrote with PowerShell compare equal.
+        {
+            use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+            use windows_sys::Win32::System::Threading::{
+                GetProcessTimes, OpenProcess, QueryFullProcessImageNameW,
+                PROCESS_QUERY_LIMITED_INFORMATION,
+            };
+            // SAFETY: plain Win32 calls; the handle is closed before returning.
+            unsafe {
+                let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                if !h.is_null() {
+                    let mut created: FILETIME = std::mem::zeroed();
+                    let mut exited: FILETIME = std::mem::zeroed();
+                    let mut kernel: FILETIME = std::mem::zeroed();
+                    let mut user: FILETIME = std::mem::zeroed();
+                    let times_ok =
+                        GetProcessTimes(h, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+                    let mut buf = vec![0u16; 2048];
+                    let mut len = buf.len() as u32;
+                    let name_ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len) != 0;
+                    CloseHandle(h);
+                    // A process that has exited but whose handle someone still
+                    // holds is dead for this purpose.
+                    if times_ok && (exited.dwLowDateTime != 0 || exited.dwHighDateTime != 0) {
+                        return None;
+                    }
+                    if name_ok {
+                        let full = String::from_utf16_lossy(&buf[..len as usize]);
+                        let name = std::path::Path::new(&full)
+                            .file_stem()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or(full.clone());
+                        let started = if times_ok {
+                            let ft = (u64::from(created.dwHighDateTime) << 32)
+                                | u64::from(created.dwLowDateTime);
+                            format!("filetime:{ft}")
+                        } else {
+                            String::new()
+                        };
+                        return Some((name, started));
+                    }
+                }
+            }
+        }
         // PowerShell knows a process's name and start time; tasklist only
         // its name. Either is better than a bare pid.
         let script = format!(
@@ -352,12 +425,20 @@ pub fn process_started(pid: u32) -> Option<String> {
 /// process has to be a cig, and when the record kept the start time, the
 /// same start time; otherwise the run died and the record is interrupted.
 pub fn pid_alive(pid: u32, started: Option<&str>) -> bool {
-    if pid == std::process::id() {
-        return true;
-    }
     let Some((name, live_started)) = process_identity(pid) else {
-        return false;
+        // The asking process is alive whatever the platform says about it.
+        return pid == std::process::id();
     };
+    if pid == std::process::id() {
+        // Our own pid, but a record from another boot or another container
+        // may have had it too: the start time decides when both are known.
+        return match started {
+            Some(recorded) if !recorded.is_empty() && !live_started.is_empty() => {
+                recorded == live_started
+            }
+            _ => true,
+        };
+    }
     let is_cig = name.to_ascii_lowercase().starts_with("cig");
     match started {
         Some(recorded) if !recorded.is_empty() && !live_started.is_empty() => {

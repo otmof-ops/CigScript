@@ -2246,14 +2246,16 @@ fn rollback_failures_are_recorded_on_the_run() {
         shown.contains("status    rollback_incomplete") && shown.contains("2 restores failed"),
         "{shown}"
     );
+    // Still locked: the retry fails the same way, and is not refused.
     let err = sb.run_err(&["unburn", &id], 1);
     assert!(
-        err.contains("error[E705 burn]:") && err.contains("2 restores failed the first time"),
+        err.contains("2 restores failed last time") && !err.contains("E705"),
         "{err}"
     );
     fs::set_permissions(sb.path().join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
-    sb.run_ok(&["unburn", &id, "--force"]);
+    sb.run_ok(&["unburn", &id]);
     assert!(!sb.exists("locked") && !sb.exists("free.txt"));
+    assert_eq!(sb.runs()[0]["status"], "unburned");
 }
 
 #[test]
@@ -3406,13 +3408,15 @@ fn a_modified_file_comes_back_byte_for_byte() {
     let shown = sb.run_ok(&["runs", &id]);
     assert!(shown.contains("(tin)"), "{shown}");
     let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
-    assert_eq!(du["objects"], 4, "{du}");
-    assert_eq!(du["referenced"], 4);
+    // Four before-images, plus the two files the hop rewrote: the rollback
+    // moved the hop's bytes into the tin before restoring over them.
+    assert_eq!(du["objects"], 6, "{du}");
+    assert_eq!(du["referenced"], 6);
     sb.run_ok(&["tin", "verify"]);
     // The same content stashed again costs nothing: one object per distinct bytes.
     sb.run_err(&["run", "s.cig"], 1);
     let du: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "tin", "du"])).unwrap();
-    assert_eq!(du["objects"], 4, "{du}");
+    assert_eq!(du["objects"], 6, "{du}");
 }
 
 #[cfg(unix)]
@@ -3855,12 +3859,30 @@ fn an_apostrophe_reaches_an_msys_program_on_windows() {
     assert!(out.contains("<it's><a*b><plain>"), "{out}");
 }
 
+/// Some case-insensitive filesystems rename across case (APFS, NTFS); a
+/// casefold ext4 directory reads the two spellings as one entry and leaves
+/// the old one. Only the first kind can prove a case-only rename happened.
+fn renames_across_case(dir: &Path) -> bool {
+    std::fs::write(dir.join("probe"), "x").unwrap();
+    let renamed = std::fs::rename(dir.join("probe"), dir.join("PROBE")).is_ok()
+        && std::fs::read_dir(dir)
+            .unwrap()
+            .any(|e| e.unwrap().file_name() == "PROBE");
+    let _ = std::fs::remove_file(dir.join("probe"));
+    let _ = std::fs::remove_file(dir.join("PROBE"));
+    renamed
+}
+
 #[test]
 fn a_case_only_rename_is_a_rename_on_a_case_insensitive_filesystem() {
     let sb = Sandbox::new();
     sb.write("dockerfile", "FROM scratch\n");
     if !sb.path().join("DOCKERFILE").exists() {
         eprintln!("skipped: this filesystem is case-sensitive");
+        return;
+    }
+    if !renames_across_case(sb.path()) {
+        eprintln!("skipped: this filesystem keeps the old spelling on a case-only rename");
         return;
     }
     sb.write(
@@ -3876,6 +3898,155 @@ fn a_case_only_rename_is_a_rename_on_a_case_insensitive_filesystem() {
         names.iter().any(|n| n == "Dockerfile") && !names.iter().any(|n| n == "dockerfile"),
         "{names:?}"
     );
+}
+
+#[test]
+fn a_case_only_rename_of_a_directory_is_a_rename_on_a_case_insensitive_filesystem() {
+    let sb = Sandbox::new();
+    std::fs::create_dir(sb.path().join("docs")).unwrap();
+    sb.write("docs/a.md", "a\n");
+    if !sb.path().join("DOCS").exists() {
+        eprintln!("skipped: this filesystem is case-sensitive");
+        return;
+    }
+    if !renames_across_case(sb.path()) {
+        eprintln!("skipped: this filesystem keeps the old spelling on a case-only rename");
+        return;
+    }
+    sb.write("s.cig", "burn {\n  fs.mv(\"docs\", \"Docs\")\n}\n");
+    sb.run_ok(&["run", "s.cig"]);
+    let names: Vec<String> = std::fs::read_dir(sb.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "Docs") && !names.iter().any(|n| n == "docs"),
+        "{names:?}"
+    );
+    assert!(sb.path().join("Docs").join("a.md").exists());
+}
+
+#[test]
+fn a_copy_onto_its_own_name_in_another_case_is_refused() {
+    let sb = Sandbox::new();
+    sb.write("readme.md", "FROM scratch\n");
+    if !sb.path().join("README.md").exists() {
+        eprintln!("skipped: this filesystem is case-sensitive");
+        return;
+    }
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.cp(\"readme.md\", \"README.md\")\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("error[E508 runtime]"), "{err}");
+    assert!(err.contains("are the same file"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(sb.path().join("readme.md")).unwrap(),
+        "FROM scratch\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_is_not_renamed_over_its_target_by_a_case_only_name() {
+    let sb = Sandbox::new();
+    sb.write("A", "important\n");
+    if sb.path().join("a").exists() {
+        eprintln!("skipped: this filesystem is case-insensitive");
+        return;
+    }
+    std::os::unix::fs::symlink("A", sb.path().join("a")).unwrap();
+    sb.write("s.cig", "burn {\n  fs.mv(\"a\", \"A\")\n}\n");
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("error[E508 runtime]"), "{err}");
+    assert_eq!(
+        std::fs::read_to_string(sb.path().join("A")).unwrap(),
+        "important\n"
+    );
+    assert!(std::fs::symlink_metadata(sb.path().join("a"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+#[test]
+fn a_hops_own_path_chooses_the_program() {
+    let sb = Sandbox::new();
+    let (a, b) = (sb.path().join("binA"), sb.path().join("binB"));
+    for (dir, word) in [(&a, "A-from-binA"), (&b, "B-from-binB")] {
+        std::fs::create_dir_all(dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let tool = dir.join("tool");
+            std::fs::write(&tool, format!("#!/bin/sh\necho {word}\n")).unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(windows)]
+        std::fs::write(
+            dir.join("tool.cmd"),
+            format!("@echo off\r\necho {word}\r\n"),
+        )
+        .unwrap();
+    }
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    let parent = format!("{}{sep}{inherited}", a.display());
+    let child = format!("{}{sep}{inherited}", b.display());
+    sb.write(
+        "s.cig",
+        "burn {\n  stick r = proc.run(\"tool\", [], {env: {PATH: env.get(\"CHILD_PATH\")}})\n  exhale r.out.trim()\n}\n",
+    );
+    let out = sb.cig_env(
+        &["run", "s.cig"],
+        &[("PATH", &parent), ("CHILD_PATH", &child)],
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("B-from-binB"), "{stdout}");
+}
+
+#[test]
+#[cfg(unix)]
+fn a_partial_rollback_is_finished_by_a_plain_unburn() {
+    use std::os::unix::fs::PermissionsExt;
+    if running_as_root() {
+        eprintln!("skipped: root ignores directory modes, so no restore can be made to fail here");
+        return;
+    }
+    let sb = Sandbox::new();
+    sb.write("a.txt", "o\n");
+    sb.write("sub/b.txt", "o\n");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"a.txt\", \"n\")\n  fs.write_text(\"sub/b.txt\", \"n\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let sub = sb.path().join("sub");
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o500)).unwrap();
+    let first = sb.cig(&["unburn", &id]);
+    fs::set_permissions(&sub, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(!first.status.success());
+    assert_eq!(sb.read("a.txt"), "o\n");
+    assert_eq!(sb.read("sub/b.txt"), "n");
+    let rec = &sb.runs()[0];
+    assert_eq!(rec["status"], "unburn_failed");
+    assert_eq!(rec["rollback_failed"].as_array().map(Vec::len), Some(1));
+    // An edit made after the first pass stays: the retry touches only what failed.
+    sb.write("a.txt", "edited\n");
+    let second = sb.run_ok(&["unburn", &id]);
+    assert!(second.contains("sub/b.txt"), "{second}");
+    assert_eq!(sb.read("sub/b.txt"), "o\n");
+    assert_eq!(sb.read("a.txt"), "edited\n");
+    assert_eq!(sb.runs()[0]["status"], "unburned");
+    let third = sb.run_err(&["unburn", &id], 1);
+    assert!(third.contains("error[E705 burn]:"), "{third}");
 }
 
 #[cfg(windows)]
@@ -4015,4 +4186,437 @@ fn symlinks_roll_back_as_symlinks_on_windows() {
     assert!(is_link("dangling.lnk"), "{err}");
     assert!(is_link("tree\\inner.lnk"), "{err}");
     assert_eq!(sb.read("target.txt"), "t");
+}
+
+// ----- 1.4.0: what a rollback must never do, found by a pass over 1.3.1 ----------
+
+/// Hop watching stops at the cap; past it, a file first seen after the hop
+/// cannot be told from one the scan never reached, so nothing is journaled
+/// as created and nothing that existed before the run is removed.
+#[cfg(unix)]
+#[test]
+fn a_rollback_on_a_pack_past_the_scan_cap_removes_nothing_that_existed() {
+    let sb = Sandbox::new();
+    sb.write("home/config", "watch_cap = 20\n");
+    for d in 0..5 {
+        for i in 0..10 {
+            sb.write(&format!("p/d{d:02}/f{i:03}.txt"), "x");
+        }
+    }
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"rm\", [\"-rf\", \"p/d00\"])\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("hop watching saw only part of it"),
+        "no warning about the cap: {err}"
+    );
+    assert!(!err.contains("restored hop created"), "{err}");
+    for d in 1..5 {
+        for i in 0..10 {
+            assert!(
+                sb.exists(&format!("p/d{d:02}/f{i:03}.txt")),
+                "p/d{d:02}/f{i:03}.txt existed before the run and the rollback removed it\n{err}"
+            );
+        }
+    }
+}
+
+/// A link inside the pack that leads outside it is not walked: what lies
+/// behind it is not the pack's, so a hop deleting through it is reported
+/// (E752) and the rollback never touches what remains there.
+#[cfg(unix)]
+#[test]
+fn a_link_to_a_folder_outside_the_pack_is_not_walked() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    for i in 0..6 {
+        sb.write(&format!("outside/lib/m{i}.py"), "x");
+        sb.write(&format!("outside/other/n{i}.py"), "x");
+    }
+    sb.write("p/own.txt", "x");
+    symlink(sb.path().join("outside"), sb.path().join("p/vendor")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"rm\", [\"-rf\", \"p/vendor/lib\"])\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("E752") && err.contains("wrote outside the pack"),
+        "{err}"
+    );
+    assert!(!err.contains("hop created"), "{err}");
+    for i in 0..6 {
+        assert!(
+            sb.exists(&format!("outside/other/n{i}.py")),
+            "a file outside the pack was removed through the link\n{err}"
+        );
+    }
+    assert!(sb.exists("p/own.txt"));
+}
+
+/// Hop watching cannot tell the hop's bytes from a save made while it ran,
+/// so a rollback moves what it displaces into the tin instead of destroying
+/// it, and `cig unburn <id> --give-back` puts it back.
+#[cfg(unix)]
+#[test]
+fn a_file_saved_during_a_hop_survives_its_rollback() {
+    let sb = Sandbox::new();
+    sb.write("p/src/app.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo 'my new notes' > src/notes.txt; echo 'v2 my edit' > src/app.txt\"], {cwd: \"p\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    // The rollback did its job...
+    assert!(!sb.exists("p/src/notes.txt"), "{err}");
+    assert_eq!(sb.read("p/src/app.txt"), "v1\n");
+    // ...and destroyed nothing: both files went to the tin, and it says so.
+    assert!(
+        err.contains("went to the tin") && err.contains("--give-back"),
+        "{err}"
+    );
+    let rec = &sb.runs()[0];
+    let id = rec["id"].as_str().unwrap().to_string();
+    assert_eq!(rec["rollback_took"], 2, "{rec}");
+    let shown = sb.run_ok(&["runs", &id]);
+    assert!(
+        shown.contains("took      2 files") && shown.contains("src/notes.txt"),
+        "{shown}"
+    );
+    let gave = sb.run_ok(&["unburn", &id, "--give-back"]);
+    assert!(gave.contains("gave back"), "{gave}");
+    assert_eq!(sb.read("p/src/notes.txt"), "my new notes\n");
+    assert_eq!(sb.read("p/src/app.txt"), "v2 my edit\n");
+    // A second give-back swaps back what the first displaced: nothing is
+    // ever the last copy.
+    sb.run_ok(&["unburn", &id, "--give-back"]);
+    assert_eq!(sb.read("p/src/app.txt"), "v1\n");
+}
+
+/// A file the hop left that changed again after the hop ended, and that no
+/// later entry of the run accounts for, is someone else's work: the
+/// automatic rollback leaves it, says so, and `--force` restores over it on
+/// purpose. (A process the hop left behind plays the editor; its output is
+/// redirected, so the hop ends when its child does.)
+#[cfg(unix)]
+#[test]
+fn a_file_changed_after_the_hop_is_left_alone_by_the_rollback() {
+    let sb = Sandbox::new();
+    sb.write("p/a.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > p/a.txt; ( sleep 0.3; echo v3-user-edit > p/a.txt ) >/dev/null 2>&1 &\"], {touches: [\"**\"]})\n  time.sleep_ms(900)\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(err.contains("left alone"), "{err}");
+    assert_eq!(sb.read("p/a.txt"), "v3-user-edit\n", "{err}");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id, "--force"]);
+    assert_eq!(sb.read("p/a.txt"), "v1\n");
+}
+
+/// Two runs on one pack would roll back each other's work: the second is
+/// refused while the first holds the pack, and runs once it is done.
+#[cfg(unix)]
+#[test]
+fn a_second_run_on_the_same_pack_is_refused_while_the_first_runs() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "x\n");
+    sb.write(
+        "slow.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"sleep 2\"])\n}\n",
+    );
+    sb.write(
+        "other.cig",
+        "pack { \"./p/sub\" }\nburn {\n  fs.write_text(\"p/sub/x.txt\", \"1\")\n}\n",
+    );
+    let mut slow = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args(["run", "slow.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .env("CIG_UPDATE_MANIFEST", sb.path().join("no-releases.json"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn the slow run");
+    // Until the slow run holds the lock, which it takes as its pack is declared.
+    let locks = sb.home().join("locks");
+    for _ in 0..100 {
+        if fs::read_dir(&locks)
+            .map(|d| {
+                d.flatten()
+                    .any(|e| e.path().extension().is_some_and(|x| x == "who"))
+            })
+            .unwrap_or(false)
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let err = sb.run_err(&["run", "other.cig"], 1);
+    assert!(
+        err.contains("error[E759 burn]") && err.contains("is in use by run"),
+        "{err}"
+    );
+    assert!(!sb.exists("p/sub/x.txt"), "the refused run wrote anyway");
+    assert!(slow.wait().unwrap().success());
+    sb.run_ok(&["run", "other.cig"]);
+    assert_eq!(sb.read("p/sub/x.txt"), "1");
+}
+
+/// The objects a hop stashed are listed in its run directory before they
+/// exist, so a `cig tin gc` during the hop keeps them.
+#[cfg(unix)]
+#[test]
+fn tin_gc_during_a_hop_keeps_what_the_hop_stashed() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "original\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"\\\"$CIG_BIN\\\" tin gc; echo CHANGED > p/keep.txt\"], {touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_BIN", env!("CARGO_BIN_EXE_cig"))]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert_eq!(sb.read("p/keep.txt"), "original\n", "{err}");
+    assert!(err.contains("restored hop modified"), "{err}");
+    assert!(!sb.exists(
+        &sb.runs()[0]["id"]
+            .as_str()
+            .map(|id| format!("home/runs/{id}/tin.pending"))
+            .unwrap()
+    ));
+}
+
+/// A folder a hop turned into a file comes back as the folder, with what
+/// was in it; the file goes to the tin.
+#[cfg(unix)]
+#[test]
+fn a_folder_replaced_by_a_file_is_restored_as_the_folder() {
+    let sb = Sandbox::new();
+    sb.write("p/cfg/a.conf", "a\n");
+    sb.write("p/cfg/b.conf", "b\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"rm -rf cfg; echo flat > cfg\"], {cwd: \"p\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(sb.path().join("p/cfg").is_dir(), "{err}");
+    assert_eq!(sb.read("p/cfg/a.conf"), "a\n", "{err}");
+    assert_eq!(sb.read("p/cfg/b.conf"), "b\n", "{err}");
+    assert!(
+        err.contains("directory made again") && !err.contains("File exists"),
+        "{err}"
+    );
+    assert_eq!(
+        sb.runs()[0]["rollback_took"],
+        1,
+        "the flat file went to the tin: {err}"
+    );
+}
+
+/// An empty folder a hop deletes comes back, with its mode.
+#[cfg(unix)]
+#[test]
+fn an_empty_folder_a_hop_deletes_comes_back() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("p/keepme/empty")).unwrap();
+    fs::set_permissions(
+        sb.path().join("p/keepme/empty"),
+        fs::Permissions::from_mode(0o750),
+    )
+    .unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"rmdir\", [\"p/keepme/empty\"])\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    let meta = fs::metadata(sb.path().join("p/keepme/empty"))
+        .unwrap_or_else(|_| panic!("the folder did not come back\n{err}"));
+    assert!(meta.is_dir());
+    assert_eq!(meta.permissions().mode() & 0o777, 0o750, "{err}");
+    assert!(
+        err.contains("hop deleted") && err.contains("directory made again"),
+        "{err}"
+    );
+}
+
+/// A `touches` glob that matches nothing is said, before the run and
+/// after it, with the glob that would have covered what changed.
+#[cfg(unix)]
+#[test]
+fn a_touches_glob_that_matches_nothing_is_a_warning() {
+    let sb = Sandbox::new();
+    sb.write("p/src/a.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo v2 > p/src/a.txt\"], {touches: [\"scr/**\"]})\n}\n",
+    );
+    let dry = sb.cig(&["run", "--dry-run", "s.cig"]);
+    let plan = String::from_utf8_lossy(&dry.stderr);
+    assert!(dry.status.success(), "{plan}");
+    assert!(plan.contains("(touches scr/**: 0 files)"), "{plan}");
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("touches `scr/**` matches no file in the pack (did you mean `src/**`?)"),
+        "{err}"
+    );
+    // One glob among several matching nothing is ordinary (a lockfile the
+    // project may have); only a list that covers nothing at all is said.
+    sb.write(
+        "t.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"true\"], {touches: [\"src/**\", \"yarn.lock\"]})\n}\n",
+    );
+    let quiet = sb.cig(&["run", "t.cig"]);
+    let quiet_err = String::from_utf8_lossy(&quiet.stderr);
+    assert!(quiet.status.success(), "{quiet_err}");
+    assert!(!quiet_err.contains("matches no file"), "{quiet_err}");
+    assert!(
+        err.contains("p/src/a.txt is not under touches")
+            && err.contains("touches: [\"src/**\"] would keep it"),
+        "{err}"
+    );
+}
+
+/// A dangling link is a link all the same: a hop that deletes or retargets
+/// one is undone like any other.
+#[cfg(unix)]
+#[test]
+fn a_dangling_link_a_hop_retargets_or_deletes_comes_back() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "keep\n");
+    symlink("nowhere.txt", sb.path().join("p/dangle.txt")).unwrap();
+    symlink("nowhere.txt", sb.path().join("p/dangle2.txt")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"rm p/dangle.txt; ln -sfn keep.txt p/dangle2.txt\"], {touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    for name in ["p/dangle.txt", "p/dangle2.txt"] {
+        let p = sb.path().join(name);
+        let meta = fs::symlink_metadata(&p).unwrap_or_else(|_| panic!("{name} is gone\n{err}"));
+        assert!(meta.file_type().is_symlink(), "{name}: {err}");
+        assert_eq!(
+            fs::read_link(&p).unwrap(),
+            Path::new("nowhere.txt"),
+            "{name}: {err}"
+        );
+    }
+    assert_eq!(sb.read("p/keep.txt"), "keep\n");
+}
+
+/// A write through a file link that leads out of the pack is a write
+/// outside the pack: reported, not undone, and the file it reached is left
+/// as the hop left it.
+#[cfg(unix)]
+#[test]
+fn a_write_through_a_link_to_outside_the_pack_is_reported() {
+    use std::os::unix::fs::symlink;
+    let sb = Sandbox::new();
+    sb.write("outside/target.txt", "o\n");
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    symlink("../outside/target.txt", sb.path().join("p/viaLink.txt")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo CHANGED > viaLink.txt\"], {cwd: \"p\", touches: [\"**\"]})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("E752") && err.contains("outside/target.txt"),
+        "{err}"
+    );
+    assert_eq!(sb.read("outside/target.txt"), "CHANGED\n");
+    assert!(fs::symlink_metadata(sb.path().join("p/viaLink.txt"))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
+
+/// An empty PATH entry is not the current directory, and a bare name the
+/// resolver cannot find is not found: `proc.which` and `proc.run` agree.
+#[cfg(unix)]
+#[test]
+fn an_empty_path_entry_is_not_the_current_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    let tool = sb.write("mytool", "#!/bin/sh\necho from-cwd\n");
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    sb.write(
+        "s.cig",
+        "exhale str(proc.which(\"mytool\"))\nburn {\n  proc.run(\"mytool\", [])\n}\n",
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("PATH", ":/usr/bin:/bin")]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(stdout.trim(), "null", "{err}");
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("error[E551 runtime]"), "{err}");
+}
+
+/// A compensation that fails leaves the ops it covered standing, and the
+/// report says so instead of calling them compensated.
+#[cfg(unix)]
+#[test]
+fn a_failed_compensation_leaves_its_ops_honestly_not_undone() {
+    let sb = Sandbox::new();
+    sb.write(
+        "s.cig",
+        concat!(
+            "burn (s) {\n",
+            "  proc.run(\"sh\", [\"-c\", \"echo live > remote.txt\"])\n",
+            "} unburn {\n",
+            "  proc.run(\"sh\", [\"-c\", \"echo undo-broke >&2; exit 7\"], {check: true})\n",
+            "}\n",
+            "burn { cough \"boom\" }\n"
+        ),
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    assert!(
+        err.contains("compensation for the burn at line 3 failed"),
+        "{err}"
+    );
+    assert!(
+        err.contains("not undone run sh -c 'echo live > remote.txt'")
+            && err.contains("its compensation failed, so it stands"),
+        "{err}"
+    );
+    assert!(!err.contains("compensated run sh"), "{err}");
+    assert_eq!(sb.read("remote.txt"), "live\n");
+    assert_eq!(sb.runs()[0]["status"], "rollback_incomplete");
+}
+
+/// A cig a hop starts (`cig run inner.cig` as a task) works inside the
+/// parent's pack: the parent waits for it, so nothing interleaves.
+#[cfg(unix)]
+#[test]
+fn a_cig_run_started_by_a_hop_shares_its_parents_pack() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("out")).unwrap();
+    sb.write(
+        "inner.cig",
+        "pack { \"./out\" }\nburn {\n  fs.write_text(\"out/x.txt\", \"1\")\n}\n",
+    );
+    sb.write(
+        "outer.cig",
+        "pack { \".\" }\nburn {\n  stick r = proc.run(env.get(\"CIG_BIN\"), [\"run\", \"inner.cig\"], {check: true})\n  exhale r.err.trim()\n}\n",
+    );
+    let out = sb.cig_env(
+        &["run", "outer.cig"],
+        &[("CIG_BIN", env!("CARGO_BIN_EXE_cig"))],
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{err}\n{stdout}");
+    assert!(
+        !stdout.contains("E759"),
+        "the child run was refused the pack:\n{stdout}"
+    );
+    assert_eq!(sb.read("out/x.txt"), "1");
 }
