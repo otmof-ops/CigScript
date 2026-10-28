@@ -3,6 +3,118 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.4.0 — 2026-10-28
+
+Found by two passes over everything 1.3.0 and 1.3.1 added, the second an
+outside one over hop watching and the tin; every fix has a test on the
+platforms that can run it. The minor number moves for three things a user
+can see: `cig unburn <id> --give-back`, the pack lock (`E759`) and the
+`watch_cap` setting.
+
+- **A rollback removes nothing that existed before the run** (#71). Hop
+  watching reads a pack up to a cap; past it a file first seen after the hop
+  could not be told from one the scan never reached, and rollback removed
+  it. Now a scan that stopped at the cap says so up front, journals nothing
+  as created, and asks the disk before it calls a file deleted. The cap is
+  the `watch_cap` setting (50,000 entries). A link that leads out of the
+  pack is a door, not a part of it: nothing behind it is walked or
+  journaled, what a hop writes through it is reported as outside the pack
+  (`E752`), and a rollback never removes a path whose real place is
+  outside the pack.
+- **A rollback destroys nothing it did not put there** (#72). Hop watching
+  cannot tell the hop's bytes from a save made while it ran, so a file a
+  hop entry's rollback removes or rewrites goes to the tin first, the
+  record says so, and `cig unburn <id> --give-back` puts it back (and moves
+  what is there now to the tin in turn, so the step is as reversible as the
+  rollback was). A file the hop left that changed again after the hop ended
+  is left alone, with `--force` for the old bytes on purpose. Two runs on
+  one pack would roll back each other's work: a run takes the pack's lock,
+  and a second run (or an unburn) on the same or an overlapping pack is
+  refused with `E759`, naming the holder.
+- **The tin cannot be poisoned** (#73). A file changing while it was being
+  stashed left an object that did not hash to its name, and every later
+  stash of that content reused it. The copy is hashed as it is written and
+  named by what arrived; an object already there is trusted only when it
+  hashes to its name, and replaced when it does not.
+- **`cig tin gc` during a hop keeps what the hop stashed** (#74). The run
+  lists the objects it is about to depend on in its directory before any
+  exists under its name, and `gc` reads that list.
+- **A folder a hop replaced with a file comes back as the folder** (#75),
+  with what was in it, the file gone to the tin; **an empty folder a hop
+  deleted comes back** (#76), with its mode.
+- **A `touches` glob that matches nothing is said** (#77): before the run,
+  with the nearest glob that would match; in the dry run, as a count beside
+  each glob; and after the run, naming the glob that would have kept a file
+  the hop changed outside every glob.
+- **Links.** A dangling link is watched like any other, so a hop that
+  deletes or retargets one is undone; a write through a link to a file
+  outside the pack is reported (`E752`) instead of going unseen.
+- **Hops.** The timeout covers the hop's output, not only its child: a
+  process the child left behind holding the pipes held the hop forever;
+  now the hop ends at its deadline (`E554`, naming the stream), the rest of
+  its process group with it. `proc.pipe` feeds `stdin` from a thread and
+  starts its clock before the first stage, so a first stage that never
+  reads its input cannot stop the timeout. On Windows a hop's child joins
+  its job object before it runs its first instruction, so what it starts at
+  once is in the job too, and a refusal to put it there is said once. The
+  resolver is the only word on what starts: a bare name it cannot find is
+  `E551`, never a search of the current directory through an empty `PATH`
+  entry; with no `PATH` at all the platform's default search is used, and
+  on Windows the system directories are searched after `PATH`, as
+  `CreateProcess` does, and a Store app's execution alias resolves.
+- **Run records.** On Windows a run's start time comes from the kernel, not
+  from a PowerShell started for every run (a dry run asks for none); a
+  record from another boot with this process's pid no longer passes for
+  alive; `run.json` and the tin's objects are synced to disk when written;
+  the record carries the pack and how many files the rollback moved into
+  the tin, and `cig runs <id>` lists them, with `(put back)` beside the
+  entries a rollback restored.
+
+- **A copy onto its own name in another case emptied the file** (#66). The
+  case-only exception 1.3.1 added to the same-file guard let `fs.cp` through
+  as well, and a copy truncates its destination before it reads its source.
+  The exception now belongs to `fs.mv` alone, and it asks the directory, not
+  the link count: the destination's spelling must be absent from the
+  listing, which is what a case-insensitive filesystem looks like. So a
+  directory renames across case too (#67), and a symlink is no longer
+  renamed over its own target (#68).
+- **Rolling back a case-only move deleted the file.** The move back cleared
+  the source name first, which on APFS and NTFS is the file itself, and the
+  destination's snapshot, the same file again, was restored after it. A move
+  between two spellings of one name is journaled as the move alone now, and
+  moved back without clearing anything.
+- **A hop's own `PATH` chooses its program again** (#69). Since 1.3.0 the
+  resolver searched the parent's `PATH`, so `{env: {PATH: ...}}` started the
+  parent's binary with no error. It searches the `PATH` the child will see.
+  On Unix it also asks what `execvp` asks, whether this process may run the
+  file, instead of reading the mode bits; reads a relative `PATH` entry from
+  the hop's working directory; and keeps the name the script typed as
+  `argv[0]`. On Windows a path program without an extension is completed
+  through `PATHEXT` before the bare file is tried, so `./gradlew` starts
+  `gradlew.bat`, and the C runtime's quoting is used only for a native
+  `.exe` or `.com`.
+- **A partial rollback is finished by a plain `cig unburn`** (#70). The
+  entries a rollback put back are stamped in the journal, so the next
+  `cig unburn <id>` retries what failed and leaves the rest as it is; the
+  record lists the failures after a manual unburn too. `--force` restores
+  everything again, as before.
+- **E758 reads every component** of a path, in either separator, and knows
+  `com0`, `lpt0`, the superscript digits, `conin$` and `conout$`; the kernel
+  refuses a computed device name with or without a `pack`.
+- **Windows restores.** A read-only file is swapped without the wait meant
+  for a held-open one, and a failed swap leaves no staging file behind; a
+  relative symlink target is read from the link's own directory when a
+  restore decides between a file link and a directory link.
+- **macOS durability.** `sync_all` already is `F_FULLFSYNC` on Apple
+  targets, so 1.3.0 added nothing there; the fallback a filesystem that
+  refuses it needs, `fsync`, is now a real one.
+- `ps` is asked with `LC_ALL=C` and `TZ=UTC` on macOS and the BSDs, so a
+  run's start time reads the same from any shell; `clean_env` keeps the
+  Windows variables programs expect (`TEMP`, `LOCALAPPDATA`, `PROGRAMFILES`
+  and the rest); `install.ps1` no longer ends the caller's shell on an error
+  under `irm | iex`, takes a path with brackets literally, and writes the
+  user `PATH` through the registry so `%VAR%` entries stay unexpanded.
+
 ## 1.3.1 — 2026-10-27
 
 - **`cig unburn` after a run on Windows.** A directory's fingerprint read

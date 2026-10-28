@@ -1538,7 +1538,7 @@ remedy = "the hop still ran; the change to that file is irreversible this time, 
 [[code]]
 code = "E758"
 title = "a Windows device name used as a file"
-meaning = "A write names a path whose base name is a Windows device (con, prn, aux, nul, com1-9, lpt1-9, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows."
+meaning = "A write names a path with a component that is a Windows device (con, prn, aux, nul, conin$, conout$, com0-9, lpt0-9, the superscript digits included, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled, pack or no pack; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows."
 fix = "name the file something else"
 no = "cant-see-any"
 arises = ["check", "run", "light"]
@@ -1549,6 +1549,25 @@ related = ["E750", "E702"]
 why = "the path's base name, before its first dot, is a reserved device name"
 probe = "source-line"
 remedy = "rename the file; on Unix the warning can be denied with --deny-warnings"
+
+[[code]]
+code = "E759"
+title = "the pack is in use by another run"
+meaning = "Another cig run (or an unburn) holds this pack, or a pack that contains or lies inside it. Hop watching reads every change in a pack between its two scans as the hop's, so two runs writing in one pack would roll back each other's work; the second is refused before anything is changed."
+fix = "wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap"
+no = "cant-see-any"
+arises = ["run", "light", "unburn"]
+tags = ["kernel"]
+since = "1.4.0"
+related = ["E751", "E752"]
+[[code.cause]]
+why = "a run is in progress on this pack from another terminal, or a cigo task is running there"
+probe = "run-record"
+remedy = "wait for it, or run the two with different packs; the lock is released when the run ends"
+[[code.cause]]
+why = "a run holding the lock was killed and its lock file is still held by a process that outlived it"
+probe = "pid-alive"
+remedy = "`cig runs` names the holder; end that process, and the lock goes with it"
 
 [[code]]
 code = "E800"

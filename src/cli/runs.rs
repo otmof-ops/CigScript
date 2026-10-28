@@ -126,6 +126,16 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
             outln!("    {} {f}", ctx.red("failed"));
         }
     }
+    if !rec.pack.is_empty() {
+        outln!(
+            "  pack      {}",
+            rec.pack
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     outln!("  dir       {}", rec.dir().display());
     if let Some(j) = journal {
         outln!(
@@ -145,13 +155,95 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord]) -> i32 {
                 e.op.describe(),
                 if e.undone {
                     ctx.dim("  (undone by a retry)")
+                } else if e.restored {
+                    ctx.dim("  (put back)")
                 } else {
                     String::new()
                 }
             );
         }
+        let taken: Vec<&cigscript::burn::journal::BeforeState> =
+            j.entries().iter().flat_map(|e| e.took.iter()).collect();
+        if !taken.is_empty() {
+            outln!(
+                "  took      {} file{} the rollback moved into the tin instead of destroying; cig unburn {} --give-back puts them back:",
+                taken.len(),
+                if taken.len() == 1 { "" } else { "s" },
+                rec.id
+            );
+            for t in taken {
+                outln!("    {}", t.path.display());
+            }
+        }
     }
     exit::OK
+}
+
+/// `cig unburn <id> --give-back`: put back what the run's rollback moved
+/// into the tin. What is at those paths now goes to the tin in turn.
+pub fn give_back(ctx: &Ctx, id: &str) -> i32 {
+    let rec = match runs::find(id) {
+        Ok(Some(r)) => r,
+        Ok(None) => {
+            eprintln!("{} no run matches `{id}`", ctx.red("error[E803 usage]:"));
+            eprintln!("  = hint: `cig runs` lists them; give more of the id if it is ambiguous");
+            eprintln!("  = explain: cig explain E803");
+            return exit::USAGE;
+        }
+        Err(e) => {
+            eprintln!("{} {e}", ctx.red("error[E803 usage]:"));
+            eprintln!("  = explain: cig explain E803");
+            return exit::USAGE;
+        }
+    };
+    let mut journal = match Journal::load(&rec.dir()) {
+        Ok(j) => j,
+        Err(e) => {
+            eprintln!(
+                "{} cannot load the journal for {}: {e}",
+                ctx.red("error[E703 burn]:"),
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E703");
+            return exit::SCRIPT_ERROR;
+        }
+    };
+    if !journal.has_taken() {
+        eprintln!(
+            "the rollback of {} moved nothing into the tin; there is nothing to give back",
+            rec.id
+        );
+        return exit::OK;
+    }
+    let _lock = match cigscript::burn::lock::acquire(&rec.pack, &rec.id) {
+        Ok(l) => Some(l),
+        Err(cigscript::burn::lock::Busy::Held { root, holder }) => {
+            eprintln!(
+                "{} the pack {} is in use by {holder}",
+                ctx.red("error[E759 burn]:"),
+                root.display()
+            );
+            eprintln!(
+                "  = hint: wait for that run to finish (cig runs shows it); nothing was changed"
+            );
+            eprintln!("  = explain: cig explain E759");
+            return exit::SCRIPT_ERROR;
+        }
+        Err(cigscript::burn::lock::Busy::Io(_)) => None,
+    };
+    let report = journal.give_back();
+    if ctx.json {
+        outln!("{}", serde_json::to_string(&report).unwrap_or_default());
+    } else {
+        for (label, text) in &report.actions {
+            outln!("  {} {text}", paint_action(ctx, label));
+        }
+    }
+    if report.clean() {
+        exit::OK
+    } else {
+        exit::SCRIPT_ERROR
+    }
 }
 
 fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
@@ -229,25 +321,18 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         eprintln!("{} burned nothing; there is nothing to unburn", rec.id);
         return exit::OK;
     }
-    if (rec.status == "unburned" || rec.rolled_back) && !dry_run {
+    // A rollback that left restores failed is finished by a plain unburn:
+    // the entries restored the first time are skipped, the failed ones
+    // tried again. `--force` restores everything again, on purpose.
+    let retry = !force && rec.rolled_back && !rec.rollback_failed.is_empty();
+    if (rec.status == "unburned" || rec.rolled_back) && !dry_run && !retry {
         if !force {
             eprintln!(
                 "{} {} was already rolled back; doing it again would overwrite whatever happened since",
                 ctx.red("error[E705 burn]:"),
                 rec.id
             );
-            if rec.rollback_failed.is_empty() {
-                eprintln!(
-                    "  = hint: pass --force only if you mean to restore the old snapshots again"
-                );
-            } else {
-                eprintln!(
-                    "  = hint: {} restore{} failed the first time (cig runs {} lists them); --force tries them again",
-                    rec.rollback_failed.len(),
-                    if rec.rollback_failed.len() == 1 { "" } else { "s" },
-                    rec.id
-                );
-            }
+            eprintln!("  = hint: pass --force only if you mean to restore the old snapshots again");
             eprintln!("  = explain: cig explain E705");
             return exit::SCRIPT_ERROR;
         }
@@ -255,6 +340,23 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             "{} {} was already rolled back; --force given",
             ctx.yellow("note:"),
             rec.id
+        );
+    }
+    if retry && !dry_run {
+        eprintln!(
+            "{} {} restore{} failed last time; trying {} again and leaving the rest as it is",
+            ctx.yellow("note:"),
+            rec.rollback_failed.len(),
+            if rec.rollback_failed.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            if rec.rollback_failed.len() == 1 {
+                "it"
+            } else {
+                "them"
+            }
         );
     }
     if !dry_run {
@@ -278,8 +380,34 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             );
         }
     }
+    // A run using this pack now would have the restore read as its hop's
+    // writes; the run holds the lock until it is over.
+    let _lock = if dry_run {
+        None
+    } else {
+        match cigscript::burn::lock::acquire(&rec.pack, &rec.id) {
+            Ok(l) => Some(l),
+            Err(cigscript::burn::lock::Busy::Held { root, holder }) => {
+                eprintln!(
+                    "{} the pack {} is in use by {holder}",
+                    ctx.red("error[E759 burn]:"),
+                    root.display()
+                );
+                eprintln!("  = hint: wait for that run to finish (cig runs shows it), then unburn; nothing was changed");
+                eprintln!("  = explain: cig explain E759");
+                return exit::SCRIPT_ERROR;
+            }
+            Err(cigscript::burn::lock::Busy::Io(_)) => None,
+        }
+    };
     let problems = journal.verify();
-    let changed = journal.changed_since();
+    // A retry asks only about the paths it will touch: what the first pass
+    // put back may have been edited since, on purpose.
+    let changed = if retry {
+        journal.changed_since_pending()
+    } else {
+        journal.changed_since()
+    };
     // Who changed it since: a later run that touched the same path, if any.
     let later_runs: Vec<runs::RunRecord> = runs::list()
         .unwrap_or_default()
@@ -444,12 +572,17 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             entered = false;
         }
     }
-    let mut report = journal.rollback_with(&mut |c| {
+    let mut runner = |c: &cigscript::burn::journal::Compensation| -> Result<(), String> {
         if !entered {
             return Err(format!("cannot enter {} to run it", rec.cwd));
         }
         interp.run_compensation(c).map_err(|e| e.message)
-    });
+    };
+    let mut report = if force {
+        journal.rollback_again_with(&mut runner)
+    } else {
+        journal.rollback_with(&mut runner)
+    };
     if !entered && !report.actions.is_empty() {
         report.failed.push(format!("could not enter {}", rec.cwd));
     }
@@ -461,6 +594,8 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         }
     }
     rec.rolled_back = true;
+    rec.rollback_failed = report.failed.clone();
+    rec.rollback_took = report.took.len();
     rec.status = if report.clean() {
         "unburned".to_string()
     } else {
@@ -527,8 +662,8 @@ fn hand_back(ctx: &Ctx, rec: &RunRecord, e: &std::io::Error) -> i32 {
 /// The colour for a rollback action's label.
 pub fn paint_action(ctx: &Ctx, label: &str) -> String {
     match label {
-        "restored" | "compensated" => ctx.green(label),
-        "cannot undo" | "kept" => ctx.yellow(label),
+        "restored" | "compensated" | "gave back" => ctx.green(label),
+        "cannot undo" | "kept" | "left" => ctx.yellow(label),
         "failed" => ctx.red(label),
         other => other.to_string(),
     }

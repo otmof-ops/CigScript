@@ -106,6 +106,9 @@ pub enum Command {
         /// Restore even if this run was rolled back already or a snapshot is missing.
         #[arg(long)]
         force: bool,
+        /// Put back what this run's rollback moved into the tin: files saved while a hop ran, or the hop's own output.
+        #[arg(long, conflicts_with_all = ["dry_run", "force"])]
+        give_back: bool,
     },
     /// Look the install over, or diagnose a past run again; asks before it fixes anything (diagnostics).
     Doctor {
@@ -297,7 +300,18 @@ pub fn main() -> i32 {
         Command::Eval { code } => run::eval(&ctx, &code),
         Command::Repl => repl::repl(&ctx),
         Command::Runs { id, prune } => runs::runs(&ctx, id, prune),
-        Command::Unburn { id, dry_run, force } => runs::unburn(&ctx, &id, dry_run, force),
+        Command::Unburn {
+            id,
+            dry_run,
+            force,
+            give_back,
+        } => {
+            if give_back {
+                runs::give_back(&ctx, &id)
+            } else {
+                runs::unburn(&ctx, &id, dry_run, force)
+            }
+        }
         Command::Doctor { fix, run } => match run {
             Some(id) => doctor::rediagnose(&ctx, &id),
             None => doctor::doctor(&ctx, fix),

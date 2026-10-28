@@ -5,7 +5,7 @@
 # install directory to the user's PATH. No admin rights required.
 #
 #   Review first (recommended):
-#     irm https://raw.githubusercontent.com/otmof-ops/CigScript/v1.3.1/install.ps1 -OutFile install.ps1
+#     irm https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.0/install.ps1 -OutFile install.ps1
 #     notepad install.ps1 ; .\install.ps1
 #
 #   One-liner (reads CIG_VERSION, CIG_PREFIX, CIG_NO_MODIFY_PATH, CIG_YES from
@@ -26,6 +26,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# The progress bar makes Invoke-WebRequest slow on Windows PowerShell 5.1.
+$ProgressPreference = 'SilentlyContinue'
 
 # Environment-variable fallbacks for `irm ... | iex`, where parameters cannot
 # be passed on the command line.
@@ -41,8 +43,9 @@ $Repo = 'otmof-ops/CigScript'
 
 function Say([string]$m) { Write-Host $m }
 function Fail([string]$m) {
-    Write-Host "install.ps1: error: $m" -ForegroundColor Red
-    exit 1
+    # `exit` inside `irm ... | iex` would close the caller's shell; a thrown
+    # error stops the script and leaves the prompt alive.
+    throw "install.ps1: error: $m"
 }
 function Ask([string]$m) {
     if ($Yes) { return $true }
@@ -125,38 +128,61 @@ try {
     }
 
     # Install.
-    if (-not (Test-Path $Prefix)) {
+    if (-not (Test-Path -LiteralPath $Prefix)) {
         New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
     }
     $target = Join-Path $Prefix 'cig.exe'
-    Move-Item -Force $assetPath $target
+    Move-Item -LiteralPath $assetPath -Destination $target -Force
 } finally {
-    Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# PATH handling. Add to the USER scope only if the prefix is not already there.
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-$parts = @()
-if ($userPath) { $parts = $userPath -split ';' | Where-Object { $_ } }
-$already = $false
-$prefixFull = $null
-try { $prefixFull = [IO.Path]::GetFullPath($Prefix) } catch { $prefixFull = $Prefix }
-foreach ($p in $parts) {
+# PATH: the prefix goes on the user PATH as the registry holds it, so
+# entries written as %VAR% stay unexpanded (reading them through .NET
+# expands them, and writing them back would freeze them), and the change
+# is announced to the desktop so a new terminal sees it.
+function Test-UserPath([string]$dir) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $false)
+    if (-not $key) { return $false }
     try {
-        if ([IO.Path]::GetFullPath($p) -ieq $prefixFull) {
-            $already = $true
-            break
-        }
+        $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+    } finally {
+        $key.Close()
+    }
+    $full = [IO.Path]::GetFullPath($dir).TrimEnd('\')
+    foreach ($p in ($raw -split ';' | Where-Object { $_ })) {
+        $q = [Environment]::ExpandEnvironmentVariables($p)
+        try { $q = [IO.Path]::GetFullPath($q).TrimEnd('\') } catch { }
+        if ($q -ieq $full) { return $true }
+    }
+    return $false
+}
+function Add-UserPath([string]$dir) {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+    if (-not $key) { $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment') }
+    try {
+        $raw = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+        $new = if ($raw) { "$raw;$dir" } else { $dir }
+        $key.SetValue('Path', $new, [Microsoft.Win32.RegistryValueKind]::ExpandString)
+    } finally {
+        $key.Close()
+    }
+    try {
+        $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
+        $u = Add-Type -MemberDefinition $sig -Name 'Broadcast' -Namespace 'CigInstall' -PassThru
+        $out = [UIntPtr]::Zero
+        $u::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$out) | Out-Null
     } catch { }
 }
+$already = $false
+try { $already = Test-UserPath $Prefix } catch { }
 if (-not $already) {
-    if (-not $NoModifyPath) {
-        if (Ask "add $Prefix to your user PATH?") {
-            if ($userPath) { $new = "$userPath;$Prefix" } else { $new = $Prefix }
-            [Environment]::SetEnvironmentVariable('Path', $new, 'User')
+    if (-not $NoModifyPath -and (Ask "add $Prefix to your user PATH?")) {
+        try {
+            Add-UserPath $Prefix
             Say "added $Prefix to the user PATH; open a new terminal for the change to take effect"
-        } else {
-            Say "$Prefix is not on your PATH; add it yourself when ready"
+        } catch {
+            Say "could not add $Prefix to the user PATH ($($_.Exception.Message)); add it yourself when ready"
         }
     } else {
         Say "$Prefix is not on your PATH; add it yourself when ready"

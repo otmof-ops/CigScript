@@ -238,12 +238,14 @@ chain analysis: step 5/5 report ok (1 ms)
 
 ## Install
 
-Every release ships a Linux x86_64 binary with its SHA-256 and the licence
-files beside it; other platforms build from source in about a minute.
+Every release ships static binaries for Linux (x86_64, aarch64, armv7),
+macOS (Apple silicon and Intel), Windows (x86_64, ARM64) and FreeBSD x86_64,
+each with its SHA-256 and a build attestation, and the licence files beside
+them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.3.1/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.0/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -253,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.3.1 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.4.0 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -264,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.3.1-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.4.0-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -441,7 +443,7 @@ for.
 | damage `run.json`, or rename the run's directory | **the run vanished; its journal was unreachable**; now listed as `damaged`, found where it is, unburnable | fixed 1.1.1 | `a_damaged_or_renamed_run_record_still_lists_and_unburns` |
 | `burn (s) { proc.run(...); cough } unburn { ... }` | **the hop was labelled `compensated` though no compensation was ever recorded**; now stamped only when the block completes | fixed 1.1.1 | `a_burn_block_that_fails_half_way_leaves_its_hops_honestly_irreversible` |
 | a compensation that reads `args`, run weeks later by `cig unburn` | **unknown name `args`**; now the run's arguments are there | fixed 1.1.1 | `a_compensation_that_reads_args_runs_on_a_deferred_unburn` |
-| a hop writing through a link inside the pack | **invisible to hop watching**; now the link is followed and the write is journaled | fixed 1.1.1 | `a_hop_writing_through_a_link_inside_the_pack_is_watched` |
+| a hop writing through a link inside the pack | **invisible to hop watching**; a link that stays inside the pack is seen under its real path, and one that leads out of the pack is a door: the write is reported outside the pack (`E752`) and never rolled back, so nothing outside the pack is ever removed | fixed 1.1.1, 1.4.0 | `a_hop_writing_through_a_link_out_of_the_pack_is_reported_and_never_rolled_back` |
 | dry-run: write through `link/`, read through `real/` | **not found**; now one ghost entry, and every directory a nested write creates is listed | fixed 1.1.1 | `the_ghost_resolves_symlinked_directories_and_lists_created_ancestors` |
 | `pack { "" }` | **silently meant the whole working directory**; now `E755` | fixed 1.1.1 | `an_empty_pack_root_is_refused` |
 | `-9223372036854775808 / -1` | **crashed (E901)**; now `E503` | fixed 1.1.1 | `i64_min_divided_by_minus_one_is_a_diagnostic` |

@@ -373,8 +373,12 @@ fn a_symlink_inside_the_pack_pointing_outside_does_not_let_a_write_escape() {
     );
 }
 
+/// A link inside the pack that leads outside it is a door, not a part of
+/// the pack: what a hop writes through it is outside, reported as such
+/// (E752), and never journaled, so no rollback ever removes a file whose
+/// real place is outside the pack.
 #[test]
-fn a_hop_writing_through_a_link_inside_the_pack_is_watched() {
+fn a_hop_writing_through_a_link_out_of_the_pack_is_reported_and_never_rolled_back() {
     use std::os::unix::fs::symlink;
     let sb = Sandbox::new();
     fs::create_dir_all(sb.path().join("build")).unwrap();
@@ -386,12 +390,13 @@ fn a_hop_writing_through_a_link_inside_the_pack_is_watched() {
     );
     let err = sb.stderr(&["run", "s.cig"]);
     assert!(
-        err.contains("hop created") || err.contains("build/link/hop.txt"),
+        err.contains("E752") && err.contains("wrote outside the pack"),
         "{err}"
     );
+    assert!(!err.contains("hop created"), "{err}");
     assert!(
-        !sb.exists("elsewhere/hop.txt"),
-        "the file the hop wrote through the link was not removed on rollback: {err}"
+        sb.exists("elsewhere/hop.txt"),
+        "a file outside the pack was removed by the rollback: {err}"
     );
 }
 

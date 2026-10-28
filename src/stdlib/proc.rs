@@ -299,16 +299,36 @@ fn is_system_dir(dir: &std::path::Path) -> bool {
 /// A candidate on PATH that a hop could start: a regular file, executable
 /// where the platform says so.
 fn startable(p: &std::path::Path) -> bool {
-    let Ok(m) = std::fs::metadata(p) else {
-        return false;
+    let m = match std::fs::metadata(p) {
+        Ok(m) => m,
+        // A Windows app execution alias (the Store's python.exe) is a
+        // reparse point the metadata call cannot follow; the entry itself
+        // is what CreateProcess starts.
+        #[cfg(windows)]
+        Err(_) => match std::fs::symlink_metadata(p) {
+            Ok(m) if !m.is_dir() => m,
+            _ => return false,
+        },
+        #[cfg(not(windows))]
+        Err(_) => return false,
     };
+    if m.is_dir() {
+        return false;
+    }
+    #[cfg(not(windows))]
     if !m.is_file() {
         return false;
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode() & 0o111 != 0
+        // What execvp asks: may this process run it? A file whose execute
+        // bit belongs to someone else is passed over, as the shell would.
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(c) = std::ffi::CString::new(p.as_os_str().as_bytes()) else {
+            return false;
+        };
+        // SAFETY: a NUL-terminated path, read by access(2).
+        unsafe { libc::access(c.as_ptr(), libc::X_OK) == 0 }
     }
     #[cfg(not(unix))]
     {
@@ -325,6 +345,16 @@ fn startable(p: &std::path::Path) -> bool {
 /// `PATHEXT` extension (`npm` is `npm.cmd`), never the WSL launcher in
 /// System32 for `bash` or `sh`, and never the current directory.
 pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std::path::PathBuf> {
+    resolve_program_on(name, cwd, std::env::var_os("PATH"))
+}
+
+/// `resolve_program` on a given PATH: the one the child will search, so a
+/// hop that sets its own PATH starts the program that PATH names.
+pub fn resolve_program_on(
+    name: &str,
+    cwd: Option<&std::path::Path>,
+    paths: Option<std::ffi::OsString>,
+) -> Option<std::path::PathBuf> {
     use std::path::{Path, PathBuf};
     if name.is_empty() {
         return None;
@@ -345,9 +375,10 @@ pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std:
         // a `cwd` is resolved against that cwd by the child, which is not
         // where it was found.
         let absolute = |p: PathBuf| std::path::absolute(&p).unwrap_or(p);
-        if startable(&base) {
-            return Some(absolute(base));
-        }
+        // Windows starts `.\gradlew` the way cmd does: `gradlew.bat` and
+        // the rest of PATHEXT first, the bare file last. The bare file is
+        // usually the Unix shell script beside the batch file, which
+        // CreateProcess cannot start (error 193).
         #[cfg(windows)]
         if base.extension().is_none() {
             for ext in pathext() {
@@ -359,9 +390,27 @@ pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std:
                 }
             }
         }
+        if startable(&base) {
+            return Some(absolute(base));
+        }
         return None;
     }
-    let paths = std::env::var_os("PATH")?;
+    // No PATH at all: the platform's own default search, as execvp uses.
+    let paths = paths.unwrap_or_else(default_path);
+    // A relative PATH entry (`.`, `bin`) is read from where the program
+    // will start: the hop's working directory, as execvp in the child
+    // would.
+    let here = cwd
+        .map(Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_default();
+    let from_here = |dir: PathBuf| {
+        if dir.is_relative() {
+            here.join(dir)
+        } else {
+            dir
+        }
+    };
     #[cfg(windows)]
     {
         let exts = pathext();
@@ -371,10 +420,25 @@ pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std:
             .extension()
             .map(|e| exts.iter().any(|x| x[1..] == e.to_string_lossy()))
             .unwrap_or(false);
-        for dir in std::env::split_paths(&paths) {
+        // CreateProcess looks in the system directories whatever PATH
+        // says, so `cmd` and `powershell` are found on a hermetic PATH too.
+        let mut dirs: Vec<PathBuf> = std::env::split_paths(&paths).collect();
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            let root = PathBuf::from(root);
+            for sys in [root.join("System32"), root] {
+                if !dirs
+                    .iter()
+                    .any(|d| d.as_os_str().eq_ignore_ascii_case(sys.as_os_str()))
+                {
+                    dirs.push(sys);
+                }
+            }
+        }
+        for dir in dirs {
             if dir.as_os_str().is_empty() {
                 continue;
             }
+            let dir = from_here(dir);
             if shell_name && is_system_dir(&dir) {
                 continue;
             }
@@ -400,7 +464,7 @@ pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std:
             if dir.as_os_str().is_empty() {
                 continue;
             }
-            let c = dir.join(name);
+            let c = from_here(dir).join(name);
             if startable(&c) {
                 return Some(std::path::absolute(&c).unwrap_or(c));
             }
@@ -409,11 +473,31 @@ pub fn resolve_program(name: &str, cwd: Option<&std::path::Path>) -> Option<std:
     }
 }
 
+/// The search path when the child has none: what execvp falls back to on
+/// Unix, the system directories on Windows.
+fn default_path() -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        let root = std::env::var_os("SystemRoot")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+        std::env::join_paths([root.join("System32"), root]).unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        std::ffi::OsString::from("/usr/local/bin:/usr/bin:/bin")
+    }
+}
+
+/// The file is a native executable (`.exe`, `.com`), the one kind that
+/// reads its command line by the C runtime's rules. A batch file (cmd.exe
+/// reads the line again), a name nothing resolved and anything else take
+/// the standard library's own quoting.
 #[cfg(windows)]
-fn is_batch(p: &std::path::Path) -> bool {
+fn native_exe(p: &std::path::Path) -> bool {
     p.extension()
         .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("bat") || e.eq_ignore_ascii_case("cmd"))
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe") || e.eq_ignore_ascii_case("com"))
 }
 
 /// One argument on a Windows command line. The standard library quotes an
@@ -468,36 +552,52 @@ fn quoted_for_crt(arg: &str) -> String {
 /// group, `NO_COLOR` set, the run id passed down, and either the inherited
 /// environment plus the script's additions or a clean documented one. The
 /// program is resolved first (`resolve_program`), so what starts is what
-/// `proc.which` names; a name nothing resolves is handed to the platform
-/// as written, which reports it as not found.
-fn command(cmd: &str, args: &[String], o: &Options) -> Command {
-    let program =
-        resolve_program(cmd, o.cwd.as_deref()).unwrap_or_else(|| std::path::PathBuf::from(cmd));
+/// `proc.which` names: a bare name nothing resolves is `None`, and the hop
+/// fails as not found (E551) rather than let the platform search again by
+/// rules of its own (the current directory among them). A path nothing
+/// resolves is handed over as written, so the platform's reason is told.
+fn command(cmd: &str, args: &[String], o: &Options) -> Option<Command> {
+    let resolved = resolve_program_on(cmd, o.cwd.as_deref(), child_path(o));
+    let is_path = cmd.contains('/') || cmd.contains(std::path::MAIN_SEPARATOR);
+    if resolved.is_none() && !is_path {
+        return None;
+    }
     #[cfg(windows)]
-    let batch = is_batch(&program);
+    let native = resolved.as_deref().is_some_and(native_exe);
+    #[cfg(windows)]
+    let is_cmd = resolved
+        .as_deref()
+        .and_then(|p| p.file_stem())
+        .and_then(|s| s.to_str())
+        .is_some_and(|s| s.eq_ignore_ascii_case("cmd"));
+    let program = resolved.unwrap_or_else(|| std::path::PathBuf::from(cmd));
     let mut c = Command::new(program);
+    #[cfg(unix)]
+    {
+        // argv[0] stays the name the script typed (a usage line, a
+        // multi-call binary); the file that starts is the resolved one.
+        use std::os::unix::process::CommandExt;
+        c.arg0(cmd);
+    }
     #[cfg(windows)]
     {
         // `cmd /d /s /c <line>`: the line reaches cmd exactly as written,
         // in one pair of quotes that /s strips, instead of re-quoted by
         // the C runtime's rules, which cmd does not read.
-        let cmd_line = cmd.eq_ignore_ascii_case("cmd")
-            && args.len() == 4
-            && args[0] == "/d"
-            && args[1] == "/s"
-            && args[2] == "/c";
+        let cmd_line =
+            is_cmd && args.len() == 4 && args[0] == "/d" && args[1] == "/s" && args[2] == "/c";
         if cmd_line {
             use std::os::windows::process::CommandExt;
             c.args(&args[..3]);
             c.raw_arg(format!("\"{}\"", args[3]));
-        } else if batch {
-            // A .bat or .cmd runs through cmd.exe with the standard
-            // library's own quoting for it.
-            c.args(args);
-        } else {
+        } else if native {
             for a in args {
                 windows_arg(&mut c, a);
             }
+        } else {
+            // A .bat or .cmd runs through cmd.exe with the standard
+            // library's own quoting for it; so does anything unresolved.
+            c.args(args);
         }
     }
     #[cfg(not(windows))]
@@ -531,6 +631,19 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Command {
             "APPDATA",
             "COMSPEC",
             "PATHEXT",
+            "TEMP",
+            "TMP",
+            "LOCALAPPDATA",
+            "WINDIR",
+            "SYSTEMDRIVE",
+            "PROGRAMDATA",
+            "PROGRAMFILES",
+            "PROGRAMFILES(X86)",
+            "HOMEDRIVE",
+            "HOMEPATH",
+            "PROCESSOR_ARCHITECTURE",
+            "NUMBER_OF_PROCESSORS",
+            "OS",
         ] {
             if let Some(v) = std::env::var_os(key) {
                 c.env(key, v);
@@ -549,7 +662,29 @@ fn command(cmd: &str, args: &[String], o: &Options) -> Command {
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
-    c
+    Some(c)
+}
+
+/// The PATH the child will search: the hop's own when its `env` sets one
+/// (the last one given wins, as in the environment), else the parent's,
+/// which a clean environment copies too.
+fn child_path(o: &Options) -> Option<std::ffi::OsString> {
+    o.env
+        .iter()
+        .rev()
+        .find(|(k, _)| is_path_key(k))
+        .map(|(_, v)| std::ffi::OsString::from(v.to_string()))
+        .or_else(|| std::env::var_os("PATH"))
+}
+
+#[cfg(windows)]
+fn is_path_key(k: &str) -> bool {
+    k.eq_ignore_ascii_case("PATH")
+}
+
+#[cfg(not(windows))]
+fn is_path_key(k: &str) -> bool {
+    k == "PATH"
 }
 
 /// A missing working directory is the hop's problem, not the program's:
@@ -768,21 +903,22 @@ impl Job {
         }
     }
 
-    /// Put a freshly spawned child in the job. A child that already exited
-    /// is not an error.
-    fn assign(&self, child: &Child) {
+    /// Put a freshly spawned child in the job. The child is still suspended
+    /// (see `start`), so nothing it would start can slip out before it is
+    /// in. False when Windows refused, which leaves the hop with no job:
+    /// the caller says so once.
+    fn assign(&self, child: &Child) -> bool {
         #[cfg(windows)]
         {
             use std::os::windows::io::AsRawHandle;
             use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
             // SAFETY: both handles are valid for the duration of the call.
-            unsafe {
-                AssignProcessToJobObject(self.handle, child.as_raw_handle() as _);
-            }
+            unsafe { AssignProcessToJobObject(self.handle, child.as_raw_handle() as _) != 0 }
         }
         #[cfg(not(windows))]
         {
             let _ = child;
+            true
         }
     }
 
@@ -810,6 +946,100 @@ impl Drop for Job {
             }
         }
     }
+}
+
+/// Start a hop's child so that it joins its job before it runs a single
+/// instruction: on Windows the process is created suspended, assigned, then
+/// resumed, so a grandchild it starts at once is in the job too (a process
+/// created before the assignment never joins it). Elsewhere a plain spawn.
+fn start(c: &mut Command, job: Option<&Job>) -> std::io::Result<Child> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        if job.is_some() {
+            c.creation_flags(CREATE_SUSPENDED);
+        }
+        let mut child = c.spawn()?;
+        if let Some(j) = job {
+            let joined = j.assign(&child);
+            if let Err(e) = resume(&child) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::other(format!(
+                    "the process was created but could not be resumed: {e}"
+                )));
+            }
+            if !joined {
+                warn_no_job();
+            }
+        }
+        Ok(child)
+    }
+    #[cfg(not(windows))]
+    {
+        let child = c.spawn()?;
+        if let Some(j) = job {
+            j.assign(&child);
+        }
+        Ok(child)
+    }
+}
+
+/// Resume every thread of a process created suspended (one, at that
+/// point). Toolhelp lists the threads by owner; `ResumeThread` lets them go.
+#[cfg(windows)]
+fn resume(child: &Child) -> std::io::Result<()> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    let pid = child.id();
+    // SAFETY: plain Win32 calls; every handle opened here is closed here.
+    unsafe {
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+        if snap == INVALID_HANDLE_VALUE {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut entry: THREADENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+        let mut resumed = 0u32;
+        let mut ok = Thread32First(snap, &mut entry) != 0;
+        while ok {
+            if entry.th32OwnerProcessID == pid {
+                let h = OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID);
+                if !h.is_null() {
+                    if ResumeThread(h) != u32::MAX {
+                        resumed += 1;
+                    }
+                    CloseHandle(h);
+                }
+            }
+            entry.dwSize = std::mem::size_of::<THREADENTRY32>() as u32;
+            ok = Thread32Next(snap, &mut entry) != 0;
+        }
+        CloseHandle(snap);
+        if resumed == 0 {
+            return Err(std::io::Error::other(
+                "no thread of the new process could be resumed",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Said once per process: the hop runs without a job, so a timeout may
+/// leave what it started running. A CI log then explains a hang.
+#[cfg(windows)]
+fn warn_no_job() {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        eprintln!(
+            "warning: Windows refused to put a hop's child in a job object ({}); what that hop starts may outlive a timeout",
+            std::io::Error::last_os_error()
+        );
+    });
 }
 
 /// Kill a child and everything in its process group: SIGTERM, a grace
@@ -866,19 +1096,23 @@ fn run_child(
     s: Span,
 ) -> Result<Raw, Diagnostic> {
     let started = Instant::now();
+    let deadline = started + Duration::from_millis(o.timeout_ms);
     check_cwd(name, o, s)?;
     install_signal_forwarding();
-    let mut child = command(cmd, args, o)
-        .spawn()
-        .map_err(|e| spawn_error(name, cmd, e, s))?;
+    let mut c = command(cmd, args, o).ok_or_else(|| {
+        spawn_error(
+            name,
+            cmd,
+            std::io::Error::from(std::io::ErrorKind::NotFound),
+            s,
+        )
+    })?;
     let job = Job::new();
-    if let Some(j) = &job {
-        j.assign(&child);
-    }
+    let mut child = start(&mut c, job.as_ref()).map_err(|e| spawn_error(name, cmd, e, s))?;
     let _guard = ChildGuard::register(child.id());
     // Readers first, then a writer thread for stdin: writing before reading
     // deadlocks as soon as the child fills a pipe while waiting for its input.
-    let (out_thread, err_thread) = readers(&mut child);
+    let (out_cap, err_cap) = readers(&mut child);
     let stdin_thread = child
         .stdin
         .take()
@@ -891,13 +1125,19 @@ fn run_child(
         });
     let label = hop_label(cmd, args);
     let waited = child
-        .wait_timeout(Duration::from_millis(o.timeout_ms))
+        .wait_timeout(deadline.saturating_duration_since(Instant::now()))
         .map_err(|e| runtime(format!("{name}: {e}")).code("E550").at(s))?;
     match waited {
         None => {
             kill_group(&mut child, o.grace_ms, job.as_ref());
-            let out = out_thread.join().unwrap_or_default();
-            let err = err_thread.join().unwrap_or_default();
+            // A reader still blocked after the kill is held by a process
+            // that left the group; it is given a moment, then left behind.
+            let _ = wait_closed(
+                &[&out_cap, &err_cap],
+                Instant::now() + Duration::from_secs(1),
+            );
+            let out = out_cap.bytes();
+            let err = err_cap.bytes();
             if let Some(t) = stdin_thread {
                 let _ = t.join();
             }
@@ -915,8 +1155,41 @@ fn run_child(
             .with_hint("raise {timeout_ms: N} on this hop, or split the work; nothing it wrote was passed on"))
         }
         Some(status) => {
-            let out = out_thread.join().unwrap_or_default();
-            let err = err_thread.join().unwrap_or_default();
+            // The hop is over when its output closes, not when its child
+            // exits: a process the child left behind may still hold the
+            // pipes. It has until the deadline; past it the rest of the
+            // group (the job on Windows) is ended and the hop ran too long.
+            if !wait_closed(&[&out_cap, &err_cap], deadline) {
+                let held = match (out_cap.is_open(), err_cap.is_open()) {
+                    (true, true) => "stdout and stderr",
+                    (true, false) => "stdout",
+                    _ => "stderr",
+                };
+                kill_group(&mut child, o.grace_ms, job.as_ref());
+                let _ = wait_closed(
+                    &[&out_cap, &err_cap],
+                    Instant::now() + Duration::from_secs(1),
+                );
+                let out = out_cap.bytes();
+                let err = err_cap.bytes();
+                if let Some(t) = stdin_thread {
+                    let _ = t.join();
+                }
+                return Err(runtime(format!(
+                    "{name}: `{label}` exited {} but a process it left behind kept its {held} open past the {} ms timeout, so the rest of its process group was killed; it had written {} bytes to stdout and {} bytes to stderr{}",
+                    status.code().map(|c| c.to_string()).unwrap_or_else(|| "by signal".to_string()),
+                    o.timeout_ms,
+                    out.len(),
+                    err.len(),
+                    if err.is_empty() { String::new() } else { format!(" (`{}`)", quote(&err)) },
+                ))
+                .code("E554")
+                .at(s)
+                .with_subject(cmd.to_string())
+                .with_hint("a program the hop starts in the background must close its stdout and stderr (redirect them) or end before the hop does; nothing the hop wrote was passed on"));
+            }
+            let out = out_cap.bytes();
+            let err = err_cap.bytes();
             if let Some(t) = stdin_thread {
                 let _ = t.join();
             }
@@ -966,28 +1239,83 @@ fn signal_name(signal: i32) -> &'static str {
     }
 }
 
-type Reader = std::thread::JoinHandle<Vec<u8>>;
+/// One stream of a child, read on its own thread into a buffer the hop can
+/// look at whenever it likes. `closed` fires when the stream reaches its
+/// end; a stream that never closes (a leftover process holds it) leaves
+/// the thread behind, with what was read so far still readable.
+struct Capture {
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    closed: std::sync::mpsc::Receiver<()>,
+    open: std::cell::Cell<bool>,
+}
+
+impl Capture {
+    fn new<R: Read + Send + 'static>(pipe: Option<R>) -> Capture {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let into = buf.clone();
+        std::thread::spawn(move || {
+            if let Some(mut p) = pipe {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match p.read(&mut chunk) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => into
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .extend_from_slice(&chunk[..n]),
+                    }
+                }
+            }
+            let _ = tx.send(());
+        });
+        Capture {
+            buf,
+            closed: rx,
+            open: std::cell::Cell::new(true),
+        }
+    }
+
+    /// Wait until the stream closes or `deadline` passes.
+    fn wait_closed(&self, deadline: Instant) -> bool {
+        if !self.open.get() {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        match self.closed.recv_timeout(left) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                self.open.set(false);
+                true
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => false,
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.open.get()
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        self.buf.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Wait for every capture to close, or for the deadline. True when all closed.
+fn wait_closed(caps: &[&Capture], deadline: Instant) -> bool {
+    let mut all = true;
+    for c in caps {
+        all &= c.wait_closed(deadline);
+    }
+    all
+}
 
 /// Read both streams concurrently: a child filling stderr while stdout is
 /// awaited is the classic deadlock.
-fn readers(child: &mut Child) -> (Reader, Reader) {
-    let mut out_pipe = child.stdout.take();
-    let mut err_pipe = child.stderr.take();
-    let out_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = out_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let err_thread = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = err_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-    (out_thread, err_thread)
+fn readers(child: &mut Child) -> (Capture, Capture) {
+    (
+        Capture::new(child.stdout.take()),
+        Capture::new(child.stderr.take()),
+    )
 }
 
 fn decode(
@@ -1126,6 +1454,9 @@ fn hop(
             let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
         }
         let writes = i.kernel.pack_watch_end(w);
+        for warning in i.kernel.take_late_warnings() {
+            let _ = writeln!(i.err, "warning[E757 burn]: {warning}");
+        }
         if !writes.outside.is_empty() {
             let shown: Vec<String> = writes
                 .outside
@@ -1376,15 +1707,29 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     check_cwd("proc.pipe", &o, s)?;
     install_signal_forwarding();
     let started = Instant::now();
+    // The clock starts before the first stage does: everything below,
+    // feeding stdin included, is inside the timeout.
+    let deadline = started + Duration::from_millis(o.timeout_ms);
     let mut children: Vec<Child> = Vec::new();
     // Every stage joins one job on Windows, so one timeout ends them all.
     let job = Job::new();
     // Registered with the signal forwarder for as long as the pipeline runs.
     let mut _group_guard: Option<ChildGuard> = None;
-    let mut err_readers: Vec<Reader> = Vec::new();
+    let mut err_readers: Vec<Capture> = Vec::new();
+    let mut stdin_thread: Option<std::thread::JoinHandle<()>> = None;
     let mut previous_out: Option<std::process::ChildStdout> = None;
     for (n, (cmd, args)) in stages.iter().enumerate() {
-        let mut c = command(cmd, args, &o);
+        let Some(mut c) = command(cmd, args, &o) else {
+            for mut earlier in children.drain(..) {
+                kill_group(&mut earlier, 0, job.as_ref());
+            }
+            return Err(spawn_error(
+                &format!("proc.pipe (stage {})", n + 1),
+                cmd,
+                std::io::Error::from(std::io::ErrorKind::NotFound),
+                s,
+            ));
+        };
         match previous_out.take() {
             Some(prev) => {
                 c.stdin(Stdio::from(prev));
@@ -1404,28 +1749,23 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
                 c.process_group(first.id() as i32);
             }
         }
-        let mut child = c.spawn().map_err(|e| {
+        let mut child = start(&mut c, job.as_ref()).map_err(|e| {
             for mut earlier in children.drain(..) {
                 kill_group(&mut earlier, 0, job.as_ref());
             }
             spawn_error(&format!("proc.pipe (stage {})", n + 1), cmd, e, s)
         })?;
-        if let Some(j) = &job {
-            j.assign(&child);
-        }
         if n == 0 {
-            if let (Some(text), Some(mut pipe_in)) = (&o.stdin, child.stdin.take()) {
-                let _ = pipe_in.write_all(text.as_bytes());
+            // Fed from a thread of its own: a first stage that never reads
+            // its stdin would otherwise hold the pipeline, and its timeout,
+            // on a full pipe.
+            if let (Some(text), Some(mut pipe_in)) = (o.stdin.clone(), child.stdin.take()) {
+                stdin_thread = Some(std::thread::spawn(move || {
+                    let _ = pipe_in.write_all(text.as_bytes());
+                }));
             }
         }
-        let mut err_pipe = child.stderr.take();
-        err_readers.push(std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(p) = err_pipe.as_mut() {
-                let _ = p.read_to_end(&mut buf);
-            }
-            buf
-        }));
+        err_readers.push(Capture::new(child.stderr.take()));
         if n + 1 < stages.len() {
             previous_out = child.stdout.take();
         }
@@ -1435,15 +1775,7 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         children.push(child);
     }
     let last = children.len() - 1;
-    let mut out_pipe = children[last].stdout.take();
-    let out_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(p) = out_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf);
-        }
-        buf
-    });
-    let deadline = Instant::now() + Duration::from_millis(o.timeout_ms);
+    let out_reader = Capture::new(children[last].stdout.take());
     let mut codes: Vec<Option<i32>> = vec![None; children.len()];
     // Only Unix fills this in; Windows reports exit codes alone.
     #[cfg_attr(windows, allow(unused_mut))]
@@ -1475,29 +1807,41 @@ fn pipe(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    if timed_out {
+    // Every stage has exited; its output has until the deadline to close,
+    // in case a stage left a process behind that holds a pipe.
+    let mut all_caps: Vec<&Capture> = err_readers.iter().collect();
+    all_caps.push(&out_reader);
+    let closed = !timed_out && wait_closed(&all_caps, deadline);
+    if timed_out || !closed {
         for child in children.iter_mut() {
             kill_group(child, o.grace_ms, job.as_ref());
         }
-        let _ = out_reader.join();
-        for r in err_readers {
-            let _ = r.join();
+        let _ = wait_closed(&all_caps, Instant::now() + Duration::from_secs(1));
+        if let Some(t) = stdin_thread.take() {
+            let _ = t.join();
         }
-        return Err(runtime(format!(
-            "proc.pipe: the pipeline ran longer than {} ms and was killed",
-            o.timeout_ms
-        ))
+        return Err(runtime(if timed_out {
+            format!(
+                "proc.pipe: the pipeline ran longer than {} ms and was killed",
+                o.timeout_ms
+            )
+        } else {
+            format!(
+                "proc.pipe: every stage exited, but a process one left behind kept the pipeline's output open past the {} ms timeout, so the rest of its process group was killed",
+                o.timeout_ms
+            )
+        })
         .code("E554")
         .at(s)
         .with_hint(
             "raise {timeout_ms: N}, or split the pipeline; nothing it wrote was passed on",
         ));
     }
-    let out_bytes = out_reader.join().unwrap_or_default();
-    let errs: Vec<Vec<u8>> = err_readers
-        .into_iter()
-        .map(|r| r.join().unwrap_or_default())
-        .collect();
+    if let Some(t) = stdin_thread.take() {
+        let _ = t.join();
+    }
+    let out_bytes = out_reader.bytes();
+    let errs: Vec<Vec<u8>> = err_readers.iter().map(Capture::bytes).collect();
     let duration_ms = started.elapsed().as_millis() as i64;
     // Every stage but the last must exit 0; the last honours the contract.
     // A stage ended by SIGPIPE was cut off by its consumer closing early

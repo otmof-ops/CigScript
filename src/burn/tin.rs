@@ -8,13 +8,20 @@
 //! it modified or deleted comes back from the tin on rollback, byte for
 //! byte, hash-verified. Objects are shared by content, so a formatter that
 //! changes three lines of a file stores that file about once.
+//!
+//! The tin also keeps what a rollback displaces: a file a hop created, or
+//! one it modified, is moved here before the rollback removes or rewrites
+//! it, so a save made while the hop ran is never destroyed, only set aside
+//! (`cig unburn <id> --give-back` puts it back).
 
 use super::journal::sha256_file;
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 pub fn dir() -> PathBuf {
     super::runs::home_dir().join("tin")
@@ -38,15 +45,88 @@ pub struct Stashed {
     pub link: Option<PathBuf>,
 }
 
-/// Keep a copy of `path` in the tin, named by its content. The same bytes
-/// stashed twice cost nothing. The object is read-only; the file's own
-/// mode and modification time travel in the journal and are put back on
-/// restore. A symbolic link is kept as a link.
-pub fn stash(path: &Path) -> io::Result<Stashed> {
+/// A copy of a file waiting beside the objects under a temporary name,
+/// hashed as it was copied: it becomes an object under that hash when it
+/// is committed. The two steps let a run write down which objects it is
+/// about to depend on before any of them exists under its final name, so
+/// a `cig tin gc` in another terminal never removes one between the two.
+#[derive(Debug)]
+pub struct Staged {
+    tmp: PathBuf,
+    sha256: String,
+    bytes: u64,
+    mode: Option<u32>,
+    mtime_ns: Option<u64>,
+    link: Option<PathBuf>,
+}
+
+static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+fn temp_name(tag: &str) -> PathBuf {
+    objects_dir().join(format!(
+        ".{tag}-{}-{}",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
+/// Copy `from` to `to`, hashing the bytes as they are written: the hash
+/// names what was copied, not what the file held a moment earlier. A file
+/// that changes while it is read gives a copy that is a moment newer than
+/// the scan, and an object that still matches its name.
+fn copy_hashing(from: &Path, to: &Path) -> io::Result<(String, u64)> {
+    let mut src = fs::File::open(from)?;
+    let mut dst = fs::File::create(to)?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    let mut total = 0u64;
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+        dst.write_all(&buf[..n])?;
+        total += n as u64;
+    }
+    dst.flush()?;
+    Ok((hex::encode(hasher.finalize()), total))
+}
+
+fn mode_of(meta: &fs::Metadata) -> Option<u32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(meta.permissions().mode() & 0o7777)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = meta;
+        None
+    }
+}
+
+fn make_read_only(p: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(p, fs::Permissions::from_mode(0o444))
+    }
+    #[cfg(not(unix))]
+    {
+        let mut perms = fs::metadata(p)?.permissions();
+        perms.set_readonly(true);
+        fs::set_permissions(p, perms)
+    }
+}
+
+/// Copy `path` beside the objects, hashed as it is copied. A symbolic link
+/// needs no copy: it is kept as its target.
+pub fn prepare(path: &Path) -> io::Result<Staged> {
     let meta = fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() {
-        return Ok(Stashed {
-            object: PathBuf::new(),
+        return Ok(Staged {
+            tmp: PathBuf::new(),
             sha256: String::new(),
             bytes: 0,
             mode: None,
@@ -54,38 +134,142 @@ pub fn stash(path: &Path) -> io::Result<Stashed> {
             link: Some(fs::read_link(path)?),
         });
     }
-    let sha256 = sha256_file(path)?;
-    let bucket = objects_dir().join(&sha256[..2]);
-    fs::create_dir_all(&bucket)?;
-    let object = bucket.join(&sha256);
-    if !object.is_file() {
-        let tmp = bucket.join(format!(".{}.{}", &sha256[..16], std::process::id()));
-        fs::copy(path, &tmp)?;
-        // The copy carries the file's mode, which may be read-only: the
-        // flush goes through a handle that works either way.
-        super::journal::sync_file(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&tmp, fs::Permissions::from_mode(0o444))?;
+    fs::create_dir_all(objects_dir())?;
+    let tmp = temp_name("stash");
+    let (sha256, bytes) = match copy_hashing(path, &tmp) {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
         }
-        fs::rename(&tmp, &object)?;
-    }
-    #[cfg(unix)]
-    let mode = {
-        use std::os::unix::fs::PermissionsExt;
-        Some(meta.permissions().mode() & 0o7777)
     };
-    #[cfg(not(unix))]
-    let mode = None;
-    Ok(Stashed {
-        object,
+    Ok(Staged {
+        tmp,
         sha256,
-        bytes: meta.len(),
-        mode,
+        bytes,
+        mode: mode_of(&meta),
         mtime_ns: super::journal::mtime_ns(&meta),
         link: None,
     })
+}
+
+impl Staged {
+    /// Where the object will be once committed (empty for a link).
+    pub fn object(&self) -> PathBuf {
+        if self.link.is_some() {
+            PathBuf::new()
+        } else {
+            objects_dir().join(&self.sha256[..2]).join(&self.sha256)
+        }
+    }
+
+    /// Give the copy its name. An object already there is trusted only
+    /// when it hashes to its name; one that does not is replaced, so a
+    /// corrupt object is never reused by a later stash.
+    pub fn commit(self) -> io::Result<Stashed> {
+        if let Some(target) = self.link {
+            return Ok(Stashed {
+                object: PathBuf::new(),
+                sha256: String::new(),
+                bytes: 0,
+                mode: None,
+                mtime_ns: None,
+                link: Some(target),
+            });
+        }
+        let object = self.object();
+        let bucket = object.parent().expect("an object has a bucket");
+        fs::create_dir_all(bucket)?;
+        let existing_ok = object.is_file()
+            && fs::metadata(&object).map(|m| m.len()).ok() == Some(self.bytes)
+            && sha256_file(&object).ok().as_deref() == Some(self.sha256.as_str());
+        if existing_ok {
+            let _ = fs::remove_file(&self.tmp);
+        } else {
+            // The flush goes through a handle that works on a read-only
+            // file too, then the object is named and its directory synced,
+            // so the journal entry that follows never points at a name the
+            // disk has not learned yet.
+            super::journal::sync_file(&self.tmp)?;
+            make_read_only(&self.tmp)?;
+            if object.exists() {
+                lift_read_only(&object);
+                let _ = fs::remove_file(&object);
+            }
+            fs::rename(&self.tmp, &object)?;
+            let _ = super::journal::sync_dir_pub(bucket);
+        }
+        Ok(Stashed {
+            object,
+            sha256: self.sha256,
+            bytes: self.bytes,
+            mode: self.mode,
+            mtime_ns: self.mtime_ns,
+            link: None,
+        })
+    }
+}
+
+fn lift_read_only(p: &Path) {
+    if let Ok(m) = fs::metadata(p) {
+        let mut perms = m.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            perms.set_mode(0o644);
+        }
+        #[cfg(not(unix))]
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        let _ = fs::set_permissions(p, perms);
+    }
+}
+
+/// Keep a copy of `path` in the tin, named by its content. The same bytes
+/// stashed twice cost nothing. The object is read-only; the file's own
+/// mode and modification time travel in the journal and are put back on
+/// restore. A symbolic link is kept as a link.
+pub fn stash(path: &Path) -> io::Result<Stashed> {
+    prepare(path)?.commit()
+}
+
+/// Move a file into the tin: what a rollback is about to remove or rewrite
+/// goes here first, so nothing a rollback displaces is lost. The file
+/// leaves its place (a rename where the tin is on the same filesystem, a
+/// copy and a remove where it is not) and becomes an object named by the
+/// hash of what arrived.
+pub fn take(path: &Path) -> io::Result<Stashed> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_file() {
+        return Err(io::Error::other(format!(
+            "{} is not a regular file; the tin keeps files",
+            path.display()
+        )));
+    }
+    fs::create_dir_all(objects_dir())?;
+    let tmp = temp_name("take");
+    match fs::rename(path, &tmp) {
+        Ok(()) => {}
+        // Across filesystems, or a file Windows will not let go of yet: copy.
+        Err(_) => {
+            copy_hashing(path, &tmp).inspect_err(|_| {
+                let _ = fs::remove_file(&tmp);
+            })?;
+            fs::remove_file(path)?;
+        }
+    }
+    lift_read_only(&tmp);
+    let sha256 = sha256_file(&tmp)?;
+    let bytes = fs::metadata(&tmp)?.len();
+    let staged = Staged {
+        tmp,
+        sha256,
+        bytes,
+        mode: mode_of(&meta),
+        mtime_ns: super::journal::mtime_ns(&meta),
+        link: None,
+    };
+    staged.commit()
 }
 
 /// Is this snapshot path an object in the tin (shared by content), as
@@ -107,13 +291,19 @@ pub fn globs(patterns: &[String]) -> Result<GlobSet, String> {
     b.build().map_err(|e| format!("touches: {e}"))
 }
 
-/// Every object a live run still refers to, by path.
+/// The file a running hop lists the objects it stashed in, inside its run
+/// directory, before its journal refers to them. `referenced` reads it, so
+/// a `cig tin gc` during the hop keeps what the hop's rollback will need.
+pub const PENDING: &str = "tin.pending";
+
+/// Every object a live run still refers to, by path: from its journal, and
+/// from the pending list of a hop still running.
 pub fn referenced() -> HashSet<PathBuf> {
     let mut out = HashSet::new();
     for rec in super::runs::list().unwrap_or_default() {
         if let Ok(j) = super::journal::Journal::load(&rec.dir()) {
             for e in j.entries() {
-                for b in &e.before {
+                for b in e.before.iter().chain(e.took.iter()) {
                     match &b.before {
                         super::journal::Before::File { snapshot, .. }
                         | super::journal::Before::Dir { snapshot }
@@ -123,6 +313,14 @@ pub fn referenced() -> HashSet<PathBuf> {
                         }
                         _ => {}
                     }
+                }
+            }
+        }
+        if let Ok(text) = fs::read_to_string(rec.dir().join(PENDING)) {
+            for line in text.lines() {
+                let line = line.trim();
+                if !line.is_empty() {
+                    out.insert(PathBuf::from(line));
                 }
             }
         }
@@ -191,11 +389,7 @@ pub fn gc() -> (usize, u64) {
         if keep.contains(&p) {
             continue;
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = fs::set_permissions(&p, fs::Permissions::from_mode(0o644));
-        }
+        lift_read_only(&p);
         if fs::remove_file(&p).is_ok() {
             removed += 1;
             bytes += size;
@@ -256,5 +450,79 @@ mod tests {
         let all = globs(&["**".to_string()]).unwrap();
         assert!(all.is_match("deep/er/file"));
         assert!(globs(&["[".to_string()]).is_err());
+    }
+
+    /// The tests below point the tin at a scratch home. They share one
+    /// process, so each takes the lock the environment needs.
+    fn with_home<T>(f: impl FnOnce(&Path) -> T) -> T {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let old = std::env::var_os("CIGSCRIPT_HOME");
+        std::env::set_var("CIGSCRIPT_HOME", tmp.path().join("home"));
+        let out = f(tmp.path());
+        match old {
+            Some(v) => std::env::set_var("CIGSCRIPT_HOME", v),
+            None => std::env::remove_var("CIGSCRIPT_HOME"),
+        }
+        out
+    }
+
+    #[test]
+    fn an_object_is_named_by_the_hash_of_the_copy_and_a_corrupt_one_is_not_reused() {
+        with_home(|root| {
+            let f = root.join("f.txt");
+            fs::write(&f, "content one\n").unwrap();
+            let first = stash(&f).unwrap();
+            assert_eq!(
+                first.sha256,
+                sha256_file(&first.object).unwrap(),
+                "the object hashes to its name"
+            );
+            assert_eq!(fs::read_to_string(&first.object).unwrap(), "content one\n");
+            // Corrupt the object in place: same size, other bytes.
+            lift_read_only(&first.object);
+            fs::write(&first.object, "content two\n").unwrap();
+            assert_eq!(verify().len(), 1);
+            // A later stash of the same content does not trust the name.
+            let again = stash(&f).unwrap();
+            assert_eq!(again.object, first.object);
+            assert_eq!(fs::read_to_string(&again.object).unwrap(), "content one\n");
+            assert!(verify().is_empty(), "the corrupt object was replaced");
+        });
+    }
+
+    #[test]
+    fn take_moves_a_file_into_the_tin_and_names_it_by_content() {
+        with_home(|root| {
+            let f = root.join("notes.txt");
+            fs::write(&f, "my notes\n").unwrap();
+            let taken = take(&f).unwrap();
+            assert!(!f.exists(), "the file left its place");
+            assert_eq!(fs::read_to_string(&taken.object).unwrap(), "my notes\n");
+            assert_eq!(taken.sha256, sha256_file(&taken.object).unwrap());
+            assert_eq!(taken.bytes, 9);
+            // The same content taken twice is one object.
+            fs::write(&f, "my notes\n").unwrap();
+            let twice = take(&f).unwrap();
+            assert_eq!(twice.object, taken.object);
+            assert_eq!(objects().len(), 1);
+        });
+    }
+
+    #[test]
+    fn prepare_then_commit_leaves_no_object_until_commit() {
+        with_home(|root| {
+            let f = root.join("f.txt");
+            fs::write(&f, "staged\n").unwrap();
+            let staged = prepare(&f).unwrap();
+            let object = staged.object();
+            assert!(!object.exists(), "nothing under the final name yet");
+            assert!(objects().is_empty(), "a temporary copy is not an object");
+            let st = staged.commit().unwrap();
+            assert_eq!(st.object, object);
+            assert!(object.is_file());
+            assert_eq!(objects().len(), 1);
+        });
     }
 }

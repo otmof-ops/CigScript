@@ -422,11 +422,17 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
     if !args.dry_run {
         record.burns = interp.kernel.journal().len();
         record.irreversible = interp.kernel.irreversible;
+        record.pack = interp
+            .kernel
+            .pack()
+            .map(<[std::path::PathBuf]>::to_vec)
+            .unwrap_or_default();
         record.rolled_back = rolled_back.as_ref().is_some_and(|r| !r.restored.is_empty());
         record.rollback_failed = rolled_back
             .as_ref()
             .map(|r| r.failed.clone())
             .unwrap_or_default();
+        record.rollback_took = rolled_back.as_ref().map(|r| r.took.len()).unwrap_or(0);
         let (status, error) = match &result {
             Ok(()) => ("ok", None),
             Err(d) => (

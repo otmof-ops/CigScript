@@ -41,6 +41,11 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "true",
         "mention a newer release on stderr after `cig doctor` or `cig update --check` found one",
     ),
+    (
+        "watch_cap",
+        "50000",
+        "how many entries of a pack hop watching reads before it stops; past it, what a hop creates is irreversible and the hop says so (a .cigignore brings a pack under)",
+    ),
 ];
 
 #[derive(Clone, Debug, Default)]
@@ -136,6 +141,12 @@ impl Config {
             ("update_notice", other) => {
                 return Err(format!(
                     "update_notice must be true or false, not `{other}`"
+                ))
+            }
+            ("watch_cap", v) if v.parse::<usize>().is_ok_and(|n| n > 0) => {}
+            ("watch_cap", other) => {
+                return Err(format!(
+                    "watch_cap must be a whole number of entries above zero, not `{other}`"
                 ))
             }
             ("issues_repo", v) if v.split('/').count() == 2 && !v.contains(char::is_whitespace) => {

@@ -65,7 +65,12 @@ progress to stdout breaks the shape, and `E556` says so: *expected JSON on
 stdout, got `Downloading...⏎[1]`*.
 
 **Timeouts always exist.** Every hop has one. `E554` says which hop stalled,
-how much it had written to each stream, and quotes the start of it.
+how much it had written to each stream, and quotes the start of it. The
+timeout covers the hop's output, not only its child: a hop is over when its
+stdout and stderr close, and a process the child left behind holding them
+(`server &`) has until the deadline, after which the rest of the process
+group is ended and `E554` names the stream. A program a hop starts in the
+background closes or redirects its output, or ends before the hop does.
 
 **Partial output is never mistaken for output.** A child killed by the
 timeout or by a signal (`E555`, with the signal's number and name) produced
@@ -96,8 +101,11 @@ to signal, so every hop's child is put in a job with
 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`: what the child starts joins the job,
 a timeout terminates the job (the grandchild holding the pipe included, so
 `timeout_ms` ends the task when it says), and cig itself dying closes the
-last handle and takes the tree with it. One difference from Unix follows:
-what a hop leaves running in the background ends with the hop.
+last handle and takes the tree with it. The child is created suspended,
+put in the job, then resumed, so a process it starts in its first
+instruction is in the job too; when Windows refuses the job, the hop says
+so once and runs without one. One difference from Unix follows: what a hop
+leaves running in the background ends with the hop.
 
 **No shell by default.** Arguments are a list, never a string handed to `sh
 -c`, so there is nothing to inject into. `proc.shell(command)` exists for the
@@ -135,14 +143,27 @@ and the shell behind `proc.shell`, so what `proc.which` names is what starts.
 
 - A name with a path separator is a path, made absolute against the hop's
   `cwd` (`./gradlew` with `cwd: "api"` is `api/gradlew`), on every platform.
-  Windows itself would resolve it against the parent's directory.
-- A bare name is searched on `PATH`, never in the current directory. On
-  Unix the first executable file wins. On Windows each directory is tried
-  with each `PATHEXT` extension in order (`.COM;.EXE;.BAT;.CMD` by default),
-  so `npm` is `npm.cmd` and `node` is `node.exe`; a name that already ends
-  in one of them is taken as spelled. A `.bat` or `.cmd` found this way is
-  started by its full path, which Rust runs through `cmd.exe` with safe
-  argument quoting and refuses arguments it cannot quote.
+  Windows itself would resolve it against the parent's directory. On
+  Windows a path without an extension is completed through `PATHEXT` before
+  the bare file is tried, as `cmd` does, so `./gradlew` starts `gradlew.bat`
+  rather than the shell script beside it.
+- A bare name is searched on the `PATH` the child will see: the hop's own
+  when its `env` sets one, else the parent's, else the platform's default
+  search path. It is never found in the current directory (an empty `PATH`
+  entry is skipped, not read as `.`), a relative `PATH` entry
+  (`node_modules/.bin`) is read from the hop's `cwd`, and a name the
+  resolver cannot find is `E551`: the platform is never asked to search
+  again by rules of its own. On Unix the first file this process may
+  execute wins, the question `execvp` asks, and `argv[0]` stays the name the
+  script typed. On Windows each directory is tried with each `PATHEXT`
+  extension in order (`.COM;.EXE;.BAT;.CMD` by default), so `npm` is
+  `npm.cmd` and `node` is `node.exe`; a name that already ends in one of
+  them is taken as spelled; the system directories are searched after
+  `PATH`, as `CreateProcess` does, and a Store app's execution alias is a
+  program. A `.bat` or `.cmd` found this way is started by
+  its full path, which Rust runs through `cmd.exe` with safe argument
+  quoting and refuses arguments it cannot quote; only a native `.exe` or
+  `.com` gets the C runtime's own quoting.
 - `bash` and `sh` on Windows mean a shell: System32's `bash.exe` (the WSL
   launcher) and `wsl.exe` are never chosen, whatever the order of `PATH`.
   With no other shell on `PATH` the hop fails as `E551` and the hint names
@@ -170,12 +191,42 @@ that died of SIGPIPE because the stage after it stopped reading (`yes | head
 
 ## Inside a pack: the hop's write set
 
-With `pack { "./build" }` declared, the kernel lists the pack's files (mtime
-and size) before a hop and again after, and journals the difference: files
-the child created are reversible (`hop created`; rollback removes them),
-files it modified or deleted are irreversible with the detail, and anything
-the child changed in its working directory outside the pack is reported as
-`E752` and never laundered. `BURN.md` has the rules.
+With `pack { "./build" }` declared, the kernel lists the pack's files (mtime,
+size and mode), directories (mode) and links (target, and the time and size
+of the file a link leads to) before a hop and again after, and journals the
+difference: files the child created are reversible (`hop created`; rollback
+removes them), files it modified or deleted are irreversible with the
+detail unless `touches` put their before-bytes in the tin, a directory it
+deleted or replaced with a file is made again on rollback, and anything the
+child changed in its working directory outside the pack is reported as
+`E752` and never laundered. `BURN.md` has the rules. Three of them matter
+most here:
+
+- **Hop watching sees changes, not who made them.** Everything that
+  changed in the pack between the two scans is the hop's as far as the
+  journal knows: an editor's save, a file watcher's output, another
+  program's write. So a rollback never destroys what it displaces: a file
+  it removes or rewrites for a hop entry goes to the tin first, the report
+  says so, and `cig unburn <id> --give-back` puts it back. A file the hop
+  left that changed again after the hop ended is left alone (`--force`
+  restores over it). And one run at a time holds a pack: a second `cig run`
+  on the same or an overlapping pack is refused with `E759` while the
+  first runs.
+- **The scan has a cap** (`watch_cap`, 50,000 entries). Past it the kernel
+  cannot tell a file the hop made from one it never reached, so it warns
+  up front, journals nothing as created, and asks the disk before it calls
+  a file deleted. A `.cigignore` at the pack root keeps a big tree out.
+- **A link that leads out of the pack is a door.** What lies behind it is
+  not walked and never journaled; a write through it is reported as
+  outside the pack (`E752`); a rollback never removes a path whose real
+  place is outside the pack. A link that stays inside is seen under its
+  real path, and the link itself (dangling or not) comes back as the link
+  it was.
+
+A `touches` glob that matches no file in the pack is a warning before the
+run (with the nearest glob that would match), a count beside the glob in
+the dry run (`touches scr/**: 0 files`), and after the run the report names
+the glob that would have kept a file the hop changed outside every glob.
 
 ## Compensations
 

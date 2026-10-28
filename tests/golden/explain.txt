@@ -96,6 +96,7 @@ E750-E769  folds and packs: refusals when automation is composed
   E756  fold shape mismatch                burn  (planned)
   E757  touches without a pack             burn
   E758  a Windows device name used as a file burn
+  E759  the pack is in use by another run  burn
 
 E800-E849  the command line and the environment
   E800  usage error                        usage
@@ -1457,7 +1458,7 @@ E758 a Windows device name used as a file  (burn, fold family, since 1.3.0)
 
   kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
 
-  A write names a path whose base name is a Windows device (con, prn, aux, nul, com1-9, lpt1-9, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows.
+  A write names a path with a component that is a Windows device (con, prn, aux, nul, conin$, conout$, com0-9, lpt0-9, the superscript digits included, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled, pack or no pack; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows.
 
   what to type next: name the file something else
 
@@ -1467,6 +1468,25 @@ E758 a Windows device name used as a file  (burn, fold family, since 1.3.0)
      remedy: rename the file; on Unix the warning can be denied with --deny-warnings
 
   arises in: check, run, light  ·  related: E750, E702  ·  tags: kernel
+
+======== E759 ========
+E759 the pack is in use by another run  (burn, fold family, since 1.4.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  Another cig run (or an unburn) holds this pack, or a pack that contains or lies inside it. Hop watching reads every change in a pack between its two scans as the hop's, so two runs writing in one pack would roll back each other's work; the second is refused before anything is changed.
+
+  what to type next: wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap
+
+  known causes, ranked; doctor checks them in this order
+  1. a run is in progress on this pack from another terminal, or a cigo task is running there
+     probe: run-record (run.json for the run: status, pid, totals)
+     remedy: wait for it, or run the two with different packs; the lock is released when the run ends
+  2. a run holding the lock was killed and its lock file is still held by a process that outlived it
+     probe: pid-alive (whether the run's process still exists)
+     remedy: `cig runs` names the holder; end that process, and the lock goes with it
+
+  arises in: run, light, unburn  ·  related: E751, E752  ·  tags: kernel
 
 ======== E800 ========
 E800 usage error  (usage, usage family, since 1.0.0)

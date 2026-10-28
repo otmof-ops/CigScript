@@ -4,7 +4,7 @@
 # CigScript installer. POSIX sh, no sudo, asks before installing anything.
 #
 #   Review first (recommended):
-#     curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.3.1/install.sh -o install.sh
+#     curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.0/install.sh -o install.sh
 #     less install.sh && sh install.sh
 #
 #   Options:
@@ -66,7 +66,10 @@ esac
 case "$arch" in
   x86_64|amd64) arch=x86_64;;
   aarch64|arm64) arch=aarch64;;
-  armv7l|armv6l|armhf) arch=arm;;
+  # The arm asset is built for ARMv7-A; an ARMv6 board (a Pi Zero or Pi 1)
+  # cannot run it and builds from source instead.
+  armv7l|armhf) arch=arm;;
+  armv6l) fail "no binary for armv6l (the arm asset needs ARMv7); use --from-source";;
 esac
 # The Linux assets are static musl builds: they run on any glibc, on Alpine,
 # and on Android under Termux, where uname says Linux/aarch64.

@@ -36,6 +36,15 @@ pub enum Before {
     Dir {
         snapshot: PathBuf,
     },
+    /// A directory stood here, its contents journaled on their own: a hop
+    /// deleted it, or replaced it with a file. Rollback makes the directory
+    /// again, with its mode, before the entries for what was inside it.
+    Directory {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mtime_ns: Option<u64>,
+    },
     /// A symbolic link: restored as a link to the same target.
     Symlink {
         target: PathBuf,
@@ -63,6 +72,17 @@ pub struct Entry {
     /// Rolled back already, by a retry inside the run; skipped by `unburn`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub undone: bool,
+    /// Put back whole by a rollback that left other entries failed, so the
+    /// plain `unburn` that finishes the job skips it. Kept as a marker line
+    /// after the entry, never in the entry itself.
+    #[serde(skip)]
+    pub restored: bool,
+    /// What a rollback of this entry moved into the tin instead of
+    /// destroying: a file saved while the hop ran, or the hop's own output.
+    /// `cig unburn <id> --give-back` puts them back. Kept as a marker line
+    /// after the entry; the newest marker is the current list.
+    #[serde(skip)]
+    pub took: Vec<BeforeState>,
     /// An irreversible op inside a `burn { } unburn { }` block: the
     /// compensation covers it, so the plan says `compensated`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -109,8 +129,11 @@ pub struct RollbackReport {
     /// Compensations found and not run (no runner was given), newest first.
     pub compensations: Vec<Compensation>,
     pub failed: Vec<String>,
+    /// Files the rollback moved into the tin instead of destroying, so a
+    /// save made while a hop ran can be given back.
+    pub took: Vec<String>,
     /// Everything that happened, in the order it happened: (label, text).
-    /// Labels: restored, compensated, cannot undo, failed.
+    /// Labels: restored, compensated, cannot undo, failed, left, gave back.
     pub actions: Vec<(String, String)>,
 }
 
@@ -199,8 +222,16 @@ impl Journal {
                     if v.get("undone").and_then(|u| u.as_bool()) == Some(true) {
                         e.undone = true;
                     }
+                    if v.get("restored").and_then(|u| u.as_bool()) == Some(true) {
+                        e.restored = true;
+                    }
                     if v.get("compensated").and_then(|u| u.as_bool()) == Some(true) {
                         e.compensated = true;
+                    }
+                    if let Some(t) = v.get("took") {
+                        if let Ok(states) = serde_json::from_value::<Vec<BeforeState>>(t.clone()) {
+                            e.took = states;
+                        }
                     }
                 }
                 continue;
@@ -268,7 +299,7 @@ impl Journal {
     /// them undone in the journal so a later `unburn` skips them. The op
     /// numbers stay; the retry's own entries follow.
     pub fn rollback_since(&mut self, mark: usize) -> RollbackReport {
-        let report = self.rollback_from(mark, None);
+        let report = self.rollback_from(mark, None, false);
         let mut markers = String::new();
         for e in self.entries.iter_mut().skip(mark) {
             if !e.undone {
@@ -285,6 +316,15 @@ impl Journal {
     }
 
     fn append_marker(&mut self, marker: &str) {
+        // A journal loaded for `unburn` has no file open: open it to append.
+        if self.file.is_none() {
+            if let Some(dir) = &self.run_dir {
+                self.file = fs::OpenOptions::new()
+                    .append(true)
+                    .open(dir.join("journal.jsonl"))
+                    .ok();
+            }
+        }
         if let Some(f) = &mut self.file {
             let _ = f.write_all(marker.as_bytes());
             let _ = f.flush();
@@ -362,6 +402,8 @@ impl Journal {
             op,
             before,
             undone: false,
+            restored: false,
+            took: Vec::new(),
             compensated,
             compensation,
         };
@@ -395,11 +437,18 @@ impl Journal {
                     path: from.clone(),
                     before: Before::Moved { to: to.clone() },
                 }];
-                states.extend(self.destination_states(seq, to, 1)?);
+                // A move between two spellings of one name on a
+                // case-insensitive filesystem has no destination of its
+                // own: what is at `to` is the file itself, and a snapshot
+                // of it restored after the move back would only put the
+                // same bytes under the other spelling.
+                if !(super::case_variants(from, to) && super::same_object(from, to)) {
+                    states.extend(self.destination_states(seq, to, 1)?);
+                }
                 states
             }
             // A hop created this file: it did not exist before the hop.
-            Op::HopCreated { path } => vec![BeforeState {
+            Op::HopCreated { path, .. } => vec![BeforeState {
                 path: path.clone(),
                 before: Before::Absent,
             }],
@@ -585,7 +634,7 @@ impl Journal {
                             ));
                         }
                     }
-                    Before::Absent | Before::Symlink { .. } => {}
+                    Before::Absent | Before::Symlink { .. } | Before::Directory { .. } => {}
                 }
             }
         }
@@ -595,22 +644,81 @@ impl Journal {
     /// Restore every before-state, newest entry first. Call `verify` first;
     /// this does what it can and reports what it could not.
     pub fn rollback(&mut self) -> RollbackReport {
-        self.rollback_from(0, None)
+        self.rollback_from(0, None, false)
     }
 
     /// Roll back with compensations run in place, newest first, by `runner`.
     pub fn rollback_with(&mut self, runner: CompensationRunner<'_>) -> RollbackReport {
-        self.rollback_from(0, Some(runner))
+        self.rollback_from(0, Some(runner), false)
+    }
+
+    /// Roll back everything again, the entries an earlier pass put back
+    /// included: `cig unburn --force`.
+    pub fn rollback_again_with(&mut self, runner: CompensationRunner<'_>) -> RollbackReport {
+        self.rollback_from(0, Some(runner), true)
+    }
+
+    /// The run this journal belongs to, for the hints a rollback prints.
+    fn run_id(&self) -> String {
+        self.run_dir
+            .as_ref()
+            .and_then(|d| d.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "<run>".to_string())
+    }
+
+    /// Put back what a rollback of this run moved into the tin: the files
+    /// it displaced go back where they were, and what is there now goes to
+    /// the tin in their place, so the step is as reversible as the rollback
+    /// was. `cig unburn <id> --give-back`.
+    pub fn give_back(&mut self) -> RollbackReport {
+        let mut report = RollbackReport::default();
+        let mut took: Vec<(u64, Vec<BeforeState>)> = Vec::new();
+        for entry in self.entries.iter().rev() {
+            if entry.took.is_empty() {
+                continue;
+            }
+            let mut now_taken = Vec::new();
+            for state in &entry.took {
+                match restore(state, true) {
+                    Ok((_, taken)) => {
+                        now_taken.extend(taken);
+                        let text = format!(
+                            "{} (the rollback of {} had moved it to the tin)",
+                            state.path.display(),
+                            entry.op.describe()
+                        );
+                        report.restored.push(text.clone());
+                        report.actions.push(("gave back".to_string(), text));
+                    }
+                    Err(e) => {
+                        let text = format!("{}: {e}", state.path.display());
+                        report.failed.push(text.clone());
+                        report.actions.push(("failed".to_string(), text));
+                    }
+                }
+            }
+            took.push((entry.seq, now_taken));
+        }
+        self.mark_took(took);
+        report
     }
 
     fn rollback_from(
         &mut self,
         from: usize,
         mut runner: Option<CompensationRunner<'_>>,
+        again: bool,
     ) -> RollbackReport {
         let mut report = RollbackReport::default();
+        let run_id = self.run_id();
+        // Entries put back whole, stamped in the journal when the pass is
+        // over so that a later pass, retrying what failed, skips them.
+        let mut done: Vec<u64> = Vec::new();
+        // What the pass moved into the tin, by entry.
+        let mut took: Vec<(u64, Vec<BeforeState>)> = Vec::new();
         for entry in self.entries.iter().skip(from).rev() {
-            if entry.undone {
+            if entry.undone || (entry.restored && !again) {
                 continue;
             }
             if let Some(c) = &entry.compensation {
@@ -620,6 +728,7 @@ impl Journal {
                             let text =
                                 format!("ran the compensation for the burn at line {}", c.line);
                             report.actions.push(("compensated".to_string(), text));
+                            done.push(entry.seq);
                         }
                         Err(e) => {
                             let text =
@@ -658,7 +767,33 @@ impl Journal {
                 let moved = order.remove(pos);
                 order.insert(0, moved);
             }
+            let failed_before = report.failed.len();
+            // A hop's write set was observed, not performed: the kernel
+            // cannot tell the hop's bytes from a save made while it ran, so
+            // nothing a hop entry's rollback displaces is destroyed. It goes
+            // to the tin, and the record says how to get it back.
+            let hop = matches!(entry.op, Op::HopCreated { .. } | Op::HopChanged { .. });
+            // A file the hop left that changed again after the hop ended is
+            // someone else's work now: it stays, unless `--force` asks for
+            // the old bytes on purpose.
+            if hop && !again {
+                if let (Some(left), Some(state)) = (entry.op.left(), entry.before.first()) {
+                    if let Some(now) = file_stamp(&state.path) {
+                        if now != left {
+                            let text = format!(
+                                "{}: {} changed after the hop ran, so it was left alone (cig unburn {run_id} --force restores over it)",
+                                entry.op.describe(),
+                                state.path.display()
+                            );
+                            report.failed.push(text.clone());
+                            report.actions.push(("left".to_string(), text));
+                            continue;
+                        }
+                    }
+                }
+            }
             let mut kept: Option<PathBuf> = None;
+            let mut taken_here: Vec<BeforeState> = Vec::new();
             for state in order {
                 if kept.as_deref() == Some(state.path.as_path()) {
                     // The move back failed: the file at the destination is
@@ -673,15 +808,29 @@ impl Journal {
                     report.actions.push(("kept".to_string(), text));
                     continue;
                 }
-                match restore(state) {
-                    Ok(note) => {
+                match restore(state, hop) {
+                    Ok((note, taken)) => {
+                        let to_tin = match taken.len() {
+                            0 => String::new(),
+                            1 => format!(
+                                "; its bytes went to the tin, cig unburn {run_id} --give-back puts them back"
+                            ),
+                            n => format!(
+                                "; {n} files went to the tin, cig unburn {run_id} --give-back puts them back"
+                            ),
+                        };
+                        for t in &taken {
+                            report.took.push(t.path.display().to_string());
+                        }
+                        taken_here.extend(taken);
                         let text = format!(
-                            "{} ({} {}{})",
+                            "{} ({} {}{}{to_tin})",
                             entry.op.describe(),
                             match state.before {
                                 Before::Absent => "removed",
                                 Before::File { .. } => "file restored:",
                                 Before::Dir { .. } => "directory restored:",
+                                Before::Directory { .. } => "directory made again:",
                                 Before::Symlink { .. } => "link restored:",
                                 Before::Moved { .. } => "moved back:",
                             },
@@ -696,6 +845,7 @@ impl Journal {
                                 Before::Absent => "removed",
                                 Before::File { .. } => "file restored",
                                 Before::Dir { .. } => "directory restored",
+                                Before::Directory { .. } => "directory made again",
                                 Before::Symlink { .. } => "link restored",
                                 Before::Moved { .. } => "moved back",
                             }
@@ -712,8 +862,109 @@ impl Journal {
                     }
                 }
             }
+            if !taken_here.is_empty() {
+                took.push((entry.seq, taken_here));
+            }
+            if report.failed.len() == failed_before {
+                done.push(entry.seq);
+            }
         }
+        self.mark_restored(&done);
+        self.mark_took(took);
         report
+    }
+
+    /// Stamp the entries a rollback put back whole, in memory and on disk.
+    fn mark_restored(&mut self, seqs: &[u64]) {
+        if seqs.is_empty() {
+            return;
+        }
+        let mut markers = String::new();
+        for e in self.entries.iter_mut() {
+            if seqs.contains(&e.seq) && !e.restored {
+                e.restored = true;
+                markers.push_str(&format!("{{\"seq\":{},\"restored\":true}}\n", e.seq));
+            }
+        }
+        self.append_marker(&markers);
+    }
+
+    /// Record what a pass moved into the tin, per entry, in memory and on
+    /// disk. The newest marker for an entry is its current list.
+    fn mark_took(&mut self, took: Vec<(u64, Vec<BeforeState>)>) {
+        if took.is_empty() {
+            return;
+        }
+        let mut markers = String::new();
+        for (seq, states) in took {
+            if let Ok(json) = serde_json::to_string(&states) {
+                markers.push_str(&format!("{{\"seq\":{seq},\"took\":{json}}}\n"));
+            }
+            if let Some(e) = self.entries.iter_mut().find(|e| e.seq == seq) {
+                e.took = states;
+            }
+        }
+        self.append_marker(&markers);
+    }
+
+    /// Does any entry hold files a rollback displaced into the tin?
+    pub fn has_taken(&self) -> bool {
+        self.entries.iter().any(|e| !e.took.is_empty())
+    }
+}
+
+/// A regular file's (mtime, len) as hop watching records it, or None for
+/// anything else at the path.
+fn file_stamp(path: &Path) -> Option<(u64, u64)> {
+    let m = fs::symlink_metadata(path).ok()?;
+    if !m.is_file() {
+        return None;
+    }
+    Some((mtime_ns(&m).unwrap_or(0), m.len()))
+}
+
+/// Clear `path` for a restore without destroying anything: a regular file
+/// goes to the tin (recorded in `taken`), a directory is emptied the same
+/// way and removed, a link is removed (its target is all it is).
+fn displace(path: &Path, taken: &mut Vec<BeforeState>) -> io::Result<()> {
+    let take_file = |p: &Path, taken: &mut Vec<BeforeState>| -> io::Result<()> {
+        let st = super::tin::take(p)?;
+        taken.push(BeforeState {
+            path: p.to_path_buf(),
+            before: Before::File {
+                snapshot: st.object,
+                sha256: st.sha256,
+                bytes: st.bytes,
+                mode: st.mode,
+                mtime_ns: st.mtime_ns,
+            },
+        });
+        Ok(())
+    };
+    match fs::symlink_metadata(path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+        Ok(m) if m.file_type().is_symlink() => fs::remove_file(path),
+        Ok(m) if m.is_dir() => {
+            for entry in walkdir::WalkDir::new(path)
+                .min_depth(1)
+                .follow_links(false)
+                .contents_first(true)
+            {
+                let entry = entry.map_err(io::Error::other)?;
+                let ft = entry.file_type();
+                if ft.is_dir() {
+                    fs::remove_dir(entry.path())?;
+                } else if ft.is_file() {
+                    take_file(entry.path(), taken)?;
+                } else {
+                    fs::remove_file(entry.path())?;
+                }
+            }
+            fs::remove_dir(path)
+        }
+        Ok(m) if m.is_file() => take_file(path, taken),
+        Ok(_) => fs::remove_file(path),
     }
 }
 
@@ -936,9 +1187,20 @@ pub struct ChangedSince {
 impl Journal {
     /// Every path a rollback would touch, with the entry that first names it.
     pub fn touched_paths(&self) -> Vec<(PathBuf, u64)> {
+        self.touched_paths_of(false)
+    }
+
+    /// The paths a retry would touch: those of the entries an earlier pass
+    /// did not put back. What it did put back may have been edited since,
+    /// and that is nobody's business but the editor's.
+    pub fn touched_paths_pending(&self) -> Vec<(PathBuf, u64)> {
+        self.touched_paths_of(true)
+    }
+
+    fn touched_paths_of(&self, pending_only: bool) -> Vec<(PathBuf, u64)> {
         let mut seen: Vec<(PathBuf, u64)> = Vec::new();
         for e in &self.entries {
-            if !e.reversible || e.undone {
+            if !e.reversible || e.undone || (pending_only && e.restored) {
                 continue;
             }
             for b in &e.before {
@@ -983,6 +1245,15 @@ impl Journal {
     /// Which touched paths are no longer as the run left them. Restoring
     /// over one of these would overwrite work done since.
     pub fn changed_since(&self) -> ChangedSince {
+        self.changed_since_of(self.touched_paths())
+    }
+
+    /// `changed_since` over the paths a retry would touch alone.
+    pub fn changed_since_pending(&self) -> ChangedSince {
+        self.changed_since_of(self.touched_paths_pending())
+    }
+
+    fn changed_since_of(&self, paths: Vec<(PathBuf, u64)>) -> ChangedSince {
         let Some(after) = self.after_state() else {
             return ChangedSince {
                 known: false,
@@ -990,7 +1261,7 @@ impl Journal {
             };
         };
         let mut changes = Vec::new();
-        for (path, seq) in self.touched_paths() {
+        for (path, seq) in paths {
             let Some(was) = after.paths.get(&path) else {
                 continue;
             };
@@ -1023,12 +1294,59 @@ fn first_missing_ancestor(path: &Path) -> PathBuf {
     candidate
 }
 
-/// Put one path back. `Ok(Some(note))` says how, when it was not the
-/// ordinary way (a file restored in place because another program held it).
-fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
+/// Put one path back. `Ok((Some(note), taken))` says how, when it was not
+/// the ordinary way (a file restored in place because another program held
+/// it), and lists what went to the tin to make room: with `keep`, nothing
+/// at the path is destroyed, a file there is moved into the tin first.
+fn restore(
+    state: &BeforeState,
+    keep: bool,
+) -> Result<(Option<&'static str>, Vec<BeforeState>), io::Error> {
     let path = &state.path;
+    let mut taken = Vec::new();
     match &state.before {
-        Before::Absent => remove_any(path).map(|()| None),
+        Before::Absent => {
+            if !keep {
+                return remove_any(path).map(|()| (None, taken));
+            }
+            match fs::symlink_metadata(path) {
+                // A directory the hop made is removed only when it is empty:
+                // what was put in it since is not the hop's, and stays.
+                Ok(m) if m.is_dir() => fs::remove_dir(path).map_err(|e| {
+                    if fs::read_dir(path).map(|mut d| d.next().is_some()).unwrap_or(false) {
+                        io::Error::other(
+                            "it is not empty; what was added to it since the hop stays, and so does it",
+                        )
+                    } else {
+                        e
+                    }
+                })?,
+                _ => displace(path, &mut taken)?,
+            }
+            Ok((None, taken))
+        }
+        Before::Directory { mode, .. } => {
+            match fs::symlink_metadata(path) {
+                Ok(m) if m.is_dir() => {}
+                Ok(_) => {
+                    if keep {
+                        displace(path, &mut taken)?;
+                    } else {
+                        remove_any(path)?;
+                    }
+                    fs::create_dir_all(path)?;
+                }
+                Err(_) => fs::create_dir_all(path)?,
+            }
+            #[cfg(unix)]
+            if let Some(m) = mode {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(path, fs::Permissions::from_mode(*m))?;
+            }
+            #[cfg(not(unix))]
+            let _ = mode;
+            Ok((None, taken))
+        }
         Before::File {
             snapshot,
             sha256,
@@ -1066,6 +1384,19 @@ fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
+            if keep {
+                // Whatever is at the path now (the hop's output, or a save
+                // made while it ran) goes to the tin before the old bytes
+                // come back, unless it already is the old bytes.
+                let same = fs::symlink_metadata(path)
+                    .map(|m| m.is_file())
+                    .unwrap_or(false)
+                    && !sha256.is_empty()
+                    && sha256_file(path).ok().as_deref() == Some(sha256.as_str());
+                if !same {
+                    displace(path, &mut taken)?;
+                }
+            }
             #[cfg(unix)]
             {
                 use std::os::unix::fs::MetadataExt;
@@ -1092,7 +1423,7 @@ fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
                         if let Some(ns) = mtime_ns {
                             set_mtime(path, *ns)?;
                         }
-                        return Ok(None);
+                        return Ok((None, taken));
                     }
                 }
             }
@@ -1115,7 +1446,7 @@ fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
             if let Some(ns) = mtime_ns {
                 set_mtime(path, *ns)?;
             }
-            Ok(note)
+            Ok((note, taken))
         }
         Before::Dir { snapshot } => {
             if snapshot.as_os_str().is_empty() {
@@ -1132,14 +1463,18 @@ fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
             let staged = staging_path(path);
             copy_tree(snapshot, &staged)?;
             remove_any(path)?;
-            fs::rename(&staged, path).map(|()| None)
+            fs::rename(&staged, path).map(|()| (None, taken))
         }
         Before::Symlink { target } => {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            remove_any(path)?;
-            make_symlink(target, path).map(|()| None)
+            if keep {
+                displace(path, &mut taken)?;
+            } else {
+                remove_any(path)?;
+            }
+            make_symlink(target, path).map(|()| (None, taken))
         }
         Before::Moved { to } => {
             if fs::symlink_metadata(to).is_err() {
@@ -1151,9 +1486,15 @@ fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent)?;
             }
-            remove_any(path)?;
+            // A move between two spellings of one name on a case-insensitive
+            // filesystem: the destination is the file, so there is nothing
+            // at the source to clear away, and clearing it would delete the
+            // only copy.
+            if !(super::case_variants(path, to) && super::same_object(path, to)) {
+                remove_any(path)?;
+            }
             match fs::rename(to, path) {
-                Ok(()) => Ok(None),
+                Ok(()) => Ok((None, taken)),
                 // Across devices (the run moved it with a copy): copy it
                 // back the same way, and only then let go of the copy.
                 Err(e) if e.raw_os_error() == Some(18) => {
@@ -1162,7 +1503,7 @@ fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
                     } else {
                         copy_file_with_mode(to, path)?;
                     }
-                    remove_any(to).map(|()| None)
+                    remove_any(to).map(|()| (None, taken))
                 }
                 Err(e) => Err(e),
             }
@@ -1178,6 +1519,21 @@ fn restore(state: &BeforeState) -> Result<Option<&'static str>, io::Error> {
 /// other program's sharing does allow, and the note says so. When even that
 /// is refused, the error names the program's hold and what to do.
 fn swap_in(staged: &Path, path: &Path) -> Result<Option<&'static str>, io::Error> {
+    #[cfg(windows)]
+    {
+        // A read-only destination refuses the swap with "access is
+        // denied", the code a held-open file gives too: the attribute is
+        // lifted first, so the wait below is for a real hold. The staged
+        // copy carries the mode the file gets back.
+        if let Ok(m) = fs::metadata(path) {
+            if m.permissions().readonly() {
+                let mut p = m.permissions();
+                #[allow(clippy::permissions_set_readonly_false)]
+                p.set_readonly(false);
+                let _ = fs::set_permissions(path, p);
+            }
+        }
+    }
     match fs::rename(staged, path) {
         Ok(()) => Ok(None),
         #[cfg(windows)]
@@ -1202,13 +1558,16 @@ fn swap_in(staged: &Path, path: &Path) -> Result<Option<&'static str>, io::Error
             })();
             match in_place {
                 Ok(()) => Ok(Some("in place: another program held it open")),
-                Err(inner) => Err(io::Error::new(
-                    e.kind(),
-                    format!(
-                        "{} is held open by another program and could not be replaced or rewritten ({inner}); close that program, then `cig unburn <run>` finishes the job",
-                        path.display()
-                    ),
-                )),
+                Err(inner) => {
+                    let _ = fs::remove_file(staged);
+                    Err(io::Error::new(
+                        e.kind(),
+                        format!(
+                            "{} is held open by another program and could not be replaced or rewritten ({inner}); close that program, then `cig unburn <run>` finishes the job",
+                            path.display()
+                        ),
+                    ))
+                }
             }
         }
         Err(e) => Err(e),
@@ -1260,7 +1619,16 @@ fn make_symlink(target: &Path, at: &Path) -> Result<(), io::Error> {
     }
     #[cfg(windows)]
     {
-        if target.is_dir() {
+        // A relative target is read from the link's own directory, not
+        // from the process: `..\shared` beside `p\sub\ldir` is `p\shared`.
+        let resolved = if target.is_relative() {
+            at.parent()
+                .map(|d| d.join(target))
+                .unwrap_or_else(|| target.to_path_buf())
+        } else {
+            target.to_path_buf()
+        };
+        if resolved.is_dir() {
             std::os::windows::fs::symlink_dir(target, at)
         } else {
             std::os::windows::fs::symlink_file(target, at)
@@ -1325,6 +1693,11 @@ fn copy_tree_inner(from: &Path, to: &Path, durable: bool) -> Result<(), io::Erro
         }
     }
     for (dir, perms) in dir_modes.into_iter().rev() {
+        // Each directory's entries are made durable before its mode is set,
+        // which may take away the right to open it for syncing.
+        if durable {
+            sync_dir(&dir)?;
+        }
         fs::set_permissions(&dir, perms)?;
     }
     // The root of the tree keeps its own mode too (a sticky or read-only
@@ -1376,11 +1749,6 @@ pub(crate) fn set_mtime(path: &Path, ns: u64) -> Result<(), io::Error> {
     }
 }
 
-/// fsync a snapshot file so it is durable before the op it protects runs.
-/// The copy carries the source's mode, so it may be read-only (a tin
-/// object, a `.git/objects` entry): Unix flushes a read-only handle, while
-/// Windows refuses to ("access is denied") and needs the read-only
-/// attribute lifted around the flush.
 /// Flush one file to the disk itself. On macOS `fsync` stops at the drive's
 /// cache; `F_FULLFSYNC` asks the drive to write it out, and falls back to
 /// `fsync` on a filesystem that does not take it. Everywhere else
@@ -1395,7 +1763,20 @@ pub(crate) fn full_sync(f: &fs::File) -> Result<(), io::Error> {
         if rc == 0 {
             return Ok(());
         }
-        f.sync_all()
+        // `sync_all` is F_FULLFSYNC again on Apple targets; what a
+        // filesystem that refuses it (SMB, NFS, FUSE) needs is fsync(2).
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::ENOTSUP) | Some(libc::ENOTTY) | Some(libc::EINVAL) => {
+                // SAFETY: fsync on a file descriptor this handle owns.
+                if unsafe { libc::fsync(f.as_raw_fd()) } == 0 {
+                    Ok(())
+                } else {
+                    Err(io::Error::last_os_error())
+                }
+            }
+            _ => Err(err),
+        }
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1416,6 +1797,11 @@ pub(crate) fn full_sync_data(f: &fs::File) -> Result<(), io::Error> {
     }
 }
 
+/// fsync a snapshot file so it is durable before the op it protects runs.
+/// The copy carries the source's mode, so it may be read-only (a tin
+/// object, a `.git/objects` entry): Unix flushes a read-only handle, while
+/// Windows refuses to ("access is denied") and needs the read-only
+/// attribute lifted around the flush.
 pub(crate) fn sync_file(path: &Path) -> Result<(), io::Error> {
     #[cfg(not(windows))]
     {
@@ -1441,6 +1827,11 @@ pub(crate) fn sync_file(path: &Path) -> Result<(), io::Error> {
             Err(e) => Err(e),
         }
     }
+}
+
+/// `sync_dir` for the tin and the run records, which live outside this file.
+pub(crate) fn sync_dir_pub(dir: &Path) -> Result<(), io::Error> {
+    sync_dir(dir)
 }
 
 /// fsync a directory so newly created entries in it are durable. A no-op

@@ -581,3 +581,69 @@ fn a_directory_as_the_command_export_lines_and_a_path_to_which() {
     ));
     assert_eq!((code, out.trim()), (0, "true bar 1 bin/ls null"), "{err}");
 }
+
+// ----- 1.4.0: the timeout covers the hop's output, not only its child -----------
+
+/// A process the child leaves behind holding the pipe does not hold the hop
+/// past its timeout: at the deadline the group is ended and the hop has run
+/// too long.
+#[test]
+fn a_background_child_holding_the_pipe_does_not_outlive_the_timeout() {
+    let sb = Sandbox::new();
+    let marker = format!("sleep 4.{}", std::process::id());
+    let started = std::time::Instant::now();
+    let (code, _, err) = sb.run(&burn(&format!(
+        "  proc.run(\"sh\", [\"-c\", \"{marker} & echo parent-done\"], {{timeout_ms: 700, grace_ms: 100}})"
+    )));
+    let wall = started.elapsed();
+    assert_eq!(code, 1, "{err}");
+    // The background sleep inherited both streams.
+    assert!(
+        err.contains("E554") && err.contains("kept its stdout and stderr open"),
+        "{err}"
+    );
+    assert!(
+        wall < std::time::Duration::from_secs(3),
+        "the hop waited for the pipe: {wall:?}"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert!(!ps_has(&marker), "`{marker}` outlived the hop");
+}
+
+/// A grandchild that left the process group cannot be killed with it; the
+/// hop still ends at its deadline, with what was read so far reported.
+#[test]
+fn a_grandchild_outside_the_group_does_not_hang_the_hop() {
+    let sb = Sandbox::new();
+    let marker = format!("sleep 59.{}", std::process::id());
+    let started = std::time::Instant::now();
+    let (code, _, err) = sb.run(&burn(&format!(
+        "  proc.run(\"sh\", [\"-c\", \"setsid {marker} & sleep 60\"], {{timeout_ms: 500, grace_ms: 100}})"
+    )));
+    let wall = started.elapsed();
+    let _ = Command::new("pkill").args(["-f", &marker]).output();
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("E554"), "{err}");
+    assert!(
+        wall < std::time::Duration::from_secs(6),
+        "the hop hung on the pipe: {wall:?}"
+    );
+}
+
+/// Feeding `stdin` to a first stage that never reads it does not stop the
+/// pipeline's clock.
+#[test]
+fn pipe_stdin_write_does_not_disable_the_timeout() {
+    let sb = Sandbox::new();
+    let started = std::time::Instant::now();
+    let (code, _, err) = sb.run(
+        "stick big = \"x\" * 300000\nburn {\n  proc.pipe([[\"sleep\", \"6\"], [\"cat\"]], {stdin: big, timeout_ms: 1000})\n}\n",
+    );
+    let wall = started.elapsed();
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("E554"), "{err}");
+    assert!(
+        wall < std::time::Duration::from_secs(4),
+        "the write blocked the timeout: {wall:?}"
+    );
+}

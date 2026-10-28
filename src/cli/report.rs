@@ -99,6 +99,7 @@ fn bundle(rec: &runs::RunRecord) -> serde_json::Value {
                             Before::Absent => "absent".to_string(),
                             Before::File { bytes, sha256, .. } => format!("file, {bytes} bytes, sha256 {}", &sha256[..sha256.len().min(12)]),
                             Before::Dir { .. } => "directory".to_string(),
+                            Before::Directory { .. } => "directory (made again)".to_string(),
                             Before::Symlink { target } => format!("symlink -> {}", r(&target.display().to_string())),
                             Before::Moved { to } => format!("moved to {}", r(&to.display().to_string())),
                         },

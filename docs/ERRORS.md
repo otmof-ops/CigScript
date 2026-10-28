@@ -1285,6 +1285,7 @@ folds and packs: refusals when automation is composed.
 | [`E756`](#e756-fold-shape-mismatch) | fold shape mismatch *(planned)* | not one of the four | match the declaration |
 | [`E757`](#e757-touches-without-a-pack) | touches without a pack | can't see any ciggies bro | declare pack { "." } (or the roots the hop writes under) as the first statement |
 | [`E758`](#e758-a-Windows-device-name-used-as-a-file) | a Windows device name used as a file | can't see any ciggies bro | name the file something else |
+| [`E759`](#e759-the-pack-is-in-use-by-another-run) | the pack is in use by another run | can't see any ciggies bro | wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap |
 
 ### E750 literal path outside the pack
 
@@ -1425,7 +1426,7 @@ Related: `E750`, `E752`.
 
 **Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
 
-A write names a path whose base name is a Windows device (con, prn, aux, nul, com1-9, lpt1-9, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows.
+A write names a path with a component that is a Windows device (con, prn, aux, nul, conin$, conout$, com0-9, lpt0-9, the superscript digits included, with any extension). On Windows that is the device, not a file, and the write is refused before anything is journaled, pack or no pack; elsewhere it is an ordinary file, so the checker only warns that the script will not run on Windows.
 
 **What to type next:** name the file something else
 
@@ -1434,6 +1435,24 @@ A write names a path whose base name is a Windows device (con, prn, aux, nul, co
 1. the path's base name, before its first dot, is a reserved device name (probe `source-line`). **Remedy:** rename the file; on Unix the warning can be denied with --deny-warnings
 
 Related: `E750`, `E702`.
+
+
+### E759 the pack is in use by another run
+
+*burn · since 1.4.0 · arises in run, light, unburn*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+Another cig run (or an unburn) holds this pack, or a pack that contains or lies inside it. Hop watching reads every change in a pack between its two scans as the hop's, so two runs writing in one pack would roll back each other's work; the second is refused before anything is changed.
+
+**What to type next:** wait for that run to finish (`cig runs` shows it), or give the two runs packs that do not overlap
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a run is in progress on this pack from another terminal, or a cigo task is running there (probe `run-record`). **Remedy:** wait for it, or run the two with different packs; the lock is released when the run ends
+2. a run holding the lock was killed and its lock file is still held by a process that outlived it (probe `pid-alive`). **Remedy:** `cig runs` names the holder; end that process, and the lock goes with it
+
+Related: `E751`, `E752`.
 
 
 ## usage (`E800`–`E849`)
