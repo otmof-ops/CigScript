@@ -2,6 +2,12 @@
 
 CigScript's binary links the Rust crates below, pulled from crates.io as packages (nothing is vendored). Every one is under a permissive licence compatible with Apache-2.0. Holder names come from each crate's metadata; `unrecorded` means the crate publishes no author field. Regenerate with `cargo license --avoid-dev-deps --json` (cargo-license) and `scripts/gen-third-party.py`.
 
+## 0BSD OR Apache-2.0 OR MIT
+
+| crate | version | holder | source |
+|---|---|---|---|
+| adler2 | 2.0.1 | Jonas Schievink <jonasschievink@gmail.com>, oyvindln <oyvindln@users.noreply.github.com> | https://github.com/oyvindln/adler2 |
+
 ## Apache-2.0 OR MIT
 
 | crate | version | holder | source |
@@ -50,6 +56,7 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | core-foundation | 0.10.1 | The Servo Project Developers | https://github.com/servo/core-foundation-rs |
 | core-foundation-sys | 0.8.7 | The Servo Project Developers | https://github.com/servo/core-foundation-rs |
 | cpufeatures | 0.2.17 | RustCrypto Developers | https://github.com/RustCrypto/utils |
+| crc32fast | 1.5.3 | Sam Rijs <srijs@airpost.net>, Alex Crichton <alex@alexcrichton.com> | https://github.com/srijs/rust-crc32fast |
 | crossbeam-utils | 0.8.23 | unrecorded | https://github.com/crossbeam-rs/crossbeam |
 | crypto-common | 0.1.7 | RustCrypto Developers | https://github.com/RustCrypto/traits |
 | dbus | 0.9.12 | David Henningsson <diwic@ubuntu.com> | https://github.com/diwic/dbus-rs |
@@ -62,7 +69,9 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | event-listener | 5.4.2 | Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net> | https://github.com/smol-rs/event-listener |
 | event-listener-strategy | 0.5.4 | John Nunley <dev@notgull.net> | https://github.com/smol-rs/event-listener-strategy |
 | fastrand | 2.5.0 | Stjepan Glavina <stjepang@gmail.com> | https://github.com/smol-rs/fastrand |
+| filetime | 0.2.29 | Alex Crichton <alex@alexcrichton.com> | https://github.com/alexcrichton/filetime |
 | find-msvc-tools | 0.1.14 | unrecorded | https://github.com/rust-lang/cc-rs |
+| flate2 | 1.1.10 | Alex Crichton <alex@alexcrichton.com>, Josh Triplett <josh@joshtriplett.org> | https://github.com/rust-lang/flate2-rs |
 | futures-core | 0.3.34 | unrecorded | https://github.com/rust-lang/futures-rs |
 | futures-io | 0.3.34 | unrecorded | https://github.com/rust-lang/futures-rs |
 | futures-lite | 2.6.1 | Stjepan Glavina <stjepang@gmail.com>, Contributors to futures-rs | https://github.com/smol-rs/futures-lite |
@@ -134,6 +143,7 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | static_assertions | 1.1.0 | Nikolai Vazquez | https://github.com/nvzqz/static-assertions-rs |
 | syn | 2.0.119 | David Tolnay <dtolnay@gmail.com> | https://github.com/dtolnay/syn |
 | syn | 3.0.6 | David Tolnay <dtolnay@gmail.com> | https://github.com/dtolnay/syn |
+| tar | 0.4.46 | Alex Crichton <alex@alexcrichton.com> | https://github.com/composefs/tar-rs |
 | tempfile | 3.27.0 | Steven Allen <steven@stebalien.com>, The Rust Project Developers, Ashley Mannix <ashleymannix@live.com.au>, Jason White <me@jasonwhite.io> | https://github.com/Stebalien/tempfile |
 | toml | 0.8.23 | unrecorded | https://github.com/toml-rs/toml |
 | toml_datetime | 0.6.11 | unrecorded | https://github.com/toml-rs/toml |
@@ -178,6 +188,7 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | windows_x86_64_gnullvm | 0.53.1 | unrecorded | https://github.com/microsoft/windows-rs |
 | windows_x86_64_msvc | 0.52.6 | Microsoft | https://github.com/microsoft/windows-rs |
 | windows_x86_64_msvc | 0.53.1 | unrecorded | https://github.com/microsoft/windows-rs |
+| xattr | 1.6.1 | Steven Allen <steven@stebalien.com> | https://github.com/Stebalien/xattr |
 | zeroize | 1.9.1 | The RustCrypto Project Developers | https://github.com/RustCrypto/utils |
 | zeroize_derive | 1.5.0 | The RustCrypto Project Developers | https://github.com/RustCrypto/utils |
 
@@ -203,6 +214,7 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | generic-array | 0.14.7 | Bartłomiej Kamiński <fizyk20@gmail.com>, Aaron Trent <novacrazy@gmail.com> | https://github.com/fizyk20/generic-array.git |
 | memoffset | 0.9.1 | Gilad Naaman <gilad.naaman@gmail.com> | https://github.com/Gilnaa/memoffset |
 | nix | 0.29.0 | The nix-rust Project Developers | https://github.com/nix-rust/nix |
+| simd-adler32 | 0.3.10 | Marvin Countryman <me@maar.vin> | https://github.com/mcountryman/simd-adler32 |
 | slab | 0.4.12 | Carl Lerche <me@carllerche.com> | https://github.com/tokio-rs/slab |
 | strsim | 0.11.1 | Danny Guo <danny@dannyguo.com>, maxbachmann <oss@maxbachmann.de> | https://github.com/rapidfuzz/strsim-rs |
 | tracing | 0.1.44 | Eliza Weisman <eliza@buoyant.io>, Tokio Contributors <team@tokio.rs> | https://github.com/tokio-rs/tracing |
@@ -228,6 +240,12 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | rustix | 1.1.5 | Dan Gohman <dev@sunfishcode.online>, Jakub Konka <kubkon@jakubkonka.com> | https://github.com/bytecodealliance/rustix |
 | wasi | 0.11.1+wasi-snapshot-preview1 | The Cranelift Project Developers | https://github.com/bytecodealliance/wasi |
 
+## Apache-2.0 OR MIT OR Zlib
+
+| crate | version | holder | source |
+|---|---|---|---|
+| miniz_oxide | 0.9.1 | Frommi <daniil.liferenko@gmail.com>, oyvindln <oyvindln@users.noreply.github.com>, Rich Geldreich richgel99@gmail.com | https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide |
+
 ## Apache-2.0 OR LGPL-2.1-or-later OR MIT
 
 | crate | version | holder | source |
@@ -252,3 +270,9 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 |---|---|---|---|
 | zerocopy | 0.8.63 | unrecorded | https://github.com/google/zerocopy |
 | zerocopy-derive | 0.8.63 | unrecorded | https://github.com/google/zerocopy |
+
+## Zlib
+
+| crate | version | holder | source |
+|---|---|---|---|
+| zlib-rs | 0.6.8 | unrecorded | https://github.com/trifectatechfoundation/zlib-rs |

@@ -3,7 +3,7 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## 1.6.0 — unreleased
+## 1.6.0 — 2026-10-28
 
 - **The box** (#85). `proc.run(cmd, args, {box: true})` runs the hop over a
   copy-on-write layer on the pack: on Linux, in its own user and mount

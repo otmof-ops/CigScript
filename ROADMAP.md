@@ -29,6 +29,12 @@ encrypted at rest, **pressed** is write-once. Chunking (row 9) comes first:
 it makes `touches: ["**"]` cheap enough to be cig-orchestrator's default;
 sealing (row 15) comes before the tin is on by default for real projects.
 
+Done in 1.6.0: rows 12 (the burn protocol, #89), 13 (the parcel, #86) and
+14 (the box, #85; overlayfs on Linux, the reflink clone for macOS and
+Windows still to come, the hop falling back to the tin there and saying
+so), with hop watching that scales (#84). Every row of this table has
+landed; the tin is complete end to end (#92).
+
 Done in 1.5.0: rows 9 (the tin in chunks, #82), 10 (git blob reuse, #87),
 11 (the hash chain, #88) and 15 (sealed, #83), each with its tests and wall
 rows; the words settled in LEXICON.md as planned.

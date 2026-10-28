@@ -20,6 +20,7 @@ code() { cat code.txt; }
 last() { tr '\r\n' '  ' <out.txt | cut -c1-160; }
 
 echo "== probe on $OS ($(uname -m 2>/dev/null)), $("$CIG" --version 2>&1)"
+PY=$(command -v python3 || command -v python); PY=$(basename "$PY" .exe)
 
 # 1 dry run changes nothing
 fresh; printf 'burn {\n  fs.write_text("a.txt", "1")\n}\n' > s.cig
@@ -165,5 +166,66 @@ fresh; echo v > old.txt; touch -t 202001020304 old.txt; before=$(ls -l old.txt |
 printf 'pack { "." }\nburn {\n  proc.run("sh", ["-c", "echo w > old.txt"], {touches: ["**"]})\n  cough "boom"\n}\n' > s.cig
 if [ "$WIN" = 1 ]; then result "tin: modification time comes back" SKIP "windows"; else run run s.cig
   after=$(ls -l old.txt | awk '{print $6,$7,$8}'); [ "$before" = "$after" ] && result "tin: modification time comes back" PASS || result "tin: modification time comes back" FAIL "before=$before after=$after"; fi
+
+# 24 the hash chain: a run verifies, an edited journal does not
+fresh; printf 'burn {\n  fs.write_text("a.txt", "1")\n  fs.write_text("b.txt", "2")\n}\n' > s.cig
+run run s.cig; id=$(ls "$CIGSCRIPT_HOME/runs" | tail -1); run runs "$id" --verify
+if [ "$(code)" = 0 ] && grep -q "chain *intact" out.txt; then
+  jp="$CIGSCRIPT_HOME/runs/$id/journal.jsonl"; "$PY" -c "import sys;p=sys.argv[1];l=open(p).read().split('\n');l[1]=l[1].replace('a.txt','z.txt',1);open(p,'w').write('\n'.join(l))" "$jp"
+  run runs "$id" --verify
+  [ "$(code)" != 0 ] && grep -q "BROKEN at line 3" out.txt && result "hash chain: intact run verifies, edited journal breaks" PASS || result "hash chain: intact run verifies, edited journal breaks" FAIL "$(last)"
+else result "hash chain: intact run verifies, edited journal breaks" FAIL "$(last)"; fi
+
+# 25 the tin in chunks: a one-byte edit to a large file comes back from its recipe
+fresh; mkdir -p p; "$PY" -c "open('p/big.bin','wb').write(bytes((i*7+3)%251 for i in range(1<<20)))"
+sum_before=$("$PY" -c "import hashlib;print(hashlib.sha256(open('p/big.bin','rb').read()).hexdigest())")
+printf 'pack { "./p" }\nburn {\n  proc.run("%s", ["-c", "f=open(\x27big.bin\x27,\x27r+b\x27); f.seek(500000); f.write(b\x27Z\x27)"], {cwd: "p", touches: ["**"]})\n  cough "boom"\n}\n' "$PY" > s.cig
+run run s.cig
+sum_after=$("$PY" -c "import hashlib;print(hashlib.sha256(open('p/big.bin','rb').read()).hexdigest())")
+"$CIG" --json tin du > du.json 2>/dev/null
+[ "$sum_before" = "$sum_after" ] && grep -q '"recipes":[1-9]' du.json && result "tin in chunks: large file comes back from its recipe" PASS || result "tin in chunks: large file comes back from its recipe" FAIL "same=$([ "$sum_before" = "$sum_after" ] && echo yes || echo no) $(cut -c1-120 du.json)"
+
+# 26 sealed: a hidden file under touches comes back and is never in the clear
+fresh; mkdir -p p; echo "SETTING=probe-hidden-value" > "p/.env"
+printf 'pack { "./p" }\nburn {\n  proc.run("sh", ["-c", "echo SETTING=rotated > .env"], {cwd: "p", touches: ["**"]})\n  cough "boom"\n}\n' > s.cig
+run run s.cig
+if [ "$(tr -d '\r' < "p/.env")" = "SETTING=probe-hidden-value" ] && ! grep -rq "probe-hidden-value" "$CIGSCRIPT_HOME" 2>/dev/null && grep -q "(sealed)" out.txt; then result "sealed: a hidden file comes back and is never in the clear" PASS
+else result "sealed: a hidden file comes back and is never in the clear" FAIL "file=$(cat "p/.env") clear=$(grep -rl probe-hidden-value "$CIGSCRIPT_HOME" 2>/dev/null | head -1) $(last)"; fi
+
+# 27 git blob reuse: a clean tracked file is referenced, not copied
+fresh; mkdir -p p
+if git -C p init -q . 2>/dev/null && echo "tracked v1" > p/app.txt && git -C p add . && git -C p -c user.name=t -c user.email=t@example.com -c commit.gpgsign=false commit -qm init; then
+  printf 'pack { "./p" }\nburn {\n  proc.run("sh", ["-c", "echo v2 > app.txt"], {cwd: "p", touches: ["**"]})\n  cough "boom"\n}\n' > s.cig
+  run run s.cig
+  [ "$(tr -d '\r' < p/app.txt)" = "tracked v1" ] && grep -q "(git)" out.txt && git -C p for-each-ref refs/cig/ | grep -q "refs/cig/runs/" && result "git blob reuse: a clean tracked file is referenced" PASS || result "git blob reuse: a clean tracked file is referenced" FAIL "$(last)"
+else result "git blob reuse: a clean tracked file is referenced" SKIP "no git"; fi
+
+# 28 the burn protocol: a tool's compensate line runs on rollback
+fresh; mkdir -p p
+cat > p/tool.sh <<'TOOL'
+#!/bin/sh
+echo did > work.txt
+printf '%s\n' '{"op":"compensate","label":"probe undo","undo":["sh","-c","echo undone > undone.txt"]}' >> "$CIG_JOURNAL"
+TOOL
+printf 'pack { "./p" }\nburn {\n  proc.run("sh", ["tool.sh"], {cwd: "p"})\n  cough "boom"\n}\n' > s.cig
+run run s.cig
+[ -f p/undone.txt ] && grep -q "ran the compensation for probe undo" out.txt && result "burn protocol: a reported compensation runs on rollback" PASS || result "burn protocol: a reported compensation runs on rollback" FAIL "$(ls p) $(last)"
+
+# 29 the parcel: a run unburns from another state directory
+fresh; mkdir -p p; echo original > p/a.txt
+printf 'pack { "./p" }\nburn {\n  proc.run("sh", ["-c", "echo changed > a.txt; echo new > b.txt"], {cwd: "p", touches: ["**"]})\n}\n' > s.cig
+run run s.cig; id=$(ls "$CIGSCRIPT_HOME/runs" | tail -1); run parcel "$id" --out run.cigparcel
+H2="$D-home2"; mkdir -p "$H2"
+CIGSCRIPT_HOME="$H2" "$CIG" unparcel run.cigparcel --root "p=$D/p" > out.txt 2>&1 && CIGSCRIPT_HOME="$H2" "$CIG" unburn "$id" > out.txt 2>&1
+[ "$(tr -d '\r' < p/a.txt)" = original ] && [ ! -e p/b.txt ] && result "parcel: imported elsewhere and unburned" PASS || result "parcel: imported elsewhere and unburned" FAIL "$(last)"
+
+# 30 the box: a failing boxed hop changes nothing (Linux), or falls back and says so
+fresh; mkdir -p p; echo original > p/keep.txt
+printf 'pack { "./p" }\nburn {\n  proc.run("sh", ["-c", "echo changed > keep.txt; echo new > made.txt; exit 3"], {cwd: "p", box: true, ok: 0, touches: ["**"]})\n}\n' > s.cig
+run run s.cig
+if grep -q "box cannot be made here\|box could not be made here" out.txt; then
+  [ "$(tr -d '\r' < p/keep.txt)" = original ] && result "the box: falls back to the tin and says so" PASS "no box here" || result "the box: falls back to the tin and says so" FAIL "$(last)"
+elif grep -q "layer was dropped" out.txt && [ "$(tr -d '\r' < p/keep.txt)" = original ] && [ ! -e p/made.txt ]; then result "the box: a failing boxed hop changes nothing" PASS
+else result "the box: a failing boxed hop changes nothing" FAIL "$(ls p) $(last)"; fi
 
 echo "== $pass passed, $fail failed, $skip skipped"
