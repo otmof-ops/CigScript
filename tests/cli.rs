@@ -6629,3 +6629,27 @@ fn a_changed_last_journal_line_refuses_the_unburn() {
     sb.run_ok(&["unburn", &id, "--give-back", "--force"]);
     assert_eq!(sb.read("q/h.txt"), "h2\n");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hops_writes_under_a_build_tree_pass_through() {
+    let sb = Sandbox::new();
+    sb.write("p/target/old.o", "old\n");
+    sb.write("p/node_modules/dep/index.js", "1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"for i in 1 2 3; do echo $i > target/$i.o; done; echo changed > target/old.o; rm -r node_modules/dep; echo built > out.txt\"], {cwd: \"p\", box: true})\n  cough \"boom\"\n}\n",
+    );
+    let err = sb.run_err(&["run", "s.cig"], 1);
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    // One path came through the box; the trees hop watching never looks
+    // into are not the box's business either, and keep what the hop did.
+    assert!(err.contains("applied: 1 path written, 0 removed"), "{err}");
+    assert!(!sb.exists("p/out.txt"));
+    assert_eq!(sb.read("p/target/old.o"), "changed\n");
+    assert!(sb.exists("p/target/3.o"));
+    assert!(!sb.exists("p/node_modules/dep"));
+}

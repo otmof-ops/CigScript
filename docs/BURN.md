@@ -434,6 +434,11 @@ the tin as usual, with `touches` keeping what it may change, and the run
 says so (`E763`). A hop's own undo (the burn protocol) is journaled for a
 boxed hop too. The layers live under the run directory while the hop runs
 and are removed once applied or dropped, so the record prunes as any other.
+The trees hop watching never looks into (`.git`, `node_modules`, `target`,
+`.venv` and the rest of that list) are bound through the overlay from the
+real root: a build writes its objects where it always did, nothing of them
+is journaled or undone, and the box applies the rest; a tree that is not
+there before the hop is made through the box like any new directory.
 
 ## The parcel
 

@@ -139,9 +139,20 @@ pub struct Setup {
     pub gid_map: Vec<u8>,
     /// (mount point, overlay options), each NUL-terminated.
     pub mounts: Vec<(std::ffi::CString, std::ffi::CString)>,
+    /// The build and dependency trees hop watching never looks into (`.git`,
+    /// `node_modules`, `target`, ...) that are there under a root: bound
+    /// through the overlay from the real root, so what a hop writes there
+    /// lands as it always did and is never journaled. A tree that is not
+    /// there before the hop is made through the box like the rest.
+    pub binds: Vec<std::ffi::CString>,
     pub cwd: std::ffi::CString,
     pub why: std::ffi::CString,
 }
+
+/// How many trees the child binds at most (a stack array holds their
+/// descriptors between fork and exec).
+#[cfg(target_os = "linux")]
+const MAX_BINDS: usize = 64;
 
 #[cfg(target_os = "linux")]
 impl Setup {
@@ -154,6 +165,7 @@ impl Setup {
                 .map_err(|_| io::Error::other("a path holds a NUL byte"))
         };
         let mut mounts = Vec::new();
+        let mut binds = Vec::new();
         for (root, upper, work) in &layers.roots {
             let opts = format!(
                 "lowerdir={},upperdir={},workdir={},userxattr",
@@ -165,11 +177,22 @@ impl Setup {
                 cstr(root)?,
                 std::ffi::CString::new(opts).map_err(|_| io::Error::other("NUL in options"))?,
             ));
+            for name in super::tin::SKIPPED_ALWAYS {
+                let dir = root.join(name);
+                if fs::symlink_metadata(&dir)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+                    && binds.len() < MAX_BINDS
+                {
+                    binds.push(cstr(&dir)?);
+                }
+            }
         }
         Ok(Setup {
             uid_map: format!("{uid} {uid} 1\n").into_bytes(),
             gid_map: format!("{gid} {gid} 1\n").into_bytes(),
             mounts,
+            binds,
             cwd: cstr(cwd)?,
             why: cstr(&layers.dir.join("why"))?,
         })
@@ -180,8 +203,9 @@ impl Setup {
     /// # Safety
     ///
     /// Only async-signal-safe calls are made (unshare, open, write, mount,
-    /// chdir, close), on data prepared before the fork; the caller runs it
-    /// in a `pre_exec` closure and nowhere else.
+    /// chdir, close), on data prepared before the fork (the descriptors the
+    /// binds name were opened there); the caller runs it in a `pre_exec`
+    /// closure and nowhere else.
     pub unsafe fn apply(&self) -> io::Result<()> {
         if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
             return self.fail(b"unshare(CLONE_NEWUSER|CLONE_NEWNS) refused");
@@ -204,6 +228,17 @@ impl Setup {
         {
             return self.fail(b"making the mount tree private refused");
         }
+        // The build and dependency trees, held open before the overlay hides
+        // them. Opened here, after the namespace split: a descriptor from
+        // before it names the parent namespace's mounts, which this one
+        // cannot bind (EINVAL).
+        let mut held: [libc::c_int; MAX_BINDS] = [-1; MAX_BINDS];
+        for (i, at) in self.binds.iter().enumerate() {
+            held[i] = libc::open(
+                at.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            );
+        }
         for (at, opts) in &self.mounts {
             if libc::mount(
                 c"overlay".as_ptr(),
@@ -215,6 +250,32 @@ impl Setup {
             {
                 return self.fail(b"mounting overlayfs over a root refused (a kernel before 5.11, or a filesystem overlayfs cannot layer over)");
             }
+        }
+        // Those trees come through from the real root: what a hop writes
+        // there is not the box's business, as it is not the watch's.
+        for (i, at) in self.binds.iter().enumerate() {
+            let fd = held[i];
+            if fd < 0 {
+                // Gone since the plan was made: nothing to bind.
+                continue;
+            }
+            let prefix = b"/proc/self/fd/";
+            let mut from = [0u8; 48];
+            from[..prefix.len()].copy_from_slice(prefix);
+            let mut digits = [0u8; 32];
+            let k = itoa(fd, &mut digits);
+            from[prefix.len()..prefix.len() + k].copy_from_slice(&digits[..k]);
+            if libc::mount(
+                from.as_ptr() as *const libc::c_char,
+                at.as_ptr(),
+                std::ptr::null(),
+                libc::MS_BIND | libc::MS_REC,
+                std::ptr::null(),
+            ) != 0
+            {
+                return self.fail(b"binding a build tree through the overlay refused");
+            }
+            libc::close(fd);
         }
         // Into the working directory again, through the overlay this time.
         if libc::chdir(self.cwd.as_ptr()) != 0 {

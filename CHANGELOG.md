@@ -28,6 +28,14 @@ test that fails on 1.6.0.
 - **A boxed hop's `touches_sealed` was ignored.** Its writes were journaled
   as plain; the before-bytes of a file under those globs are sealed now, as
   on the tin.
+- **A boxed build wrote its whole `target/` through the journal.** Hop
+  watching never looks into `.git`, `node_modules`, `target`, `.venv` and the
+  other build and dependency trees; the box applied and journaled every file
+  a hop put there (3,000 object files: 3,001 ops and fifteen times the
+  wall-clock of the same hop on the watch). Those trees are bound through
+  the overlay from the real root now, so what a hop writes there lands as it
+  always did and is never journaled; a tree that is not there before the hop
+  is made through the box like the rest.
 - **A `compensate` line from a hop without a `pack { }` was dropped.** The
   hop's own undo needs no pack; it is journaled and runs on rollback. A
   `write`, `delete` or `create` claim without a pack is said and dropped
