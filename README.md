@@ -245,7 +245,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.2/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.3/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +255,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.4.2 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.4.3 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +266,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.4.2-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.4.3-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -460,6 +460,8 @@ for.
 | a script that makes `build/out/` inside the pack, then a rollback | **the files went, the directories stayed, empty**; now hop watching journals the directories a script creates and rollback removes them | fixed 1.1.2 | `directories_a_hop_creates_are_removed_by_rollback_and_unburn` |
 | `fs.glob("*")`, `fs.glob("./scripts/*")` | **an empty string among the matches; nothing at all**; now neither, and a pattern without `**` walks no deeper than it can match | fixed 1.1.2 | `glob_star_lists_no_empty_entry_and_dot_slash_patterns_match` |
 | `cig run /dev/zero`; `cig frobnicate` | **read forever; exit 2 (a script error's code)**; now `E801`, and exit 3 | fixed 1.1.1 | `a_device_as_the_script_is_refused_and_a_bad_invocation_exits_3` |
+| a hop deletes a folder of a thousand files it did not name in `touches` | one warning for the folder, with the glob that would have kept it and a few of the files; `cig runs <id>` has every one | 1.4.3 | `changes_outside_touches_are_reported_once_per_folder` |
+| `cig unburn <id> --give-back --dry-run` | the files the rollback set aside, what is at each path now and whether it changed since; nothing written, and a changed path refused without `--force` | 1.4.3 | `give_back_dry_run_lists_what_it_would_restore_and_changes_nothing` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).

@@ -3,6 +3,22 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.4.3 — 2026-10-28
+
+- **Changes outside `touches` are reported once per folder** (#90). A hop
+  that deleted a thousand-file folder it had not named produced a thousand
+  `E757` lines, one per file, and buried the two that mattered. The files
+  under one top-level folder are now one line: how many, the smallest
+  directory that covers them, the one glob that would have kept them, and a
+  few of them as examples; `cig runs <id>` lists every one. A lone file is
+  still named itself.
+- **`cig unburn <id> --give-back` can be previewed** (#91). `--give-back
+  --dry-run` lists each file the rollback moved into the tin, with what the
+  tin holds for it, what is at the path now and whether that is still what
+  the rollback left, and changes nothing. A path changed again since the
+  rollback is refused without `--force`, as a rollback over a later edit is
+  (`E704`), and the preview says so.
+
 ## 1.4.2 — 2026-10-28
 
 - **A burn can carry a name** (#80): `burn ("deploy") { } unburn { }`, or

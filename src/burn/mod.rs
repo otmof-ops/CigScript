@@ -695,6 +695,86 @@ fn covering_glob(rel: &Path) -> String {
     }
 }
 
+/// The warnings for files a hop changed outside every `touches` glob. A
+/// lone file is named, with the glob that would have kept it. Several are
+/// said once per top-level folder they fall under, as the smallest
+/// directory that covers them and one glob for it, with a few of them as
+/// examples: a deleted folder of a thousand files is one line, not a
+/// thousand, and `cig runs <id>` has every one.
+fn uncovered_warnings(uncovered: &[(PathBuf, String)], run: &str) -> Vec<String> {
+    let mut groups: std::collections::BTreeMap<String, Vec<&(PathBuf, String)>> =
+        std::collections::BTreeMap::new();
+    for item in uncovered {
+        let top = match item.1.split_once('/') {
+            Some((top, _)) => top.to_string(),
+            None => String::new(),
+        };
+        groups.entry(top).or_default().push(item);
+    }
+    let mut out = Vec::new();
+    for files in groups.values() {
+        if let [(p, rel)] = files.as_slice() {
+            out.push(format!(
+                "{} is not under touches, so the hop's change to it is irreversible; touches: [\"{}\"] would keep it",
+                p.display(),
+                covering_glob(Path::new(rel))
+            ));
+            continue;
+        }
+        let dir = common_dir(files.iter().map(|(_, rel)| rel.as_str()));
+        let (place, glob) = if dir.is_empty() {
+            ("at the pack root".to_string(), "*".to_string())
+        } else {
+            (format!("under {dir}/"), format!("{dir}/**"))
+        };
+        let examples: Vec<&str> = files.iter().take(3).map(|(_, rel)| rel.as_str()).collect();
+        out.push(format!(
+            "{} files {place} are not under touches, so the hop's changes to them are irreversible; touches: [\"{glob}\"] would keep them ({}{}; cig runs {run} lists them all)",
+            thousands(files.len()),
+            examples.join(", "),
+            if files.len() > examples.len() {
+                ", ..."
+            } else {
+                ""
+            }
+        ));
+    }
+    out
+}
+
+/// The deepest directory every one of these relative paths is under, as
+/// `a/b`; empty for files at the root.
+fn common_dir<'a>(rels: impl Iterator<Item = &'a str>) -> String {
+    let mut common: Option<Vec<&str>> = None;
+    for rel in rels {
+        let mut parts: Vec<&str> = rel.split('/').collect();
+        parts.pop();
+        common = Some(match common {
+            None => parts,
+            Some(c) => c
+                .iter()
+                .zip(parts.iter())
+                .take_while(|(a, b)| a == b)
+                .map(|(a, _)| *a)
+                .collect(),
+        });
+    }
+    common.unwrap_or_default().join("/")
+}
+
+/// `1000` as `1,000`.
+fn thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// How many of the pack's files each `touches` glob matches, for the dry
 /// run's plan line and the warning about a glob that matches nothing.
 fn touches_counts(roots: &[PathBuf], touches: &[String], cap: usize) -> Vec<(String, usize)> {
@@ -1187,6 +1267,9 @@ impl Kernel {
         } else {
             tin::globs(&watch.touches).ok()
         };
+        // Files changed outside every `touches` glob, with their path
+        // relative to the root, for the grouped warning after the loop.
+        let mut uncovered: Vec<(PathBuf, String)> = Vec::new();
         for (p, change) in writes
             .modified
             .iter()
@@ -1240,15 +1323,11 @@ impl Kernel {
                 self.irreversible += 1;
             }
             // The glob that would have kept it, when the hop named some and
-            // none covered this file.
+            // none covered this file: said once per folder, after the loop.
             if let Some(set) = &touched_set {
                 if let Some(rel) = roots.iter().find_map(|r| p.strip_prefix(r).ok()) {
                     if !set.is_match(rel) {
-                        watch.warnings.push(format!(
-                            "{} is not under touches, so the hop's change to it is irreversible; touches: [\"{}\"] would keep it",
-                            p.display(),
-                            covering_glob(rel)
-                        ));
+                        uncovered.push((p.clone(), rel.to_string_lossy().replace('\\', "/")));
                     }
                 }
             }
@@ -1264,6 +1343,15 @@ impl Kernel {
                 None,
                 compensated,
             );
+        }
+        if !uncovered.is_empty() {
+            let run = self
+                .journal
+                .run_dir()
+                .and_then(|d| d.file_name())
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "<run>".to_string());
+            watch.warnings.extend(uncovered_warnings(&uncovered, &run));
         }
         // Directories last, deepest first, so a rollback (newest first) makes
         // a parent before its children and both before the files inside.
