@@ -639,9 +639,11 @@ pub fn path_map_of(run_dir: &Path) -> Vec<(PathBuf, PathBuf)> {
 }
 
 /// `path` as it is here: the longest mapped origin prefix replaced. A path
-/// that is relative, or under no mapped prefix, is itself.
+/// that is relative (as a script wrote it), or under no mapped prefix, is
+/// itself. "Rooted" rather than "absolute": a Unix path read on Windows
+/// has a root and no drive, and must still be mapped.
 pub fn remap(path: &Path, map: &[(PathBuf, PathBuf)]) -> PathBuf {
-    if map.is_empty() || !path.is_absolute() {
+    if map.is_empty() || !path.has_root() {
         return path.to_path_buf();
     }
     for (from, to) in map {
