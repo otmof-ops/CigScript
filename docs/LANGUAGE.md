@@ -235,6 +235,12 @@ journal alone, an `unburn { }` block may use only its state map, the prelude
 modules and its own names; anything else is `E754`, before the run. The plan
 shows hops inside such a block as `compensated` instead of `irreversible`.
 
+A burn can carry a name: `burn ("deploy") { ... }`, or `burn (s, name) { ... }`
+with a state map, any expression that is a string. The plan, the run record
+and a rollback then name the burn by it (`deploy is NOT undone: its
+compensation failed: …`) instead of by its line, which for a tool written in
+CigScript is the tool's own source and no help to its user.
+
 ```cig
 burn (s) {
   s.before = proc.text("git", ["rev-parse", "origin/main"]).trim()

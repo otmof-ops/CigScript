@@ -3,6 +3,22 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.4.2 — 2026-10-28
+
+- **A burn can carry a name** (#80): `burn ("deploy") { } unburn { }`, or
+  `burn (s, name) { }` with a state map, any expression that is a string.
+  The plan, the run record and a rollback name the burn by it instead of by
+  its line: `deploy is NOT undone: its compensation failed: …`, where a tool
+  written in CigScript used to be quoted by a line of its own source.
+  Without a label the line stands in, worded once (`the burn at line 12 was
+  not undone: its compensation failed: …`).
+- **A `touches` glob written with a leading `?` may match nothing without a
+  word** (cig-orchestrator #48): `?yarn.lock` is a file the project may not
+  have yet, not a typo; the `?` is not part of the glob, and a file created
+  under it is kept like any other.
+- Each warning about a hop's watch is printed once; 1.4.0 said the ones from
+  before the hop twice.
+
 ## 1.4.1 — 2026-10-28
 
 - **A link a hop makes is the pack's entry, wherever it points.** 1.4.0 judged

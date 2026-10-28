@@ -28,6 +28,7 @@ const FEATURES: &[(&str, Version)] = &[
     ("finally", Version(1, 1, 0)),
     ("pack { }", Version(1, 1, 0)),
     ("burn (s) { } unburn { }", Version(1, 1, 0)),
+    ("burn (s, label) { }", Version(1, 4, 2)),
 ];
 
 pub const FIRST: Version = Version(1, 0, 0);
@@ -152,8 +153,20 @@ fn stmt(s: &Stmt, out: &mut Vec<Use>) {
             }
         }
         Stmt::Burn {
-            body, unburn, span, ..
+            body,
+            unburn,
+            label,
+            span,
+            ..
         } => {
+            if label.is_some() {
+                note(
+                    out,
+                    "burn (s, label) { }",
+                    feature("burn (s, label) { }"),
+                    *span,
+                );
+            }
             if unburn.is_some() {
                 note(
                     out,

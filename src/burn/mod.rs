@@ -95,6 +95,9 @@ pub enum Op {
     /// The compensation recorded when a `burn { } unburn { }` block ends.
     Compensate {
         line: u32,
+        /// The burn's name, when it has one (`burn (s, "deploy")`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
 }
 
@@ -199,7 +202,10 @@ impl Op {
                     (false, _) => "",
                 }
             ),
-            Op::Compensate { line } => format!("compensation for the burn at line {line}"),
+            Op::Compensate { line, label } => match label {
+                Some(l) => format!("compensation for {l}"),
+                None => format!("compensation for the burn at line {line}"),
+            },
         }
     }
 }
@@ -832,7 +838,10 @@ impl Kernel {
         mark: usize,
     ) -> Result<(), Diagnostic> {
         self.seq += 1;
-        let op = Op::Compensate { line: comp.line };
+        let op = Op::Compensate {
+            line: comp.line,
+            label: comp.label.clone(),
+        };
         if self.mode == Mode::DryRun {
             self.planned.push(PlannedOp {
                 seq: self.seq,
@@ -894,11 +903,17 @@ impl Kernel {
                     // proven otherwise, and would quietly leave the files it
                     // meant irreversible. One glob among several matching
                     // nothing is ordinary (a lockfile the project may have),
-                    // so the list is judged as a whole; the dry run counts
-                    // each glob, and the report after the hop names the glob
-                    // that would have kept a file changed outside them all.
-                    let counts = touches_counts(roots, touches, cap);
-                    if !partial && counts.iter().all(|(_, n)| *n == 0) {
+                    // so the list is judged as a whole, and a glob written
+                    // with a leading `?` (`?yarn.lock`: a file that may not
+                    // exist yet) is never counted against it. The dry run
+                    // counts each glob, and the report after the hop names
+                    // the glob that would have kept a file changed outside
+                    // them all.
+                    let counts: Vec<(String, usize)> = touches_counts(roots, touches, cap)
+                        .into_iter()
+                        .filter(|(g, _)| !g.starts_with('?'))
+                        .collect();
+                    if !partial && !counts.is_empty() && counts.iter().all(|(_, n)| *n == 0) {
                         let existing: Vec<String> = inside
                             .iter()
                             .filter(|(_, m)| !m.is_dir())

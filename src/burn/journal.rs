@@ -102,6 +102,9 @@ pub struct Compensation {
     #[serde(default)]
     pub state: serde_json::Value,
     pub line: u32,
+    /// The burn's name (`burn (s, "deploy")`), used in place of the line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
 }
 
 /// The shape of `journal.jsonl` and `after.json` this cig writes. The
@@ -746,15 +749,27 @@ impl Journal {
                 match runner.as_mut() {
                     Some(run) => match run(c) {
                         Ok(()) => {
-                            let text =
-                                format!("ran the compensation for the burn at line {}", c.line);
+                            let text = match &c.label {
+                                Some(l) => format!("ran the compensation for {l}"),
+                                None => {
+                                    format!("ran the compensation for the burn at line {}", c.line)
+                                }
+                            };
                             report.actions.push(("compensated".to_string(), text));
                             done.push(entry.seq);
                         }
                         Err(e) => {
                             undo_failed = true;
-                            let text =
-                                format!("compensation for the burn at line {} failed: {e}", c.line);
+                            // Named for the burn, once: a tool written in
+                            // CigScript labels its burns with the user's words,
+                            // and its own line number is noise to that user.
+                            let text = match &c.label {
+                                Some(l) => format!("{l} is NOT undone: its compensation failed: {e}"),
+                                None => format!(
+                                    "the burn at line {} was not undone: its compensation failed: {e}",
+                                    c.line
+                                ),
+                            };
                             report.failed.push(text.clone());
                             report.actions.push(("failed".to_string(), text));
                         }

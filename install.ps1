@@ -5,7 +5,7 @@
 # install directory to the user's PATH. No admin rights required.
 #
 #   Review first (recommended):
-#     irm https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.1/install.ps1 -OutFile install.ps1
+#     irm https://raw.githubusercontent.com/otmof-ops/CigScript/v1.4.2/install.ps1 -OutFile install.ps1
 #     notepad install.ps1 ; .\install.ps1
 #
 #   One-liner (reads CIG_VERSION, CIG_PREFIX, CIG_NO_MODIFY_PATH, CIG_YES from
