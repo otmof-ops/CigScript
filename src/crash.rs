@@ -963,6 +963,9 @@ mod tests {
             None,
             None,
         );
+        // Pinned, so the test reads the same on every platform.
+        r.os = "linux".to_string();
+        r.version = "1.0.0".to_string();
         let mut stats = Stats::first(&r);
         assert_eq!(stats.count, 1);
         // The same again: counted, nothing new.
