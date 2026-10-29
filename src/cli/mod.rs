@@ -271,7 +271,35 @@ pub struct LightArgs {
     pub args: Vec<String>,
 }
 
+/// Every word the parser knows (subcommands, aliases, flags, the values of
+/// an enumerated option), so a report's command line can keep them and
+/// reduce everything else to its shape.
+fn known_words(cmd: &clap::Command, out: &mut Vec<String>) {
+    out.push(cmd.get_name().to_string());
+    out.extend(cmd.get_all_aliases().map(str::to_string));
+    for a in cmd.get_arguments() {
+        if let Some(l) = a.get_long() {
+            out.push(format!("--{l}"));
+        }
+        if let Some(s) = a.get_short() {
+            out.push(format!("-{s}"));
+        }
+        for pv in a.get_possible_values() {
+            out.push(pv.get_name().to_string());
+        }
+    }
+    for sub in cmd.get_subcommands() {
+        known_words(sub, out);
+    }
+}
+
 pub fn main() -> i32 {
+    {
+        use clap::CommandFactory;
+        let mut words = Vec::new();
+        known_words(&Cli::command(), &mut words);
+        cigscript::crash::know_words(words);
+    }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {

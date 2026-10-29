@@ -3,6 +3,73 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.7.1 — 2026-10-29
+
+**Nothing of yours in a report** (#103), and the reporter debugged against
+what 1.7.0 shipped. Reports sent the full working directory, so a client's
+or a project's name in a folder reached a public issue; paths inside a
+message, a bundle or a handed-in report could too. Every route is now an
+allowlist of shapes.
+
+- **Privacy** (#103). The working directory travels as its shape, never its
+  names: the placeholder of the run's mapping (`root0`, `out/d1/D2/d3`), or
+  `~/d1/D2` and `/d1/d2` when no run is in progress (a panic, a handed-in
+  report). The command line keeps only the words cig knows (its
+  subcommands, flags, configuration keys and values, versions, error codes,
+  numbers) and gives everything else a shape: `cig run <script>`, `<path>`,
+  `<run>`, `<flag>`, `<arg>`; `cig report` bundles do the same with their
+  `args`. Every string in a report goes through the run's mapping: a path
+  it has seen is its placeholder, anything else shaped like a path or a
+  file name gets one too, a field named for a path (`cwd`, `path`, `file`,
+  `script`) is mapped whole, a command line (`command`, `args`, `cmd`) is
+  reduced as above, globs are mapped component by component; a location in
+  cig's own source and cig's own file names stay. The bundle's journal,
+  diagnostic, diagnosis and intents are mapped the same, its script and
+  working directory too, and its state directory says `~/.cigscript` or
+  `<custom>`. `cig crash submit` anonymises what another tool hands in the
+  same way (what cig cannot tell from a plain word, a task's or a project's
+  name, is the tool's; cig-orchestrator 1.1.1 does). The body itself is an
+  allowlist of fields: the ashtray's bookkeeping (queue, issue,
+  announcement) never travels, and `cig crash show` prints exactly the body
+  that would. The anonymising happens before the fingerprint is taken, so
+  one bug hit in two differently named folders is one issue.
+- **No false alarm from a path touched twice.** The rollback tripwire judged
+  every journal entry against its own before-state, so a folder made then
+  deleted in one run, a file rewritten then removed, or a hop's tree
+  deleted after it, tripped on every failed run though the pack was back
+  as it was. Each path is now judged once, by the state before the first
+  op that touched it (the later before-states are the run's own
+  intermediate states), with a path named two ways (from the working
+  directory by the script, whole by a hop's effect) counted as one.
+- **`cig unburn` runs the tripwires too.** A later rollback had none: a
+  restore that put a mode bit back wrong went unnoticed. The rollback
+  tripwire and the tin sample now run after an unburn as after a run's own
+  rollback; the unburn's outcome stays what it was.
+- **A typed `cig crash flush` sends now.** A report in its backoff after two
+  failed tries was skipped with `nothing to send yet` when the person typed
+  the command; typed, the flush is a request for now. The background's
+  pass still honours the backoff.
+- **Big reports fit an issue.** The rollback tripwire lists twenty-five
+  mismatches and counts the rest (a run over 300 files made a 100 KB report
+  that GitHub's 65,536-character limit would have refused on every retry);
+  a body past 60,000 characters is cut back, the details first, then the
+  repro's script, seeds and stubs, and says where the whole report is.
+- **Links in a repro.** A link's relative target was mapped as a path from
+  the working directory and landed under `out/`, dangling; it stays
+  relative to the link, mapped through the link's directory.
+- **Nested pack roots.** A hop's file under `pack { "./q", "./q/a" }` was
+  journaled once per root that saw it, so the rollback removed it twice and
+  the repro's stub wrote it twice; one effect, journaled once.
+- Tests: `a_report_never_contains_a_path_component_of_the_users_folder`,
+  `a_crash_report_cwd_is_a_placeholder`,
+  `a_path_touched_twice_does_not_trip_the_rollback_tripwire`,
+  `cig_unburn_runs_the_rollback_tripwire`,
+  `a_typed_flush_sends_a_report_waiting_for_its_retry_time`,
+  `a_report_with_many_mismatches_lists_twenty_five_and_counts_the_rest`,
+  `a_relative_link_target_stays_relative_in_the_repro`,
+  `a_hop_under_nested_roots_is_journaled_once`; unit:
+  `a_body_past_the_issue_limit_is_cut_back`, `redaction_rules` extended.
+
 ## 1.7.0 — 2026-10-29
 
 **The tool reports its own bugs** (#101): never the person's. cig notices

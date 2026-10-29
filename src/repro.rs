@@ -64,7 +64,9 @@ pub struct Seed {
 
 /// The person's paths, each component given a stable placeholder that keeps
 /// what a filesystem bug may depend on: depth, extension, a leading dot, a
-/// capital letter, a character outside ASCII.
+/// capital letter, a character outside ASCII. The same mapping scrubs the
+/// free text of a report: a path it has seen is written as its placeholder,
+/// and anything else shaped like a path or a file name is given one too.
 #[derive(Debug, Default)]
 pub struct Mapping {
     /// (real root, placeholder), longest root first.
@@ -80,6 +82,176 @@ pub struct Mapping {
     seen: Vec<PathBuf>,
 }
 
+/// Extensions that mark a bare word as a file name in free text.
+const FILE_EXTENSIONS: &[&str] = &[
+    "cig", "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd", "exe", "txt", "md", "rst", "csv",
+    "tsv", "json", "jsonl", "yaml", "yml", "toml", "ini", "cfg", "conf", "env", "log", "xml",
+    "html", "htm", "css", "js", "mjs", "cjs", "ts", "tsx", "jsx", "py", "pyc", "rs", "go", "java",
+    "kt", "rb", "php", "c", "h", "cpp", "hpp", "cc", "cs", "swift", "sql", "db", "sqlite",
+    "sqlite3", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "zip", "tar",
+    "gz", "tgz", "bz2", "xz", "zst", "7z", "rar", "png", "jpg", "jpeg", "gif", "svg", "webp",
+    "ico", "bmp", "mp3", "mp4", "wav", "flac", "mov", "avi", "mkv", "key", "pem", "crt", "cer",
+    "p12", "pfx", "pub", "bak", "tmp", "old", "orig", "lock", "parcel", "dat", "bin", "iso", "img",
+    "dmg", "pkg", "deb", "rpm", "apk", "jar", "war", "wasm", "so", "dll", "dylib", "o", "a", "lib",
+    "map", "snap", "ipynb", "pl", "lua", "tf", "hcl", "proto",
+];
+
+/// File names of cig's own, and the family's, that a report may say.
+const OWN_NAMES: &[&str] = &[
+    "journal.jsonl",
+    "run.json",
+    "after.json",
+    "intents.jsonl",
+    "config.toml",
+    "cig.exe",
+    "install.sh",
+    "Cargo.toml",
+    "Cargo.lock",
+    "cheat.yml",
+    "repro.cig",
+    "orchestrate.cig",
+    "cig-tasks.json",
+    "cigo.exe",
+];
+
+/// A placeholder this mapping makes: `d3`, `F12.txt`, `.d1`, `d2é`.
+fn is_placeholder_component(c: &str) -> bool {
+    let body = c.strip_prefix('.').unwrap_or(c);
+    let mut chars = body.chars();
+    if !matches!(chars.next(), Some('d' | 'D' | 'f' | 'F')) {
+        return false;
+    }
+    let rest: String = chars.collect();
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return false;
+    }
+    let mut after = &rest[digits.len()..];
+    if let Some(a) = after.strip_prefix('é') {
+        after = a;
+    }
+    match after.strip_prefix('.') {
+        None => after.is_empty(),
+        Some(ext) => {
+            !ext.is_empty() && ext.len() <= 8 && ext.chars().all(|c| c.is_ascii_alphanumeric())
+        }
+    }
+}
+
+/// A path made of placeholders: `root0/d1/f2.txt`, `out/d3`, `~/d1/D2`, `/d1`.
+fn is_placeholder_path(s: &str) -> bool {
+    if s.is_empty() {
+        return false;
+    }
+    let mut comps = s.split(['/', '\\']);
+    let Some(first) = comps.next() else {
+        return false;
+    };
+    let is_root = first
+        .strip_prefix("root")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    let is_drive =
+        first.len() == 2 && first.ends_with(':') && first.as_bytes()[0].is_ascii_alphabetic();
+    if !(first.is_empty() || first == "~" || first == "out" || is_root || is_drive) {
+        return false;
+    }
+    comps.all(|c| {
+        c.is_empty()
+            || c == "."
+            || c == ".."
+            || is_placeholder_component(c)
+            || OWN_NAMES.contains(&c)
+    })
+}
+
+/// A location in cig's own source, or the toolchain's: said as it is.
+fn is_source_location(s: &str) -> bool {
+    let s = s.replace('\\', "/");
+    s.starts_with("src/")
+        || s.starts_with("tests/")
+        || s.starts_with("library/")
+        || s.starts_with("/rustc/")
+        || s.contains("/.cargo/registry/")
+        || s.starts_with("~/.cigscript/")
+}
+
+/// `name.ext` with an extension from the list.
+fn has_file_extension(c: &str) -> bool {
+    c.rsplit_once('.').is_some_and(|(stem, ext)| {
+        !stem.is_empty() && FILE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+    })
+}
+
+/// A bare word shaped like a file name: `report.csv`, `Deploy.sh`; never a
+/// version, a builtin (`fs.rm`), a domain, or a name of cig's own.
+fn looks_like_file_name(s: &str) -> bool {
+    if OWN_NAMES.contains(&s) || is_placeholder_component(s) {
+        return false;
+    }
+    if s.starts_with("stub") && s.ends_with(".sh") {
+        return false;
+    }
+    let Some((stem, ext)) = s.rsplit_once('.') else {
+        return false;
+    };
+    if stem.is_empty() || stem.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return false;
+    }
+    FILE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
+/// `~` and `~/...` as the home directory, when the environment names one.
+fn expand_tilde(s: &str) -> String {
+    let Some(home) = crate::crash::home_path() else {
+        return s.to_string();
+    };
+    if s == "~" {
+        return home.to_string_lossy().to_string();
+    }
+    if let Some(rest) = s.strip_prefix("~/").or_else(|| s.strip_prefix("~\\")) {
+        return home.join(rest).to_string_lossy().to_string();
+    }
+    s.to_string()
+}
+
+/// The placeholder path `to`, relative to the placeholder directory `from`.
+fn relative_placeholder(from: &str, to: &str) -> String {
+    let a: Vec<&str> = from.split('/').filter(|c| !c.is_empty()).collect();
+    let b: Vec<&str> = to.split('/').filter(|c| !c.is_empty()).collect();
+    let common = a.iter().zip(b.iter()).take_while(|(x, y)| x == y).count();
+    let mut out: Vec<&str> = vec![".."; a.len() - common];
+    out.extend_from_slice(&b[common..]);
+    if out.is_empty() {
+        ".".to_string()
+    } else {
+        out.join("/")
+    }
+}
+
+/// `needle` replaced by `with` wherever it stands as a whole: not inside a
+/// longer name (`p/f` in `p/f.txt`), not inside a word.
+fn replace_delimited(text: &str, needle: &str, with: &str) -> String {
+    let joins = |c: char| c.is_alphanumeric() || matches!(c, '_' | '-' | '.');
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(i) = rest.find(needle) {
+        let before_ok = rest[..i].chars().next_back().is_none_or(|c| !joins(c));
+        let after_ok = rest[i + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|c| !joins(c));
+        out.push_str(&rest[..i]);
+        if before_ok && after_ok {
+            out.push_str(with);
+        } else {
+            out.push_str(needle);
+        }
+        rest = &rest[i + needle.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 impl Mapping {
     pub fn new(roots: &[PathBuf], cwd: &Path) -> Mapping {
         let mut m = Mapping {
@@ -92,6 +264,53 @@ impl Mapping {
         m.roots
             .sort_by_key(|(r, _)| std::cmp::Reverse(r.components().count()));
         m
+    }
+
+    /// The mapping of a run before its journal is read: its roots (the
+    /// pack, or the working directory when there is no pack) and its script.
+    pub fn for_record(rec: &RunRecord) -> Mapping {
+        let roots: Vec<PathBuf> = if rec.pack.is_empty() {
+            vec![PathBuf::from(&rec.cwd)]
+        } else {
+            rec.pack.clone()
+        };
+        let mut m = Mapping::new(&roots, Path::new(&rec.cwd));
+        if !rec.script.is_empty() {
+            m.note_file(Path::new(&rec.script));
+        }
+        m
+    }
+
+    /// The mapping of a run: its roots and script, and every path its
+    /// journal names, files told from directories.
+    pub fn for_run(rec: &RunRecord, journal: &Journal) -> Mapping {
+        let mut m = Mapping::for_record(rec);
+        for e in journal.entries() {
+            match &e.op {
+                Op::Write { path, .. } | Op::Append { path, .. } => m.note_file(path),
+                Op::Copy { from, to } | Op::Move { from, to } => {
+                    m.note_file(from);
+                    m.note_file(to);
+                }
+                Op::Delete { path } | Op::Mkdir { path } => m.note(path),
+                Op::HopCreated { path, .. } | Op::HopChanged { path, .. } => m.note_file(path),
+                Op::Proc { cwd: Some(c), .. } => m.note(c),
+                _ => {}
+            }
+            for b in &e.before {
+                match &b.before {
+                    Before::File { .. } | Before::Symlink { .. } | Before::Moved { .. } => {
+                        m.note_file(&b.path)
+                    }
+                    _ => m.note(&b.path),
+                }
+            }
+        }
+        m
+    }
+
+    pub fn root_count(&self) -> usize {
+        self.roots.len()
     }
 
     fn absolute(&self, p: &Path) -> PathBuf {
@@ -118,7 +337,11 @@ impl Mapping {
         if let Some(p) = self.names.get(component) {
             return p.clone();
         }
-        let is_file = last && self.files.contains(component);
+        // A file of cig's own, or the family's, is said by name.
+        if OWN_NAMES.contains(&component) {
+            return component.to_string();
+        }
+        let is_file = last && (self.files.contains(component) || has_file_extension(component));
         let mut out = String::new();
         if component.starts_with('.') {
             out.push('.');
@@ -161,7 +384,9 @@ impl Mapping {
     }
 
     /// The placeholder path for `p`: under its root (`root0/d1/f2.txt`) or,
-    /// outside every root, under `out/`.
+    /// outside every root, under `out/`. A mapping with no roots (a report
+    /// made outside a run) writes `~/d1/d2` under the home directory and
+    /// `/d1/d2` elsewhere: the shape of the path, none of its names.
     pub fn map(&mut self, p: &Path) -> String {
         let abs = self.absolute(p);
         let p = abs.as_path();
@@ -172,7 +397,22 @@ impl Mapping {
             .map(|(r, ph)| (p.strip_prefix(r).unwrap_or(p).to_path_buf(), ph.clone()))
         {
             Some(x) => x,
-            None => (p.to_path_buf(), "out".to_string()),
+            None if !self.roots.is_empty() => (p.to_path_buf(), "out".to_string()),
+            None => match crate::crash::strip_home(p) {
+                Some(rest) => (rest, "~".to_string()),
+                None => {
+                    let drive = p
+                        .components()
+                        .find_map(|c| match c {
+                            std::path::Component::Prefix(x) => {
+                                Some(x.as_os_str().to_string_lossy().to_string())
+                            }
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    (p.to_path_buf(), drive)
+                }
+            },
         };
         let comps: Vec<String> = rel
             .components()
@@ -196,27 +436,59 @@ impl Mapping {
         out
     }
 
-    /// A glob, its plain components mapped and its wildcards kept.
+    /// A link's target as the repro writes it: an absolute target mapped,
+    /// a relative one kept relative to the link, through the link's
+    /// directory.
+    pub fn map_link_target(&mut self, link: &Path, target: &Path) -> String {
+        if target.is_absolute() {
+            return self.map(target);
+        }
+        let dir = self
+            .absolute(link)
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let full = dir.join(target);
+        self.note_file(&full);
+        let from = self.map(&dir);
+        let to = self.map(&full);
+        relative_placeholder(&from, &to)
+    }
+
+    /// A glob, its plain components mapped and its wildcards kept: the plain
+    /// prefix is a path and is mapped as one (`zqx-pack/**` under the pack
+    /// root is `root0/**`), the components after the first wildcard are
+    /// placeholders one by one.
     pub fn map_glob(&mut self, g: &str) -> String {
         let (optional, bare) = match g.strip_prefix('?') {
             Some(rest) => ("?", rest),
             None => ("", g),
         };
-        let parts: Vec<String> = bare
-            .split('/')
-            .map(|c| {
-                if c.contains(['*', '?', '[', '{']) || c.is_empty() || c == "." || c == ".." {
-                    c.to_string()
-                } else {
-                    self.placeholder(c, false)
-                }
-            })
-            .collect();
+        let is_wild = |c: &str| c.contains(['*', '?', '[', '{']);
+        let comps: Vec<&str> = bare.split('/').collect();
+        let plain = comps.iter().take_while(|c| !is_wild(c)).count();
+        let mut parts: Vec<String> = Vec::new();
+        if plain > 0 && !(plain == 1 && comps[0].is_empty()) {
+            parts.push(self.map(Path::new(&comps[..plain].join("/"))));
+        } else if plain == 1 {
+            parts.push(String::new());
+        }
+        let n = comps.len();
+        for (i, c) in comps.iter().enumerate().skip(plain) {
+            if is_wild(c) || c.is_empty() || *c == "." || *c == ".." {
+                parts.push(c.to_string());
+            } else {
+                parts.push(self.placeholder(c, i + 1 == n));
+            }
+        }
         format!("{optional}{}", parts.join("/"))
     }
 
-    /// Free text with every real path it names replaced by its placeholder,
-    /// longest first, then the usual redaction.
+    /// Free text with every path it names written as a placeholder: the
+    /// paths this mapping has seen, longest first, then anything else
+    /// shaped like a path (`/a/b`, `~/a`, `a/b.txt`, `C:\a`) or a file name
+    /// (`report.csv`); a location in cig's own source stays. Then the
+    /// usual redaction.
     pub fn anonymise_text(&mut self, text: &str) -> String {
         let mut seen: Vec<PathBuf> = self.seen.clone();
         for (r, _) in &self.roots {
@@ -231,25 +503,163 @@ impl Mapping {
                 continue;
             }
             let ph = self.map(&p);
-            out = out.replace(&real, &ph);
+            out = replace_delimited(&out, &real, &ph);
         }
+        let out = self.scrub_tokens(&out);
         crate::crash::redact_text(&out)
     }
 
+    fn scrub_tokens(&mut self, text: &str) -> String {
+        let delimiter = |c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '`' | '"'
+                        | '\''
+                        | '('
+                        | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | '<'
+                        | '>'
+                        | ','
+                        | ';'
+                        | '='
+                        | '|'
+                )
+        };
+        let mut out = String::with_capacity(text.len());
+        let mut token = String::new();
+        for ch in text.chars() {
+            if delimiter(ch) {
+                if !token.is_empty() {
+                    let t = self.scrub_token(&token);
+                    out.push_str(&t);
+                    token.clear();
+                }
+                out.push(ch);
+            } else {
+                token.push(ch);
+            }
+        }
+        if !token.is_empty() {
+            let t = self.scrub_token(&token);
+            out.push_str(&t);
+        }
+        out
+    }
+
+    /// One word of free text: a path or a file name becomes its
+    /// placeholder, with any `:line:col` and trailing punctuation kept.
+    fn scrub_token(&mut self, tok: &str) -> String {
+        let mut end = tok.len();
+        while end > 0
+            && matches!(
+                tok.as_bytes()[end - 1],
+                b'.' | b',' | b';' | b':' | b'!' | b'?'
+            )
+        {
+            end -= 1;
+        }
+        let mut core = tok[..end].to_string();
+        let mut tail = tok[end..].to_string();
+        for _ in 0..2 {
+            match core.rsplit_once(':') {
+                Some((head, digits))
+                    if !head.is_empty()
+                        && !digits.is_empty()
+                        && digits.bytes().all(|b| b.is_ascii_digit()) =>
+                {
+                    tail = format!(":{digits}{tail}");
+                    core = head.to_string();
+                }
+                _ => break,
+            }
+        }
+        if core.is_empty() || core.contains("://") {
+            return tok.to_string();
+        }
+        if core.contains('/') || core.contains('\\') {
+            if is_source_location(&core) || is_placeholder_path(&core) {
+                return tok.to_string();
+            }
+            let expanded = expand_tilde(&core);
+            return format!("{}{tail}", self.map(Path::new(&expanded)));
+        }
+        if looks_like_file_name(&core) {
+            self.files.insert(core.clone());
+            let ph = self.placeholder(&core, true);
+            return format!("{ph}{tail}");
+        }
+        tok.to_string()
+    }
+
+    /// A JSON value with every string anonymised. A field named for a path
+    /// (`cwd`, `path`, `file`, `script`, ...) is mapped whole; a command
+    /// line (`command`, `args`) is reduced to the words cig knows and the
+    /// shape of the rest.
     pub fn anonymise_value(&mut self, v: &mut serde_json::Value) {
+        self.anonymise_under(None, v)
+    }
+
+    fn anonymise_under(&mut self, key: Option<&str>, v: &mut serde_json::Value) {
         match v {
             serde_json::Value::String(s) => {
-                let t = self.anonymise_text(s);
+                let t = match key {
+                    Some(
+                        "cwd" | "dir" | "path" | "file" | "script" | "from" | "to" | "snapshot",
+                    ) if !s.is_empty() && s != "?" => self.map_text_path(s),
+                    Some("cmd" | "command" | "program" | "exe") => crate::crash::program_name(s),
+                    _ => self.anonymise_text(s),
+                };
                 *s = t;
             }
             serde_json::Value::Array(items) => {
-                items.iter_mut().for_each(|i| self.anonymise_value(i))
+                if matches!(
+                    key,
+                    Some("touches" | "touches_sealed" | "globs" | "produces" | "inputs")
+                ) {
+                    for it in items.iter_mut() {
+                        if let serde_json::Value::String(s) = it {
+                            *s = self.map_glob(s);
+                        }
+                    }
+                } else if matches!(key, Some("command" | "args" | "argv" | "cmd")) {
+                    let is_command = matches!(key, Some("command" | "argv"));
+                    for (i, it) in items.iter_mut().enumerate() {
+                        if let serde_json::Value::String(s) = it {
+                            *s = if i == 0 && is_command {
+                                crate::crash::program_name(s)
+                            } else {
+                                crate::crash::redact_arg(s)
+                            };
+                        }
+                    }
+                } else {
+                    for it in items.iter_mut() {
+                        self.anonymise_under(None, it);
+                    }
+                }
             }
             serde_json::Value::Object(map) => {
-                map.values_mut().for_each(|i| self.anonymise_value(i))
+                for (k, val) in map.iter_mut() {
+                    self.anonymise_under(Some(k.as_str()), val);
+                }
             }
             _ => {}
         }
+    }
+
+    /// A string that is a path, whole: a placeholder stays, anything else
+    /// is mapped (`~` expanded first).
+    fn map_text_path(&mut self, s: &str) -> String {
+        if is_placeholder_path(s) {
+            return s.to_string();
+        }
+        let expanded = expand_tilde(s);
+        self.map(Path::new(&expanded))
     }
 }
 
@@ -275,34 +685,7 @@ pub fn build(
     if journal.is_empty() {
         return None;
     }
-    let roots: Vec<PathBuf> = if rec.pack.is_empty() {
-        vec![PathBuf::from(&rec.cwd)]
-    } else {
-        rec.pack.clone()
-    };
-    let mut m = Mapping::new(&roots, Path::new(&rec.cwd));
-    // First pass: which components name files, and every path seen.
-    for e in journal.entries() {
-        match &e.op {
-            Op::Write { path, .. } | Op::Append { path, .. } => m.note_file(path),
-            Op::Copy { from, to } | Op::Move { from, to } => {
-                m.note_file(from);
-                m.note_file(to);
-            }
-            Op::Delete { path } | Op::Mkdir { path } => m.note(path),
-            Op::HopCreated { path, .. } | Op::HopChanged { path, .. } => m.note_file(path),
-            Op::Proc { cwd: Some(c), .. } => m.note(c),
-            _ => {}
-        }
-        for b in &e.before {
-            match &b.before {
-                Before::File { .. } | Before::Symlink { .. } | Before::Moved { .. } => {
-                    m.note_file(&b.path)
-                }
-                _ => m.note(&b.path),
-            }
-        }
-    }
+    let mut m = Mapping::for_run(rec, journal);
     // Seeds: the first before-state of every path is what was there.
     let mut seeded: HashSet<PathBuf> = HashSet::new();
     let mut seeds = Vec::new();
@@ -344,7 +727,7 @@ pub fn build(
                     seed: String::new(),
                 }),
                 Before::Symlink { target } => {
-                    let t = m.map(target);
+                    let t = m.map_link_target(&b.path, target);
                     seeds.push(Seed {
                         path,
                         kind: "link".to_string(),
@@ -505,7 +888,7 @@ pub fn build(
     if ops == 0 {
         return None;
     }
-    let script = render(&roots.len(), &lines, rec.status != "ok");
+    let script = render(&m.root_count(), &lines, rec.status != "ok");
     Some((
         Repro {
             script,

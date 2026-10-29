@@ -74,7 +74,10 @@ pub fn crash(ctx: &Ctx, cmd: Option<CrashCommand>) -> i32 {
                     );
                     outln!("{}", ctx.dim("this is exactly what `cig crash send` would file, inside a JSON block:"));
                     outln!();
-                    outln!("{}", serde_json::to_string_pretty(&r).unwrap_or_default());
+                    outln!(
+                        "{}",
+                        serde_json::to_string_pretty(&crash::sent_view(&r)).unwrap_or_default()
+                    );
                     if let Some(x) = &r.repro {
                         outln!();
                         outln!(
@@ -265,7 +268,8 @@ fn send(ctx: &Ctx, r: &mut CrashReport, typed: bool) -> i32 {
 
 fn flush(ctx: &Ctx, quiet: bool) -> i32 {
     let cfg = Config::load();
-    let done = ashtray::flush(&cfg);
+    // Typed, it is a request for now: the backoff is the background's.
+    let done = ashtray::flush(&cfg, !quiet);
     if ctx.json {
         outln!(
             "{}",
@@ -305,8 +309,9 @@ fn flush(ctx: &Ctx, quiet: bool) -> i32 {
 }
 
 /// A report another tool made joins the ashtray: its fields are read as a
-/// report (unknown ones are kept under `details`), redacted again, given
-/// the origin and the route it names.
+/// report (unknown ones are kept under `details`), anonymised again (every
+/// path its shape, a command line the words cig knows), given the origin
+/// and the route it names.
 fn submit(ctx: &Ctx, origin: &str, file: &PathBuf, repo: Option<String>, now: bool) -> i32 {
     let text = match std::fs::read_to_string(file) {
         Ok(t) => t,
@@ -357,32 +362,44 @@ fn submit(ctx: &Ctx, origin: &str, file: &PathBuf, repo: Option<String>, now: bo
         "report" => Kind::Report,
         _ => Kind::Crash,
     };
-    let message = v["panic_message"]
-        .as_str()
-        .or_else(|| v["title"].as_str())
-        .or_else(|| v["message"].as_str())
-        .unwrap_or("(no message)");
-    let location = v["panic_location"]
+    // Nothing of the other tool's paths travels: a mapping with no roots
+    // gives every path in what it said its shape, and its command line is
+    // reduced to the words cig knows.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut mapping = cigscript::repro::Mapping::new(&[], &cwd);
+    let message = mapping.anonymise_text(
+        v["panic_message"]
+            .as_str()
+            .or_else(|| v["title"].as_str())
+            .or_else(|| v["message"].as_str())
+            .unwrap_or("(no message)"),
+    );
+    let location_raw = v["panic_location"]
         .as_str()
         .or_else(|| v["location"].as_str())
         .unwrap_or("?");
+    let location = if location_raw.contains(['/', '\\']) {
+        mapping.anonymise_text(location_raw)
+    } else {
+        location_raw.to_string()
+    };
     let mut r = CrashReport::new(
         kind,
-        location,
-        message,
+        &location,
+        &message,
         None,
         v["active_run_id"].as_str().map(str::to_string),
     );
     r.origin = origin.to_string();
     r.repo = repo;
     // The tool's own version and the rest of what it said travel as detail,
-    // redacted the same way; cig's version stays as the cig that filed it.
+    // anonymised the same way; cig's version stays as the cig that filed it.
     if let Some(ver) = v["version"].as_str() {
         r.title = Some(format!("{} ({origin} {ver})", r.headline()));
     }
-    let redacted: serde_json::Value =
-        serde_json::from_str(&crash::redact_text(&v.to_string())).unwrap_or(v.clone());
-    r.details = Some(redacted);
+    let mut details = v.clone();
+    mapping.anonymise_value(&mut details);
+    r.details = Some(details);
     if let Err(e) = ashtray::queue(&mut r) {
         eprintln!(
             "{} could not save the report: {e}",

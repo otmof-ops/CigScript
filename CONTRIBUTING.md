@@ -10,12 +10,13 @@ invitation on the README is to cheat. A good report has four things: the
 script (or the smallest one that still does it), the command you ran, what
 the plan said, and what actually happened. `cig runs` gives you the run id;
 `cig report <run>` bundles the plan, the journal, the diagnostic and doctor's
-diagnosis into one file, redacted the same way crash reports are (home paths
-become `~`, secret-shaped values are removed, file contents are never
-included), and it's fine to attach it after you've read it; `cig report
-<run> --send` files it for you, through the ashtray, as an issue labelled
-`report`. The run record under `~/.cigscript/runs/<id>/` has the journal
-and the snapshots if more is needed. Use the [cheat issue
+diagnosis into one file, anonymised the same way crash reports are (every
+path a placeholder, the command line reduced to the words cig knows,
+secret-shaped values removed, file contents never included), and it's fine
+to attach it after you've read it; `cig report <run> --send` files it for
+you, through the ashtray, as an issue labelled `report`. The run record
+under `~/.cigscript/runs/<id>/` has the journal and the snapshots if more is
+needed. Use the [cheat issue
 template](https://github.com/otmof-ops/CigScript/issues/new?template=cheat.yml).
 
 cig also reports its own bugs: a crash, an internal error, or a tripwire

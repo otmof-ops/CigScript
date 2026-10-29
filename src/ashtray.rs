@@ -181,9 +181,11 @@ pub fn lock(wait: std::time::Duration) -> Option<Lock> {
     }
 }
 
-/// One pass: every due report is tried once. Skipped, with `locked` set,
-/// while another sender holds the ashtray.
-pub fn flush(cfg: &Config) -> Flushed {
+/// One pass: every due report is tried once; with `every`, the ones still
+/// in their backoff too (the person typed `cig crash flush`, which is a
+/// request for now). Skipped, with `locked` set, while another sender
+/// holds the ashtray.
+pub fn flush(cfg: &Config, every: bool) -> Flushed {
     let mut out = Flushed::default();
     let Some(_lock) = lock(std::time::Duration::from_millis(200)) else {
         out.locked = true;
@@ -191,7 +193,7 @@ pub fn flush(cfg: &Config) -> Flushed {
     };
     let all = pending(cfg);
     for mut r in all {
-        if !is_due(&r) {
+        if !every && !is_due(&r) {
             out.waiting += 1;
             continue;
         }

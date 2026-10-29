@@ -913,6 +913,13 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             rec.dir().display()
         );
     }
+    // The tripwires, as after a run's own rollback: every restored path
+    // read back against the journal, a sample of the tin re-hashed. A
+    // broken promise is a report; the unburn's outcome is what it was.
+    let mut trips = Vec::new();
+    trips.extend(cigscript::tripwire::after_rollback(&journal, &report));
+    trips.extend(cigscript::tripwire::tin_sample(&journal));
+    super::run::settle_trips(ctx, trips, &rec, &journal);
     if report.clean() {
         exit::OK
     } else {

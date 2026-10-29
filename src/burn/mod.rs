@@ -1456,6 +1456,14 @@ impl Kernel {
             ));
         }
         let compensated = self.compensating > 0;
+        // Two roots, one inside the other, see the same file: it is one
+        // effect, journaled once.
+        writes.created.sort();
+        writes.created.dedup();
+        writes.modified.sort();
+        writes.modified.dedup();
+        writes.deleted.sort();
+        writes.deleted.dedup();
         for p in &writes.created {
             self.seq += 1;
             self.executed += 1;

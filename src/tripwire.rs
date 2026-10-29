@@ -5,8 +5,9 @@
 //! done, that turn a silent bug into a report. A tripwire never changes the
 //! run's outcome; it records what it found and says one line.
 //!
-//! - after a rollback: every path it restored is read back and compared
-//!   with the recorded before-state (bytes, mode, link target, absence);
+//! - after a rollback (in a run, or `cig unburn` later): every path it
+//!   restored is read back and compared with the state recorded before the
+//!   first op that touched it (bytes, mode, link target, absence);
 //! - after a run: the journal on disk re-read, its chain intact, its head
 //!   and length what the kernel holds;
 //! - after a run: a sample of the tin objects it refers to re-hashed;
@@ -45,22 +46,95 @@ fn mode_of(path: &Path) -> Option<u32> {
     }
 }
 
-/// After a rollback: is every path it says it restored in the state the
-/// journal recorded before the run?
+/// How many mismatches a rollback report lists in full; the rest are
+/// counted, so a run over hundreds of files still fits an issue.
+const MISMATCH_CAP: usize = 25;
+
+/// After a rollback: is every path it restored in the state the journal
+/// recorded before the run? A path touched twice is judged by the state
+/// before the first op that touched it; the later before-states are the
+/// run's own intermediate states, which a full rollback walks back
+/// through. A path whose first entry was not restored was not promised.
 pub fn after_rollback(journal: &Journal, report: &RollbackReport) -> Option<Trip> {
     let mut mismatches: Vec<serde_json::Value> = Vec::new();
+    let mut more = 0usize;
     let mut hashed = 0u64;
     let mut checked = 0usize;
     let mut sampled = false;
+    // The first before-state of every path, in journal order. The script
+    // names a path from the working directory and a hop's effect names it
+    // whole; both are one path here.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let whole = |p: &Path| -> std::path::PathBuf {
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            cwd.join(p)
+        }
+    };
+    let mut first: Vec<(
+        &crate::burn::journal::Entry,
+        &crate::burn::journal::BeforeState,
+    )> = Vec::new();
+    let mut seen: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
     for entry in journal.entries() {
-        if !(entry.restored || entry.undone) {
+        for state in &entry.before {
+            if seen.insert(whole(&state.path)) {
+                first.push((entry, state));
+            }
+        }
+    }
+    let was_there = |p: &Path| {
+        let p = whole(p);
+        first.iter().any(|(_, s)| {
+            whole(&s.path) == p
+                && matches!(
+                    s.before,
+                    Before::File { .. }
+                        | Before::Dir { .. }
+                        | Before::Directory { .. }
+                        | Before::Symlink { .. }
+                )
+        })
+    };
+    // A path under a folder that did not exist before the run is absent
+    // after a full rollback, whatever a later entry recorded for the path
+    // itself: the folder's own entry, the earliest to cover it, says so.
+    let made_folder_over = |p: &Path| -> Option<&crate::burn::journal::Entry> {
+        let p = whole(p);
+        first
+            .iter()
+            .filter(|(_, s)| {
+                let q = whole(&s.path);
+                q != p && p.starts_with(&q) && matches!(s.before, Before::Absent)
+            })
+            .min_by_key(|(e, _)| e.seq)
+            .filter(|(e, s)| {
+                // Only when nothing earlier recorded the path itself.
+                let own = first
+                    .iter()
+                    .find(|(_, t)| whole(&t.path) == p)
+                    .map(|(f, _)| f.seq);
+                own.is_none_or(|seq| e.seq < seq) && !s.path.as_os_str().is_empty()
+            })
+            .map(|(e, _)| *e)
+    };
+    for (entry, state) in &first {
+        let path = &state.path;
+        let shown = path.display().to_string();
+        let meta = std::fs::symlink_metadata(path);
+        let folder = made_folder_over(path);
+        let judged_by = folder.unwrap_or(entry);
+        if !(judged_by.restored || judged_by.undone) {
             continue;
         }
-        for state in &entry.before {
-            let path = &state.path;
-            let shown = path.display().to_string();
-            let meta = std::fs::symlink_metadata(path);
-            let problem: Option<String> = match &state.before {
+        let problem: Option<String> = if folder.is_some() {
+            meta.is_ok().then(|| {
+                "should be absent (its folder did not exist before the run), but something is there"
+                    .to_string()
+            })
+        } else {
+            match &state.before {
                 Before::Absent => meta
                     .is_ok()
                     .then(|| "should be absent, but something is there".to_string()),
@@ -133,7 +207,7 @@ pub fn after_rollback(journal: &Journal, report: &RollbackReport) -> Option<Trip
                 Before::Moved { to } => {
                     if meta.is_err() {
                         Some("should be back, but nothing is there".to_string())
-                    } else if std::fs::symlink_metadata(to).is_ok() {
+                    } else if std::fs::symlink_metadata(to).is_ok() && !was_there(to) {
                         Some(format!(
                             "was moved back, yet {} is still there",
                             to.display()
@@ -142,35 +216,41 @@ pub fn after_rollback(journal: &Journal, report: &RollbackReport) -> Option<Trip
                         None
                     }
                 }
-            };
-            checked += 1;
-            if let Some(why) = problem {
+            }
+        };
+        checked += 1;
+        if let Some(why) = problem {
+            if mismatches.len() < MISMATCH_CAP {
                 mismatches.push(serde_json::json!({
                     "seq": entry.seq,
                     "op": entry.op.describe(),
                     "path": shown,
                     "problem": why,
                 }));
+            } else {
+                more += 1;
             }
         }
     }
     if mismatches.is_empty() {
         return None;
     }
-    let first = &mismatches[0];
+    let total = mismatches.len() + more;
+    let first_problem = mismatches[0]["problem"].as_str().unwrap_or("").to_string();
     Some(Trip {
         check: "rollback",
         what: format!(
             "the rollback said it restored {} path{}, but {} {} not as recorded: {}",
             checked,
             if checked == 1 { "" } else { "s" },
-            mismatches.len(),
-            if mismatches.len() == 1 { "is" } else { "are" },
-            first["problem"].as_str().unwrap_or("")
+            total,
+            if total == 1 { "is" } else { "are" },
+            first_problem
         ),
         details: serde_json::json!({
             "checked": checked,
             "mismatches": mismatches,
+            "more": more,
             "hash_budget_spent": sampled,
             "rollback_failed": report.failed.len(),
         }),

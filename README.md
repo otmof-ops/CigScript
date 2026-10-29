@@ -251,7 +251,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.7.0/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.7.1/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -261,7 +261,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.7.0 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.7.1 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -272,7 +272,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.7.0-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.7.1-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -517,6 +517,14 @@ for.
 | the bug does not reproduce in the sandbox | the report goes without a repro and says so; what was found is still said, the path as its placeholder | 1.7.0 | `an_unverified_repro_is_not_attached` |
 | the same bug twice | one issue: its stats block counts two, no comment, no second issue; a comment only brings a new version, a new OS or a smaller repro | 1.7.0 | `a_second_report_updates_the_stats_not_a_comment` |
 | the issue a report opened is closed and a release's notes name it | `cig update --check` says `a bug you reported (#N, …) is fixed in X: cig update`, once | 1.7.0 | `a_fixed_report_is_announced_on_update_check` |
+| a run in `~/clients/AcmeCorp/MySecretProject` trips a tripwire, its bundle is sent, another tool hands a report in with the folder in every field | nothing of a name of yours travels: the working directory is its shape (`out/d1/D2/d3`, `~/d1/D2`), the command line keeps only the words cig knows (`cig run <script>`), every path in a message, a bundle or a handed-in report is its placeholder; `cig crash show` prints exactly that | 1.7.1 | `a_report_never_contains_a_path_component_of_the_users_folder` |
+| cig panics in `~/Zqx-Work/sub` | the crash report's `cwd` is `~/D1/d2`, its command `cig run <script>`; the ashtray's bookkeeping (queue, issue, announcement) never travels | 1.7.1 | `a_crash_report_cwd_is_a_placeholder` |
+| one run makes a folder, writes into it and deletes it, rewrites then deletes a file, a hop makes a tree that is deleted after; the burn fails | the pack is as it was and no tripwire trips: each path is judged by its state before the first op that touched it, not by the run's own intermediate states (a false alarm in 1.7.0) | 1.7.1 | `a_path_touched_twice_does_not_trip_the_rollback_tripwire` |
+| `cig unburn` restores a file with one mode bit wrong (a fault injected for the test) | the rollback tripwire runs after an unburn too: it trips, queues a report naming the run, and the unburn's outcome stays what it was | 1.7.1 | `cig_unburn_runs_the_rollback_tripwire` |
+| a report failed twice and waits out a five-minute backoff; the person types `cig crash flush` | it is sent now: typed, the flush is a request for now; the background's pass still honours the backoff | 1.7.1 | `a_typed_flush_sends_a_report_waiting_for_its_retry_time` |
+| sixty restored files all come back wrong | the report lists twenty-five mismatches and counts the rest, so a run over hundreds of files still fits an issue; a body past the tracker's limit is cut back, details first | 1.7.1 | `a_report_with_many_mismatches_lists_twenty_five_and_counts_the_rest` |
+| the pack holds `link -> one.txt` when a tripwire trips | the repro's seed is a link to a sibling, as it was, not a path from the working directory under `out/` | 1.7.1 | `a_relative_link_target_stays_relative_in_the_repro` |
+| a hop under `pack { "./q", "./q/a" }` makes `q/a/h.txt` | one effect journaled, not one per root; the rollback removes it once | 1.7.1 | `a_hop_under_nested_roots_is_journaled_once` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).
@@ -533,7 +541,7 @@ Add a row. The rules for reporting one are in
 | `cig runs [id] [--prune N]` / `cig unburn <id> [--dry-run] [--force]` | run records; put one back |
 | `cig explain [code] [--schema]` | the page for an error code: which kind of no, what to type next, the ranked causes; the JSON Schema for a diagnostic |
 | `cig doctor [run] [--fix]` | the installation's health, or a stored run's error diagnosed again, read-only; `--fix` asks before each repair |
-| `cig report <run> [--out file\|--send]` | one redacted file for a bug report: plan, journal, diagnostic, diagnosis, install facts; `--send` files it through the ashtray |
+| `cig report <run> [--out file\|--send]` | one file for a bug report, every path in it a placeholder: plan, journal, diagnostic, diagnosis, install facts; `--send` files it through the ashtray |
 | `cig update [--check]` | install the newest release, verified; says which bugs you reported it fixes |
 | `cig crash [list\|show\|send\|flush\|submit\|delete]` | the ashtray: every report cig made about its own bugs (crashes, internal errors, tripwires), under your control; `flush` sends what is waiting, `submit` takes a report from another tool of the family |
 | `cig versions [add\|remove\|prune]` | the humidor: every other version of cig, for pinned scripts and old journals |
