@@ -54,6 +54,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // A runner's CI must not reach the sandbox: the one test that
+            // wants it sets it itself.
+            .env_remove("CI")
             // No test reaches the releases page: a pin that needs a fetch
             // finds no network here, as a machine offline would.
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
@@ -93,6 +96,7 @@ impl Sandbox {
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
+            .env_remove("CI")
             .envs(envs.iter().copied())
             .output()
             .expect("run cig")
@@ -551,6 +555,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .env("NO_COLOR", "1")
         .env("CIG_SEAL_KEY", "file")
         .env("CIG_INTERNAL_PANIC", "1")
+        .env_remove("CI")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(70));
@@ -582,6 +587,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .current_dir(sb.path())
         .env("CIGSCRIPT_HOME", sb.home())
         .env("CIG_INTERNAL_PANIC", "1")
+        .env_remove("CI")
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stderr).contains("crash_reports is \"never\""));
@@ -6293,6 +6299,7 @@ fn a_chatty_undo_neither_hangs_the_rollback_nor_floods_the_report() {
         .env("CIGSCRIPT_HOME", sb.home())
         .env("NO_COLOR", "1")
         .env("CIG_SEAL_KEY", "file")
+        .env_remove("CI")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
