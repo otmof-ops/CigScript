@@ -7,6 +7,7 @@ use super::{exit, Ctx};
 use cigscript::burn::{runs::RunRecord, Kernel, Mode, PlannedOp};
 use cigscript::check;
 use cigscript::config::Config;
+use cigscript::crash::Kind as ReportKind;
 use cigscript::diagnostics::{Diagnostic, Kind};
 use cigscript::humidor;
 use cigscript::interp::Interp;
@@ -601,28 +602,15 @@ fn settle_own_bugs(
     interp: &Interp,
     record: &RunRecord,
 ) {
-    use cigscript::crash::{CrashReport, Kind as ReportKind};
-    let mut reports: Vec<CrashReport> = Vec::new();
+    let mut found: Vec<Finding> = Vec::new();
     if let Err(d) = result {
         if d.kind == Kind::Internal {
-            let mut v = serde_json::to_value(d).unwrap_or_default();
-            if let Some(obj) = v.as_object_mut() {
-                for key in ["message", "hint", "subject", "file"] {
-                    if let Some(s) = obj.get(key).and_then(|x| x.as_str()).map(str::to_string) {
-                        obj.insert(
-                            key.to_string(),
-                            serde_json::Value::String(cigscript::crash::redact_text(&s)),
-                        );
-                    }
-                }
-            }
-            reports.push(CrashReport::new(
-                ReportKind::Internal,
-                &format!("{} internal error", d.code),
-                &d.message,
-                Some(v),
-                Some(record.id.clone()),
-            ));
+            found.push(Finding {
+                kind: ReportKind::Internal,
+                location: format!("{} internal error", d.code),
+                title: d.message.clone(),
+                details: Some(serde_json::to_value(d).unwrap_or_default()),
+            });
         }
     }
     let journal = interp.kernel.journal();
@@ -641,22 +629,62 @@ fn settle_own_bugs(
             details: serde_json::json!({}),
         });
     }
-    for t in trips {
-        reports.push(CrashReport::new(
-            ReportKind::Tripwire,
-            &format!("tripwire {}", t.check),
-            &t.what,
-            Some(serde_json::json!({"check": t.check, "found": t.details})),
-            Some(record.id.clone()),
-        ));
+    found.extend(trips.into_iter().map(Finding::from_trip));
+    settle_findings(ctx, found, record, journal);
+}
+
+/// One thing cig found wrong with itself, before it is a report: its text
+/// still names the person's paths.
+pub(crate) struct Finding {
+    kind: ReportKind,
+    location: String,
+    title: String,
+    details: Option<serde_json::Value>,
+}
+
+impl Finding {
+    fn from_trip(t: cigscript::tripwire::Trip) -> Finding {
+        Finding {
+            kind: ReportKind::Tripwire,
+            location: format!("tripwire {}", t.check),
+            title: t.what,
+            details: Some(serde_json::json!({"check": t.check, "found": t.details})),
+        }
     }
-    for mut r in reports {
-        // The repro, built from the journal with placeholder paths; the
-        // same placeholders stand in for the person's paths everywhere the
-        // report names one. Verified later, when it is sent.
-        let (check, expect) = match r.kind {
+}
+
+/// The tripwires' findings after a rollback outside a run (`cig unburn`):
+/// reports, like a run's.
+pub(crate) fn settle_trips(
+    ctx: &Ctx,
+    trips: Vec<cigscript::tripwire::Trip>,
+    record: &RunRecord,
+    journal: &cigscript::burn::journal::Journal,
+) {
+    settle_findings(
+        ctx,
+        trips.into_iter().map(Finding::from_trip).collect(),
+        record,
+        journal,
+    );
+}
+
+/// Each finding becomes a report: the repro built from the journal with
+/// placeholder paths, and the same placeholders standing in for the
+/// person's paths everywhere the report names one (its title, its details,
+/// the working directory), before the fingerprint is taken. Then queued
+/// and settled under the person's consent.
+fn settle_findings(
+    ctx: &Ctx,
+    found: Vec<Finding>,
+    record: &RunRecord,
+    journal: &cigscript::burn::journal::Journal,
+) {
+    use cigscript::crash::CrashReport;
+    for f in found {
+        let (check, expect) = match f.kind {
             ReportKind::Tripwire => {
-                let c = r
+                let c = f
                     .details
                     .as_ref()
                     .and_then(|d| d["check"].as_str())
@@ -670,23 +698,24 @@ fn settle_own_bugs(
             ),
             _ => ("crash".to_string(), "a crash".to_string()),
         };
-        match cigscript::repro::build(record, journal, &check, &expect) {
-            Some((repro, mut mapping)) => {
-                if let Some(t) = r.title.take() {
-                    r.title = Some(mapping.anonymise_text(&t));
-                }
-                r.panic_message = mapping.anonymise_text(&r.panic_message);
-                if let Some(d) = r.details.as_mut() {
-                    mapping.anonymise_value(d);
-                }
-                r.repro = Some(repro);
-            }
-            None => {
-                if let Some(d) = r.details.as_mut() {
-                    reduce_paths(d);
-                }
-            }
-        }
+        let (repro, mut mapping) = match cigscript::repro::build(record, journal, &check, &expect) {
+            Some((x, m)) => (Some(x), m),
+            None => (None, cigscript::repro::Mapping::for_run(record, journal)),
+        };
+        let title = mapping.anonymise_text(&f.title);
+        let details = f.details.map(|mut d| {
+            mapping.anonymise_value(&mut d);
+            d
+        });
+        let mut r = CrashReport::new(
+            f.kind,
+            &f.location,
+            &title,
+            details,
+            Some(record.id.clone()),
+        );
+        r.cwd = mapping.map(std::path::Path::new(&record.cwd));
+        r.repro = repro;
         if let Err(e) = cigscript::ashtray::queue(&mut r) {
             eprintln!(
                 "{} cig noticed something it got wrong and could not save the report: {e}",
@@ -695,22 +724,6 @@ fn settle_own_bugs(
             continue;
         }
         super::crash::settle_new(ctx, &mut r);
-    }
-}
-
-/// Without a repro's mapping, a path in a report is cut to its file name.
-fn reduce_paths(v: &mut serde_json::Value) {
-    match v {
-        serde_json::Value::String(s) => {
-            if s.contains('/') || s.contains('\\') {
-                *s = cigscript::crash::redact_arg(s);
-            } else {
-                *s = cigscript::crash::redact_text(s);
-            }
-        }
-        serde_json::Value::Array(items) => items.iter_mut().for_each(reduce_paths),
-        serde_json::Value::Object(map) => map.values_mut().for_each(reduce_paths),
-        _ => {}
     }
 }
 

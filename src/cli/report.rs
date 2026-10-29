@@ -5,17 +5,21 @@
 //!
 //! The run record, the journal (what burned, in order, what it looked like
 //! before), the unlit intents, the failing diagnostic, doctor's diagnosis
-//! run again now, and the install facts doctor prints. Redacted the same
-//! way crash reports are: home paths become `~`, secret-shaped values are
-//! removed, and file contents are never included. This is what makes the
-//! "break it" invitation true for the bug that does not crash: the
-//! confident wrong answer is as easy to send as a panic.
+//! run again now, and the install facts doctor prints. Anonymised the way
+//! a crash report is: every path is a placeholder (`root0/d1/f2.txt`, the
+//! same mapping the repro uses), the command line is the words cig knows
+//! and the shape of the rest, secret-shaped values are removed, and file
+//! contents are never included. This is what makes the "break it"
+//! invitation true for the bug that does not crash: the confident wrong
+//! answer is as easy to send as a panic.
 
 use super::{exit, Ctx};
 use cigscript::burn::journal::{Before, Journal};
 use cigscript::burn::runs;
-use cigscript::crash::{redact_arg, redact_text, tilde};
+use cigscript::burn::Op;
+use cigscript::crash::{redact_arg, tilde};
 use cigscript::diagnostics::Diagnostic;
+use cigscript::repro::Mapping;
 use cigscript::{doctor, update};
 use std::path::{Path, PathBuf};
 
@@ -37,9 +41,9 @@ pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>, send: bool) -> i32 {
             return exit::USAGE;
         }
     };
-    let bundle = bundle(&rec);
+    let (bundle, mapping) = bundle(&rec);
     if send {
-        return send_bundle(ctx, &rec, bundle);
+        return send_bundle(ctx, &rec, bundle, mapping);
     }
     let text = serde_json::to_string_pretty(&bundle).unwrap_or_default();
     let to_stdout = ctx.json || out.as_deref() == Some(Path::new("-"));
@@ -68,7 +72,7 @@ pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>, send: bool) -> i32 {
     }
     outln!("{}", tilde(&path));
     eprintln!(
-        "{} run {} bundled: {} journal entr{}, the diagnostic, doctor's diagnosis and the install facts, redacted; read it, then attach it to an issue:",
+        "{} run {} bundled: {} journal entr{}, the diagnostic, doctor's diagnosis and the install facts, every path a placeholder; read it, then attach it to an issue:",
         ctx.green("report:"),
         rec.id,
         bundle["journal"].as_array().map(|a| a.len()).unwrap_or(0),
@@ -81,14 +85,15 @@ pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>, send: bool) -> i32 {
     exit::OK
 }
 
-fn r(s: &str) -> String {
-    redact_text(s)
-}
-
 /// `--send`: the bundle joins the ashtray as a report of kind `report` and
 /// goes to the tracker the way a crash does, under the same consent; one
 /// that cannot go now waits and goes with a later run.
-fn send_bundle(ctx: &Ctx, rec: &runs::RunRecord, bundle: serde_json::Value) -> i32 {
+fn send_bundle(
+    ctx: &Ctx,
+    rec: &runs::RunRecord,
+    bundle: serde_json::Value,
+    mut mapping: Mapping,
+) -> i32 {
     use cigscript::crash::{Consent, CrashReport, Kind};
     let cfg = cigscript::config::Config::load();
     if cigscript::crash::consent(&cfg) == Consent::Never {
@@ -107,8 +112,8 @@ fn send_bundle(ctx: &Ctx, rec: &runs::RunRecord, bundle: serde_json::Value) -> i
     }
     let what = rec
         .error
-        .clone()
-        .map(|e| r(&e))
+        .as_deref()
+        .map(|e| mapping.anonymise_text(e))
         .unwrap_or_else(|| format!("run {} finished {}", rec.id, rec.status));
     let code = rec
         .diagnostic
@@ -123,6 +128,7 @@ fn send_bundle(ctx: &Ctx, rec: &runs::RunRecord, bundle: serde_json::Value) -> i
         Some(bundle),
         Some(rec.id.clone()),
     );
+    report.cwd = mapping.map(Path::new(&rec.cwd));
     report.queue.requested = true;
     if let Err(e) = cigscript::ashtray::queue(&mut report) {
         eprintln!(
@@ -166,52 +172,123 @@ fn send_bundle(ctx: &Ctx, rec: &runs::RunRecord, bundle: serde_json::Value) -> i
     }
 }
 
-fn bundle(rec: &runs::RunRecord) -> serde_json::Value {
-    let journal: Vec<serde_json::Value> = match Journal::load(&rec.dir()) {
-        Ok(j) => j
+/// An op as a bundle says it: a hop is the program's name and the count of
+/// its arguments (the command line a hop ran is never copied), with its
+/// working directory and globs mapped; any other op is its description
+/// with every path a placeholder.
+fn op_shape(op: &Op, m: &mut Mapping) -> String {
+    match op {
+        Op::Proc {
+            cmd,
+            args,
+            cwd,
+            touches,
+            touches_sealed,
+            boxed,
+        } => {
+            let mut s = format!(
+                "run {} ({} argument{})",
+                cigscript::crash::program_name(cmd),
+                args.len(),
+                if args.len() == 1 { "" } else { "s" }
+            );
+            if let Some(c) = cwd {
+                s.push_str(&format!("  (in {})", m.map(c)));
+            }
+            if *boxed {
+                s.push_str("  (boxed)");
+            }
+            if !touches.is_empty() {
+                let globs: Vec<String> = touches.iter().map(|g| m.map_glob(g)).collect();
+                s.push_str(&format!("  (touches {})", globs.join(", ")));
+            }
+            if !touches_sealed.is_empty() {
+                let globs: Vec<String> = touches_sealed.iter().map(|g| m.map_glob(g)).collect();
+                s.push_str(&format!("  (touches_sealed {})", globs.join(", ")));
+            }
+            s
+        }
+        other => m.anonymise_text(&other.describe()),
+    }
+}
+
+/// The state directory as the install facts name it: the default, or
+/// `<custom>` (`CIGSCRIPT_HOME` points elsewhere; where is nobody's business).
+fn state_dir_shape() -> String {
+    let default = cigscript::crash::home_path().map(|h| h.join(".cigscript"));
+    if default.as_deref() == Some(runs::home_dir().as_path()) {
+        "~/.cigscript".to_string()
+    } else {
+        "<custom>".to_string()
+    }
+}
+
+/// The bundle, every path in it a placeholder of the run's mapping, which
+/// comes back with it so the report that carries the bundle uses the same.
+fn bundle(rec: &runs::RunRecord) -> (serde_json::Value, Mapping) {
+    let loaded = Journal::load(&rec.dir()).ok();
+    let mut m = match &loaded {
+        Some(j) => Mapping::for_run(rec, j),
+        None => Mapping::for_record(rec),
+    };
+    let journal: Vec<serde_json::Value> = match &loaded {
+        Some(j) => j
             .entries()
             .iter()
             .map(|e| {
-                serde_json::json!({
-                    "seq": e.seq,
-                    "at": e.at,
-                    "reversible": e.reversible,
-                    "op": r(&e.op.describe()),
-                    "before": e.before.iter().map(|b| serde_json::json!({
-                        "path": r(&b.path.display().to_string()),
-                        "state": match &b.before {
+                let before: Vec<serde_json::Value> = e
+                    .before
+                    .iter()
+                    .map(|b| {
+                        let state = match &b.before {
                             Before::Absent => "absent".to_string(),
-                            Before::File { bytes, sha256, git, .. } => format!(
+                            Before::File {
+                                bytes, sha256, git, ..
+                            } => format!(
                                 "file, {bytes} bytes, sha256 {}{}",
                                 &sha256[..sha256.len().min(12)],
                                 if git.is_some() { " (in git)" } else { "" }
                             ),
                             Before::Dir { .. } => "directory".to_string(),
                             Before::Directory { .. } => "directory (made again)".to_string(),
-                            Before::Symlink { target } => format!("symlink -> {}", r(&target.display().to_string())),
-                            Before::Moved { to } => format!("moved to {}", r(&to.display().to_string())),
-                        },
-                    })).collect::<Vec<_>>(),
+                            Before::Symlink { target } => {
+                                format!("symlink -> {}", m.map_link_target(&b.path, target))
+                            }
+                            Before::Moved { to } => format!("moved to {}", m.map(to)),
+                        };
+                        serde_json::json!({"path": m.map(&b.path), "state": state})
+                    })
+                    .collect();
+                serde_json::json!({
+                    "seq": e.seq,
+                    "at": e.at,
+                    "reversible": e.reversible,
+                    "op": op_shape(&e.op, &mut m),
+                    "before": before,
                 })
             })
             .collect(),
-        Err(_) => Vec::new(),
+        None => Vec::new(),
     };
     let intents: Vec<serde_json::Value> = std::fs::read_to_string(rec.dir().join("intents.jsonl"))
         .map(|t| {
             t.lines()
                 .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
-                .map(|v| serde_json::from_str(&r(&v.to_string())).unwrap_or(v))
+                .map(|mut v| {
+                    // The summary is the op's description with the hop's
+                    // command line in it: said as the op's shape instead.
+                    if let Ok(op) = serde_json::from_value::<Op>(v["op"].clone()) {
+                        v["summary"] = serde_json::Value::String(op_shape(&op, &mut m));
+                    }
+                    m.anonymise_value(&mut v);
+                    v
+                })
                 .collect()
         })
         .unwrap_or_default();
     let mut diagnostic = rec.diagnostic.clone();
     if let Some(v) = diagnostic.as_mut() {
-        for key in ["message", "hint", "subject", "file"] {
-            if let Some(s) = v.get(key).and_then(|x| x.as_str()).map(str::to_string) {
-                v[key] = serde_json::Value::String(r(&s));
-            }
-        }
+        m.anonymise_value(v);
     }
     let diagnosis = rec
         .diagnostic
@@ -227,11 +304,13 @@ fn bundle(rec: &runs::RunRecord) -> serde_json::Value {
             )
         })
         .map(|dx| {
-            let v = serde_json::to_value(&dx).unwrap_or_default();
-            serde_json::from_str(&r(&v.to_string())).unwrap_or(v)
+            let mut v = serde_json::to_value(&dx).unwrap_or_default();
+            m.anonymise_value(&mut v);
+            v
         });
     let crashes = cigscript::crash::list().unwrap_or_default();
-    serde_json::json!({
+    let error = rec.error.as_deref().map(|e| m.anonymise_text(e));
+    let bundle = serde_json::json!({
         "kind": "cigscript-report",
         "cig": cigscript::VERSION,
         "generated": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -239,15 +318,15 @@ fn bundle(rec: &runs::RunRecord) -> serde_json::Value {
         "run": {
             "id": rec.id,
             "version": rec.version,
-            "script": r(&rec.script),
+            "script": m.map(Path::new(&rec.script)),
             "script_sha256": rec.script_sha256,
             "args": rec.args.iter().map(|a| redact_arg(a)).collect::<Vec<_>>(),
-            "cwd": r(&rec.cwd),
+            "cwd": m.map(Path::new(&rec.cwd)),
             "mode": rec.mode,
             "started": rec.started,
             "finished": rec.finished,
             "status": rec.status,
-            "error": rec.error.as_deref().map(r),
+            "error": error,
             "burns": rec.burns,
             "irreversible": rec.irreversible,
             "rolled_back": rec.rolled_back,
@@ -257,10 +336,11 @@ fn bundle(rec: &runs::RunRecord) -> serde_json::Value {
         "journal": journal,
         "intents": intents,
         "install": {
-            "state_dir": tilde(&runs::home_dir()),
+            "state_dir": state_dir_shape(),
             "tools": {"gh": update::has_tool("gh"), "curl": update::has_tool("curl")},
             "crash_reports_unsent": crashes.iter().filter(|c| c.sent.is_none()).count(),
         },
-        "note": "Redacted like a crash report: home paths are ~, secret-shaped values are removed, file contents are never included. Read it before you send it.",
-    })
+        "note": "Anonymised like a crash report: every path is a placeholder (root0/d1/f2.txt; out/ for one outside the pack), the command line keeps only the words cig knows, secret-shaped values are removed, file contents are never included. Read it before you send it.",
+    });
+    (bundle, m)
 }

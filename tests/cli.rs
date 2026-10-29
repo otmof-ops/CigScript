@@ -88,6 +88,23 @@ impl Sandbox {
         String::from_utf8_lossy(&out.stderr).to_string()
     }
 
+    /// `cig`, started in a folder under the sandbox, the sandbox as home.
+    #[cfg(unix)]
+    fn cig_in(&self, sub: &str, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        Command::new(env!("CARGO_BIN_EXE_cig"))
+            .args(args)
+            .current_dir(self.path().join(sub))
+            .env("CIGSCRIPT_HOME", self.home())
+            .env("HOME", self.path())
+            .env("NO_COLOR", "1")
+            .env("CIG_SEAL_KEY", "file")
+            .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
+            .env_remove("CI")
+            .envs(envs.iter().copied())
+            .output()
+            .expect("run cig")
+    }
+
     fn cig_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_cig"))
             .args(args)
@@ -1594,10 +1611,15 @@ fn report_bundles_a_run_redacted() {
         serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
     assert_eq!(bundle["kind"], "cigscript-report");
     assert_eq!(bundle["run"]["id"], id);
+    // Every path is a placeholder of the run's mapping: the working
+    // directory is the one root when there is no pack, the script a file
+    // under it; the state directory is said to be custom, not where.
+    assert_eq!(bundle["run"]["cwd"], "root0", "{}", bundle["run"]);
+    assert_eq!(bundle["run"]["script"], "root0/f1.cig", "{}", bundle["run"]);
     assert_eq!(
-        bundle["run"]["cwd"], "~",
-        "cwd under HOME is redacted to ~: {}",
-        bundle["run"]
+        bundle["install"]["state_dir"], "<custom>",
+        "{}",
+        bundle["install"]
     );
     assert_eq!(bundle["diagnostic"]["code"], "E551");
     assert_eq!(
@@ -1607,7 +1629,7 @@ fn report_bundles_a_run_redacted() {
     );
     assert_eq!(bundle["journal"].as_array().unwrap().len(), 1);
     assert_eq!(bundle["journal"][0]["reversible"], false);
-    assert!(bundle["note"].as_str().unwrap().contains("Redacted"));
+    assert!(bundle["note"].as_str().unwrap().contains("Anonymised"));
     let text = fs::read_to_string(&file).unwrap();
     assert!(
         !text.contains(sb.path().to_str().unwrap()),
@@ -7374,4 +7396,434 @@ fn a_fixed_report_is_announced_on_update_check() {
     let out = sb.cig_env(&["--json", "update", "--check"], &env);
     let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(j["fixed_reports"].as_array().map(Vec::len), Some(0), "{j}");
+}
+
+// ----- 1.7.1: nothing of the person's in a report ------------------------------
+
+/// Every file under `dir`, recursively.
+#[cfg(unix)]
+fn files_under(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.path().is_dir() {
+            out.extend(files_under(&e.path()));
+        } else {
+            out.push(e.path());
+        }
+    }
+    out
+}
+
+/// `zqx` marks every folder, file name and byte of the person's in these
+/// tests; nothing that travels, and nothing cig shows as travelling, may
+/// carry it.
+#[cfg(unix)]
+fn assert_no_marker(text: &str, what: &str) {
+    assert!(
+        !text.to_ascii_lowercase().contains("zqx"),
+        "{what} carries a name of the person's:\n{text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_report_never_contains_a_path_component_of_the_users_folder() {
+    let sb = Sandbox::new();
+    let project = "zqx-clients/ZqxCorp/zqx-project";
+    fs::create_dir_all(sb.path().join(project).join("zqx-pack/ZqxData")).unwrap();
+    sb.write(
+        &format!("{project}/zqx-pack/ZqxData/zqx-ledger.csv"),
+        "zqx-secret-7781\n",
+    );
+    sb.write(
+        &format!("{project}/ZqxDeploy.cig"),
+        "pack { \"./zqx-pack\" }\nburn {\n  fs.write_text(\"zqx-pack/ZqxData/zqx-ledger.csv\", \"changed\")\n  proc.run(\"sh\", [\"-c\", \"echo zqx-secret > zqx-pack/ZqxData/zqx-note.txt\"], {touches: [\"zqx-pack/**\"]})\n  cough \"boom in zqx-pack/ZqxData\"\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    // 1. A tripwire's report, from a run started in the marked folder.
+    let out = sb.cig_in(
+        project,
+        &["run", "ZqxDeploy.cig"],
+        &[
+            ("CIG_INTERNAL_FAULT", "restore-mode"),
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 2. The run's bundle, sent.
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let out = sb.cig_in(
+        project,
+        &["report", &id, "--send"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // 3. Another tool's report, handed in with the marker in every field a
+    // path or a command line can reach.
+    sb.write(
+        "zqx-tool.json",
+        r#"{"kind":"crash","panic_message":"map has no key at /home/zqx/zqx-clients/ZqxCorp/orchestrate.cig","panic_location":"orchestrate.cig:12","version":"1.1.0","cwd":"~/zqx-clients/ZqxCorp","command":["cigo","run","ZqxDeploy.sh","--only","zqx-task"],"manifest":{"dir":"/srv/zqx/work","files":["zqx-a.txt","ZqxB.csv"],"script":"zqx-pack/ZqxData/run.sh"},"active_run_id":null}"#,
+    );
+    let file = sb
+        .path()
+        .join("zqx-tool.json")
+        .to_string_lossy()
+        .to_string();
+    let out = sb.cig_in(
+        project,
+        &[
+            "crash",
+            "submit",
+            "--origin",
+            "cig-orchestrator",
+            "--repo",
+            "otmof-ops/cig-orchestrator",
+            "--file",
+            &file,
+            "--now",
+        ],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    wait_filed(&sb, 3);
+    // Nothing of the marker in what was filed, in the ashtray, or in what
+    // `cig crash show` says would be filed.
+    let filed = files_under(&tracker);
+    assert_eq!(filed.len(), 3, "{filed:?}");
+    for f in &filed {
+        assert_no_marker(&fs::read_to_string(f).unwrap(), &f.display().to_string());
+    }
+    let listed = sb.run_ok(&["--json", "crash", "list"]);
+    assert_no_marker(&listed, "cig crash list");
+    let list: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
+    for r in &list {
+        let shown = sb.run_ok(&["crash", "show", r["id"].as_str().unwrap()]);
+        assert_no_marker(&shown, "cig crash show");
+    }
+    // The shape stays for the maintainer: the pack root, the depth, the
+    // capital letter, the extension, the words of the command line.
+    let tripwire = list.iter().find(|r| r["kind"] == "tripwire").unwrap();
+    assert_eq!(
+        tripwire["details"]["found"]["mismatches"][0]["path"], "root0/D1/f1.csv",
+        "{tripwire}"
+    );
+    assert_eq!(
+        tripwire["command"],
+        serde_json::json!(["cig", "run", "<script>"]),
+        "{tripwire}"
+    );
+    assert!(
+        tripwire["cwd"].as_str().unwrap().starts_with("out/"),
+        "{tripwire}"
+    );
+    let bundle = list.iter().find(|r| r["kind"] == "report").unwrap();
+    let run = &bundle["details"]["run"];
+    assert!(run["cwd"].as_str().unwrap().starts_with("out/"), "{run}");
+    assert!(
+        run["script"].as_str().unwrap().ends_with(".cig")
+            && run["script"].as_str().unwrap().starts_with("out/"),
+        "{run}"
+    );
+    assert_eq!(run["error"], "boom in root0/D1", "{run}");
+    assert_eq!(
+        bundle["details"]["journal"][0]["before"][0]["path"], "root0/D1/f1.csv",
+        "{}",
+        bundle["details"]["journal"]
+    );
+    // A hop is its program and the count of its arguments; the command
+    // line it ran is never copied.
+    let hop = bundle["details"]["journal"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["op"].as_str().unwrap().starts_with("run "))
+        .unwrap();
+    assert_eq!(
+        hop["op"], "run sh (2 arguments)  (touches root0/**)",
+        "{hop}"
+    );
+    let handed = list
+        .iter()
+        .find(|r| r["origin"] == "cig-orchestrator")
+        .unwrap();
+    assert_eq!(
+        handed["details"]["command"],
+        serde_json::json!(["cigo", "run", "<arg>", "<flag>", "<arg>"]),
+        "{handed}"
+    );
+    // Under home, two levels, the second with a capital letter.
+    let cwd = handed["details"]["cwd"].as_str().unwrap();
+    let comps: Vec<&str> = cwd.split('/').collect();
+    assert!(
+        comps.len() == 3
+            && comps[0] == "~"
+            && comps[1].starts_with('d')
+            && comps[2].starts_with('D'),
+        "{handed}"
+    );
+    assert_eq!(handed["panic_location"], "orchestrate.cig:12", "{handed}");
+    assert!(
+        handed["panic_message"]
+            .as_str()
+            .unwrap()
+            .ends_with("/orchestrate.cig"),
+        "{handed}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_crash_report_cwd_is_a_placeholder() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("Zqx-Work/sub")).unwrap();
+    sb.write("Zqx-Work/sub/x.cig", "exhale \"never\"\n");
+    let out = sb.cig_in(
+        "Zqx-Work/sub",
+        &["run", "x.cig"],
+        &[("CIG_INTERNAL_PANIC", "eval")],
+    );
+    assert_eq!(out.status.code(), Some(70));
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    let r = &list[0];
+    // The shape of the working directory, not its names: under home, two
+    // levels, the first with a capital letter.
+    assert_eq!(r["cwd"], "~/D1/d2", "{r}");
+    assert_eq!(
+        r["command"],
+        serde_json::json!(["cig", "run", "<script>"]),
+        "{r}"
+    );
+    let shown = sb.run_ok(&["crash", "show", r["id"].as_str().unwrap()]);
+    assert_no_marker(&shown, "cig crash show");
+    assert!(
+        !shown.contains(sb.path().to_str().unwrap()),
+        "the sandbox path is in the report:\n{shown}"
+    );
+    // What travels is the allowlist: the ashtray's bookkeeping stays home.
+    assert!(
+        !shown.contains("\"queue\"") && !shown.contains("\"announced\""),
+        "{shown}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_path_touched_twice_does_not_trip_the_rollback_tripwire() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.mkdir(\"p/d\")\n  fs.write_text(\"p/d/x\", \"x\")\n  fs.rm(\"p/d\")\n  fs.write_text(\"p/keep.txt\", \"v2\")\n  fs.rm(\"p/keep.txt\")\n  proc.run(\"sh\", [\"-c\", \"mkdir -p h; echo x > h/y\"], {cwd: \"p\"})\n  fs.rm(\"p/h\")\n  cough \"boom\"\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_TRACKER_DIR", &t)]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    // The pack is as it was: each path judged by its state before the
+    // first op that touched it, not by the run's own intermediate states.
+    assert_eq!(sb.read("p/keep.txt"), "v1\n");
+    assert!(!sb.exists("p/d") && !sb.exists("p/h"));
+    assert!(!err.contains("tripwire:"), "{err}");
+    assert_eq!(sb.run_ok(&["--json", "crash", "list"]).trim(), "[]");
+    assert!(!tracker.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn cig_unburn_runs_the_rollback_tripwire() {
+    let sb = Sandbox::new();
+    sb.write("p/f.txt", "before\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/f.txt\", \"after\")\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    sb.run_ok(&["run", "s.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    // The fault: the unburn's restore puts one mode bit back wrong. The
+    // unburn's own outcome is what it was; the tripwire says so.
+    let out = sb.cig_env(
+        &["unburn", &id],
+        &[
+            ("CIG_INTERNAL_FAULT", "restore-mode"),
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+        ],
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("tripwire: cig noticed something it got wrong"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/f.txt"), "before\n");
+    let reports: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    let r = &reports[0];
+    assert_eq!(r["kind"], "tripwire", "{r}");
+    assert_eq!(r["active_run_id"], id, "{r}");
+    assert!(
+        r["title"].as_str().unwrap().contains("should have mode"),
+        "{r}"
+    );
+    assert_eq!(
+        r["details"]["found"]["mismatches"][0]["path"], "root0/f1.txt",
+        "{r}"
+    );
+    wait_filed(&sb, 1);
+    // The same unburn without the fault trips nothing.
+    sb.run_ok(&["crash", "delete", "--all"]);
+    sb.run_ok(&["run", "s.cig"]);
+    let second = sb.runs().iter().find(|r| r["status"] == "ok").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let out = sb.cig_env(&["unburn", &second], &[("CIG_INTERNAL_TRACKER_DIR", &t)]);
+    assert!(out.status.success());
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("tripwire:"));
+    assert_eq!(sb.run_ok(&["--json", "crash", "list"]).trim(), "[]");
+}
+
+#[test]
+fn a_typed_flush_sends_a_report_waiting_for_its_retry_time() {
+    let sb = Sandbox::new();
+    let id = failed_run(&sb);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+            ("CIG_INTERNAL_OFFLINE", "1"),
+        ],
+    );
+    assert!(out.status.success());
+    // A second failure puts the report in its backoff.
+    let out = sb.cig_env(
+        &["--json", "crash", "flush"],
+        &[
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+            ("CIG_INTERNAL_OFFLINE", "1"),
+        ],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["failed"].as_array().map(Vec::len), Some(1), "{v}");
+    let list: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    assert_eq!(list[0]["queue"]["attempts"], 2, "{}", list[0]);
+    assert!(list[0]["queue"]["next_try"].is_string(), "{}", list[0]);
+    // The background's pass honours the backoff; the typed one is a
+    // request for now.
+    let out = sb.cig_env(
+        &["--json", "crash", "flush", "--quiet"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["waiting"], 1, "{v}");
+    assert_eq!(v["filed"].as_array().map(Vec::len), Some(0), "{v}");
+    let out = sb.cig_env(
+        &["--json", "crash", "flush"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["filed"].as_array().map(Vec::len), Some(1), "{v}");
+    assert!(issue_file(&tracker, 1)["title"]
+        .as_str()
+        .unwrap()
+        .starts_with("report ["));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_report_with_many_mismatches_lists_twenty_five_and_counts_the_rest() {
+    let sb = Sandbox::new();
+    let mut script = String::from("pack { \"./p\" }\nburn {\n");
+    for i in 0..60 {
+        sb.write(&format!("p/f{i}.txt"), "v\n");
+        script.push_str(&format!("  fs.write_text(\"p/f{i}.txt\", \"w\")\n"));
+    }
+    script.push_str("  cough \"boom\"\n}\n");
+    sb.write("s.cig", &script);
+    sb.run_ok(&["config", "reports", "never"]);
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_FAULT", "restore-mode")]);
+    assert_eq!(out.status.code(), Some(1));
+    let reports: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    let r = &reports[0];
+    let found = &r["details"]["found"];
+    assert_eq!(found["checked"], 60, "{found}");
+    assert_eq!(
+        found["mismatches"].as_array().map(Vec::len),
+        Some(25),
+        "{found}"
+    );
+    assert_eq!(found["more"], 35, "{found}");
+    assert!(
+        r["title"]
+            .as_str()
+            .unwrap()
+            .contains("restored 60 paths, but 60 are not as recorded"),
+        "{r}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_relative_link_target_stays_relative_in_the_repro() {
+    let sb = Sandbox::new();
+    sb.write("p/one.txt", "1\n");
+    sb.write("p/two.txt", "2\n");
+    std::os::unix::fs::symlink("one.txt", sb.path().join("p/link")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/two.txt\", \"x\")\n  fs.rm(\"p/link\")\n  cough \"boom\"\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "never"]);
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_FAULT", "restore-mode")]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(
+        fs::read_link(sb.path().join("p/link")).unwrap(),
+        PathBuf::from("one.txt")
+    );
+    let reports: Vec<serde_json::Value> =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    let seeds = reports[0]["repro"]["seeds"].as_array().unwrap().clone();
+    let link = seeds.iter().find(|s| s["kind"] == "link").unwrap();
+    let target = link["target"].as_str().unwrap();
+    // A sibling, as it was: not a path from the working directory, not
+    // under `out/`.
+    assert!(!target.contains('/') && target.ends_with(".txt"), "{link}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hop_under_nested_roots_is_journaled_once() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("q/a")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./q\", \"./q/a\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo h > h.txt\"], {cwd: \"q/a\"})\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    // The hop, and the one file it made: seen through both roots, one effect.
+    assert_eq!(sb.runs()[0]["burns"], 2, "{}", sb.runs()[0]);
 }

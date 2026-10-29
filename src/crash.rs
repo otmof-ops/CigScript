@@ -9,6 +9,7 @@
 //! exactly what would be sent.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -185,9 +186,9 @@ impl CrashReport {
             os: std::env::consts::OS.to_string(),
             arch: std::env::consts::ARCH.to_string(),
             timestamp: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            command: std::env::args().map(|a| redact_arg(&a)).collect(),
+            command: redact_command(std::env::args()),
             cwd: std::env::current_dir()
-                .map(|p| tilde(&p))
+                .map(|p| shape(&p))
                 .unwrap_or_else(|_| "?".to_string()),
             panic_message: redact_text(&truncate(title, 500)),
             panic_location: location.to_string(),
@@ -327,6 +328,11 @@ fn build(message: &str, location: &str, backtrace: &str) -> CrashReport {
     let active_run_id = CONTEXT
         .get()
         .and_then(|m| m.lock().ok().and_then(|g| g.clone()));
+    // No run's mapping here: the message is scrubbed of anything shaped
+    // like a path, and the working directory travels as its shape.
+    let cwd = std::env::current_dir().ok();
+    let panic_message = crate::repro::Mapping::new(&[], cwd.as_deref().unwrap_or(Path::new("")))
+        .anonymise_text(&truncate(message, 500));
     CrashReport {
         id: format!("{}-{}", now.format("%Y%m%dT%H%M%S"), &fingerprint[..6]),
         fingerprint,
@@ -334,11 +340,9 @@ fn build(message: &str, location: &str, backtrace: &str) -> CrashReport {
         os: std::env::consts::OS.to_string(),
         arch: std::env::consts::ARCH.to_string(),
         timestamp: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-        command: std::env::args().map(|a| redact_arg(&a)).collect(),
-        cwd: std::env::current_dir()
-            .map(|p| tilde(&p))
-            .unwrap_or_else(|_| "?".to_string()),
-        panic_message: redact_text(&truncate(message, 500)),
+        command: redact_command(std::env::args()),
+        cwd: cwd.as_deref().map(shape).unwrap_or_else(|| "?".to_string()),
+        panic_message,
         panic_location: location.to_string(),
         backtrace: filter_backtrace(backtrace),
         active_run_id,
@@ -430,18 +434,206 @@ pub fn path_of(report: &CrashReport) -> PathBuf {
 
 const SECRET_FLAGS: &[&str] = &["token", "key", "secret", "password", "passwd", "auth"];
 
-/// Redact a command-line argument: secret-shaped values and anything that
-/// looks like a path or URL are replaced or reduced to a basename.
+/// Words a command line may carry as they are: the subcommands, flags and
+/// values the binary registers when it starts (`know_words`), cig's own
+/// names, the configuration keys and their values. Everything else travels
+/// as its shape: `<script>`, `<path>`, `<run>`, `<flag>`, `<arg>`.
+static KNOWN: OnceLock<HashSet<String>> = OnceLock::new();
+
+/// Register the words the command line may say; the binary calls it once
+/// with what its parser knows.
+pub fn know_words<I: IntoIterator<Item = String>>(words: I) {
+    let _ = KNOWN.set(words.into_iter().collect());
+}
+
+const BUILTIN_WORDS: &[&str] = &[
+    "cig",
+    "cigo",
+    "run",
+    "light",
+    "check",
+    "chains",
+    "eval",
+    "repl",
+    "runs",
+    "unburn",
+    "doctor",
+    "language",
+    "explain",
+    "config",
+    "crash",
+    "report",
+    "versions",
+    "pin",
+    "parcel",
+    "unparcel",
+    "tin",
+    "update",
+    "list",
+    "show",
+    "send",
+    "flush",
+    "submit",
+    "delete",
+    "gc",
+    "--",
+    "--json",
+    "--no-color",
+    "--no-doctor",
+    "--plain",
+    "--dry-run",
+    "--no-rollback",
+    "--force",
+    "--out",
+    "--send",
+    "--quiet",
+    "--all",
+    "--origin",
+    "--repo",
+    "--file",
+    "--now",
+    "--check",
+    "--give-back",
+    "--verify",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "ask",
+    "always",
+    "never",
+    "auto",
+    "once",
+    "true",
+    "false",
+    "stable",
+    "prerelease",
+    "secrets",
+    "all",
+    "off",
+    "on",
+    "file",
+    // Programs a hop commonly runs: a tool's name, never the person's.
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "fish",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "python",
+    "python3",
+    "node",
+    "npm",
+    "npx",
+    "pnpm",
+    "yarn",
+    "bun",
+    "deno",
+    "cargo",
+    "rustc",
+    "go",
+    "make",
+    "cmake",
+    "gradle",
+    "mvn",
+    "java",
+    "docker",
+    "kubectl",
+    "git",
+    "gh",
+    "curl",
+    "wget",
+    "rsync",
+    "ssh",
+    "scp",
+    "tar",
+    "zip",
+    "unzip",
+    "echo",
+    "printf",
+    "cat",
+    "ls",
+    "cp",
+    "mv",
+    "rm",
+    "mkdir",
+    "touch",
+    "sed",
+    "awk",
+    "grep",
+    "sort",
+    "uniq",
+    "head",
+    "tail",
+    "tee",
+    "env",
+    "uv",
+    "pip",
+    "pip3",
+    "poetry",
+    "pdm",
+    "hatch",
+    "pipenv",
+    "ruby",
+    "perl",
+    "php",
+];
+
+fn known(word: &str) -> bool {
+    BUILTIN_WORDS.contains(&word)
+        || crate::config::KEYS.iter().any(|(k, _, _)| *k == word)
+        || KNOWN.get().is_some_and(|s| s.contains(word))
+}
+
+fn is_run_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 22
+        && b[..8].iter().all(u8::is_ascii_digit)
+        && b[8] == b'T'
+        && b[9..15].iter().all(u8::is_ascii_digit)
+        && b[15] == b'-'
+        && b[16..].iter().all(u8::is_ascii_hexdigit)
+}
+
+fn is_version(s: &str) -> bool {
+    let s = s.strip_prefix('v').unwrap_or(s);
+    let core = s.split(['-', '+']).next().unwrap_or("");
+    core.contains('.')
+        && core
+            .split('.')
+            .all(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'+'))
+}
+
+fn is_code(s: &str) -> bool {
+    s.len() == 4 && s.starts_with('E') && s[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+/// A command-line argument as a report carries it: a word cig knows (a
+/// subcommand, a flag, a configuration key or value, a version, an error
+/// code, a number) as it is; a secret-shaped value `<redacted>`; a URL
+/// `<url>`; everything else as its shape, `<script>` for a `.cig` file,
+/// `<path>`, `<run>` for a run id, `<flag>` or `<arg>`.
 pub fn redact_arg(arg: &str) -> String {
+    if arg.is_empty() {
+        return String::new();
+    }
     let lower = arg.to_ascii_lowercase();
-    if let Some((flag, value)) = arg.split_once('=') {
-        if SECRET_FLAGS
-            .iter()
-            .any(|s| flag.to_ascii_lowercase().contains(s))
-        {
-            return format!("{flag}=<redacted>");
+    if let Some((flag, _)) = arg.split_once('=') {
+        if flag.starts_with('-') {
+            let secret = SECRET_FLAGS
+                .iter()
+                .any(|s| flag.to_ascii_lowercase().contains(s));
+            let shown = if known(flag) || secret {
+                flag
+            } else {
+                "<flag>"
+            };
+            return format!("{shown}={}", if secret { "<redacted>" } else { "<value>" });
         }
-        let _ = value;
     }
     if SECRET_FLAGS.iter().any(|s| lower.contains(s)) && !arg.starts_with('-') {
         return "<redacted>".to_string();
@@ -452,14 +644,75 @@ pub fn redact_arg(arg: &str) -> String {
     if arg.contains("://") {
         return "<url>".to_string();
     }
-    if arg.contains('/') || arg.contains('\\') {
-        let base = Path::new(arg)
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "<path>".to_string());
-        return format!(".../{base}");
+    if known(arg)
+        || (!arg.is_empty() && arg.bytes().all(|b| b.is_ascii_digit()))
+        || is_version(arg)
+        || is_code(arg)
+    {
+        return arg.to_string();
     }
-    arg.to_string()
+    if arg.starts_with('-') {
+        return "<flag>".to_string();
+    }
+    if is_run_id(arg) {
+        return "<run>".to_string();
+    }
+    if lower.ends_with(".cig") {
+        return "<script>".to_string();
+    }
+    if arg.contains('/') || arg.contains('\\') {
+        return "<path>".to_string();
+    }
+    "<arg>".to_string()
+}
+
+/// The first word of a command line: the program's own name, wherever it
+/// was started from; `<program>` for one cig does not know.
+pub fn program_name(arg0: &str) -> String {
+    let base = arg0.rsplit(['/', '\\']).next().unwrap_or(arg0);
+    let base = base.strip_suffix(".exe").unwrap_or(base).to_string();
+    if known(&base) {
+        base
+    } else {
+        "<program>".to_string()
+    }
+}
+
+/// A command line as a report carries it: the program's name, then every
+/// argument through `redact_arg`.
+pub fn redact_command<I: IntoIterator<Item = String>>(args: I) -> Vec<String> {
+    args.into_iter()
+        .enumerate()
+        .map(|(i, a)| {
+            if i == 0 {
+                program_name(&a)
+            } else {
+                redact_arg(&a)
+            }
+        })
+        .collect()
+}
+
+/// The home directory as the environment names it.
+pub fn home_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .filter(|p| !p.as_os_str().is_empty())
+}
+
+/// `p` under the home directory, in any of its spellings: the rest of it.
+pub fn strip_home(p: &Path) -> Option<PathBuf> {
+    home_spellings()
+        .iter()
+        .find_map(|home| p.strip_prefix(home).ok().map(Path::to_path_buf))
+}
+
+/// The shape of a path and none of its names: `~/d1/D2` under the home
+/// directory, `/d1/d2` elsewhere; each component a placeholder that keeps
+/// the depth, a capital letter, a leading dot, a character outside ASCII.
+pub fn shape(p: &Path) -> String {
+    crate::repro::Mapping::new(&[], Path::new("")).map(p)
 }
 
 fn looks_like_token(s: &str) -> bool {
@@ -776,8 +1029,76 @@ fn header(r: &CrashReport) -> String {
     )
 }
 
-fn report_section(r: &CrashReport) -> String {
-    let json = serde_json::to_string_pretty(r).unwrap_or_default();
+/// What travels: an allowlist of the report's fields. The ashtray's own
+/// bookkeeping (the queue, the issue, the announcement) stays home.
+pub fn sent_view(r: &CrashReport) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "id": r.id,
+        "fingerprint": r.fingerprint,
+        "kind": r.kind.word(),
+        "origin": r.origin,
+        "version": r.version,
+        "os": r.os,
+        "arch": r.arch,
+        "timestamp": r.timestamp,
+        "command": r.command,
+        "cwd": r.cwd,
+        "panic_message": r.panic_message,
+        "panic_location": r.panic_location,
+        "backtrace": r.backtrace,
+        "active_run_id": r.active_run_id,
+        "rolled_back": r.rolled_back,
+    });
+    if let Some(t) = &r.title {
+        v["title"] = serde_json::Value::String(t.clone());
+    }
+    if let Some(d) = &r.details {
+        v["details"] = d.clone();
+    }
+    if let Some(x) = &r.repro {
+        v["repro"] = serde_json::to_value(x).unwrap_or_default();
+    }
+    v
+}
+
+/// GitHub takes 65,536 characters in an issue body; past this many the
+/// body is cut back, biggest part first.
+const BODY_MAX: usize = 60_000;
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Trim {
+    None,
+    /// `details` replaced by a note.
+    Details,
+    /// ... and the repro's script, seeds and stubs too.
+    Repro,
+}
+
+fn report_section(r: &CrashReport, trim: Trim) -> String {
+    let mut view = sent_view(r);
+    if trim >= Trim::Details {
+        if let Some(d) = view.get("details") {
+            let size = d.to_string().len();
+            view["details"] = serde_json::json!({
+                "omitted": format!("{size} characters; `cig crash show {}` on the reporter's machine has them", r.id)
+            });
+        }
+    }
+    if trim >= Trim::Repro {
+        if let Some(x) = view.get_mut("repro").and_then(|x| x.as_object_mut()) {
+            x.remove("script");
+            x.remove("seeds");
+            x.remove("stubs");
+            x.insert(
+                "omitted".to_string(),
+                serde_json::Value::String(
+                    "the script, seeds and stubs; the report on the reporter's machine has them"
+                        .to_string(),
+                ),
+            );
+        }
+    }
+    let json = serde_json::to_string_pretty(&view).unwrap_or_default();
     let mut s = format!(
         "{REPORT_MARK}\n### What {} found\n\n{}\n\n<details><summary>Full report</summary>\n\n```json\n{}\n```\n</details>\n",
         r.origin,
@@ -785,6 +1106,14 @@ fn report_section(r: &CrashReport) -> String {
         json
     );
     match &r.repro {
+        Some(x) if x.verified && trim >= Trim::Repro => {
+            s.push_str(&format!(
+                "\nRepro: verified in a sandbox, {} op{}; too long for this issue, it is on the reporter's machine (`cig crash show {}`).\n",
+                x.ops,
+                if x.ops == 1 { "" } else { "s" },
+                r.id
+            ));
+        }
         Some(x) if x.verified => {
             s.push_str(&format!(
                 "\n<details><summary>Repro (verified in a sandbox, {} op{})</summary>\n\n{}\n\n```cig\n{}```\n",
@@ -826,12 +1155,26 @@ fn report_section(r: &CrashReport) -> String {
 }
 
 pub fn issue_body(r: &CrashReport) -> String {
-    format!(
-        "{}{}\n{}",
-        header(r),
-        Stats::first(r).render(),
-        report_section(r)
-    )
+    let compose = |trim: Trim| {
+        format!(
+            "{}{}\n{}",
+            header(r),
+            Stats::first(r).render(),
+            report_section(r, trim)
+        )
+    };
+    for trim in [Trim::None, Trim::Details, Trim::Repro] {
+        let body = compose(trim);
+        if body.chars().count() <= BODY_MAX {
+            return body;
+        }
+    }
+    let mut body: String = compose(Trim::Repro).chars().take(BODY_MAX - 200).collect();
+    body.push_str(&format!(
+        "\n…\n(cut here: the whole report is on the reporter's machine, `cig crash show {}`)\n",
+        r.id
+    ));
+    body
 }
 
 /// The existing body with its stats block replaced; a body from before the
@@ -1003,6 +1346,32 @@ mod tests {
     }
 
     #[test]
+    fn a_body_past_the_issue_limit_is_cut_back() {
+        let mut r = CrashReport::new(
+            Kind::Tripwire,
+            "tripwire rollback",
+            "the rollback said it restored 1 path, but 1 is not as recorded",
+            Some(serde_json::json!({"blob": "x".repeat(100_000)})),
+            None,
+        );
+        let body = issue_body(&r);
+        assert!(body.chars().count() <= BODY_MAX, "{}", body.len());
+        assert!(
+            body.contains("omitted") && body.contains(REPORT_MARK) && body.contains(STATS_OPEN),
+            "{body}"
+        );
+        assert!(Stats::parse(&body).is_some());
+        // The ashtray's bookkeeping never travels; a small report goes whole.
+        r.details = Some(serde_json::json!({"small": true}));
+        let body = issue_body(&r);
+        assert!(body.contains("\"small\": true"), "{body}");
+        assert!(
+            !body.contains("\"queue\"") && !body.contains("\"announced\""),
+            "{body}"
+        );
+    }
+
+    #[test]
     fn redaction_rules() {
         assert_eq!(redact_arg("--token=abc"), "--token=<redacted>");
         assert_eq!(
@@ -1010,9 +1379,32 @@ mod tests {
             "<redacted>"
         );
         assert_eq!(redact_arg("https://example.com/x"), "<url>");
-        assert_eq!(redact_arg("/home/someone/scripts/tidy.cig"), ".../tidy.cig");
+        assert_eq!(redact_arg("/home/someone/scripts/tidy.cig"), "<script>");
+        assert_eq!(redact_arg("AcmeDeploy.cig"), "<script>");
+        assert_eq!(redact_arg("clients/AcmeCorp/notes.txt"), "<path>");
+        assert_eq!(redact_arg("AcmeCorp"), "<arg>");
+        assert_eq!(redact_arg("--client-acme"), "<flag>");
+        assert_eq!(redact_arg("--out=/srv/AcmeCorp/x.json"), "--out=<value>");
+        assert_eq!(redact_arg("20261029T054349-33bddd"), "<run>");
+        assert_eq!(redact_arg("1.7.1"), "1.7.1");
+        assert_eq!(redact_arg("E902"), "E902");
         assert_eq!(redact_arg("run"), "run");
         assert_eq!(redact_arg("--dry-run"), "--dry-run");
+        assert_eq!(program_name("/home/someone/.local/bin/cig"), "cig");
+        assert_eq!(program_name("C:\\tools\\cig.exe"), "cig");
+        assert_eq!(
+            redact_command(
+                [
+                    "cig",
+                    "run",
+                    "clients/AcmeCorp/AcmeDeploy.cig",
+                    "--",
+                    "acme"
+                ]
+                .map(String::from)
+            ),
+            ["cig", "run", "<script>", "--", "<arg>"]
+        );
         assert_eq!(urlencode("a b&c"), "a%20b%26c");
     }
 

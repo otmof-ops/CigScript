@@ -117,8 +117,13 @@ data, and proves it before attaching it:
    maintainer gets the smallest case.
 
 The report's own text goes through the same placeholders: a path a tripwire
-names is written as `root0/d1/f3.txt`, never as yours. The repro is the
-regression test, ready to be named and added to `tests/`.
+names is written as `root0/d1/f3.txt`, never as yours; the working
+directory is its shape (`root0`, `out/d1/D2/d3`); the command line keeps the
+words cig knows and gives everything else a shape (`cig run <script>`); and
+anything else in a message that is shaped like a path or a file name is
+mapped too, before the fingerprint is taken, so two people hitting one bug
+in differently named folders land on one issue. The repro is the regression
+test, ready to be named and added to `tests/`.
 
 ## One issue per bug
 
@@ -151,10 +156,15 @@ cig crash submit --origin cig-orchestrator --repo otmof-ops/cig-orchestrator --f
 
 The report is read as a report (its `kind`, `panic_message`/`title`,
 `panic_location`/`location`, `version` and `active_run_id`; everything else
-travels under `details`, redacted again), carries the origin and the
-repository the tool named, and joins the ashtray under cig's `reports`
-setting: `always` queues it (or sends it now with `--now`), `ask` saves it
-and says how to send it, `never` keeps it local.
+travels under `details`), carries the origin and the repository the tool
+named, and joins the ashtray under cig's `reports` setting: `always` queues
+it (or sends it now with `--now`), `ask` saves it and says how to send it,
+`never` keeps it local. Everything in it is anonymised again on the way in:
+every path and file name its shape, a field named for a path (`cwd`,
+`path`, `file`) mapped whole, a command line reduced to the words cig knows.
+What cig cannot tell from a plain word is the tool's to anonymise before it
+hands the report in: a task's or a project's name, say, which
+cig-orchestrator writes as `t1` and `<project>`.
 
 ## Never fails to send
 
@@ -165,6 +175,9 @@ one of them works.
 
 ## Privacy, in one sentence
 
-An allowlist: no file contents, no real names, no environment values, no
-script source, no hop commands; `cig crash show <id>` prints exactly what
-travels, and nothing travels without the one yes.
+An allowlist, twice over: the body carries a fixed list of fields and no
+other (the ashtray's own bookkeeping stays home), and within them no file
+contents, no path component of yours, no environment values, no script
+source, no hop commands, a command line reduced to the words cig knows;
+`cig crash show <id>` prints exactly what travels, and nothing travels
+without the one yes.
