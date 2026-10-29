@@ -97,3 +97,40 @@ reading twice as much. The issue hoped for 60 to 100 MB a million; the
 scan itself is in that range and holding two of them is the rest. macOS
 and Windows were not measured here; the CI runs the half-million test on
 Linux in release mode.
+
+## The box leaves the build trees alone (1.6.1)
+
+**Question.** What does a boxed hop cost when the hop is a build: thousands
+of object files written under `target/`, which hop watching never looks
+into and never journals?
+
+**Setup.** Linux x86_64 (ext4, NVMe), one pack root holding `target/deep/`
+with 300 one-line files. One hop, `cwd` at the root, writes 3,000 more
+files under `target/deep/` and one `out.txt` beside them. Measured with
+`/usr/bin/time -f "%e"` around the whole `cig run`; the journal's line
+count is read from the run's record afterwards.
+
+**Before: cig 1.6.0** (the box applied the whole upper layer).
+
+| hop | seconds | journal lines | applied |
+|---|---|---|---|
+| boxed | 2.17 | 3,003 | 3,001 paths written |
+| on the watch (no box) | 0.14 | 3 | 1 created file journaled; `target/` skipped |
+
+Every object file came through the box as a native write, copied one by one
+and journaled with its before-state: fifteen times the wall-clock of the same
+hop on the watch, and a journal a thousand times longer, for files the
+rollback would then have deleted.
+
+**After: cig 1.6.1** (the trees hop watching skips are bound through the
+overlay from the real root, so the hop writes them where they always went).
+
+| hop | seconds | journal lines | applied |
+|---|---|---|---|
+| boxed | 0.15 | 3 | 1 path written |
+
+The box costs what the watch costs, and a build's objects are nobody's
+business but the build's; `out.txt` is the one path the box applies and
+the rollback removes. A `target/` that is not there before the hop is made
+through the box like any new directory, and journaled as such, once.
+
