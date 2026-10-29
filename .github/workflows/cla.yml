@@ -6,7 +6,10 @@
 #   I have read the CLA Document and I hereby sign the CLA
 # Signatures are recorded in .github/CLA/signatures.json on main, committed
 # by the action with the workflow's own token, so the repository keeps one
-# branch and needs no secret.
+# branch and needs no secret. The agreement governs outside contributions:
+# the maintainer's own pull requests are not asked to sign it, so the job
+# does not run for them (the action would otherwise ask the commit author's
+# address to belong to a GitHub account, which it does not).
 name: cla
 on:
   issue_comment:
@@ -22,6 +25,7 @@ permissions:
 
 jobs:
   cla:
+    if: github.event_name == 'issue_comment' || github.event.pull_request.user.login != github.repository_owner
     runs-on: ubuntu-latest
     steps:
       - uses: contributor-assistant/github-action@v2.6.1
