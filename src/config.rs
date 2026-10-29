@@ -12,9 +12,14 @@ use std::path::PathBuf;
 /// Every key `cig config` accepts, with its default and meaning.
 pub const KEYS: &[(&str, &str, &str)] = &[
     (
+        "reports",
+        "ask",
+        "what to do when cig finds a bug in itself (a crash, an internal error, a tripwire): ask once and remember, always (file without asking), never (keep reports local only); under CI with nothing set, never",
+    ),
+    (
         "crash_reports",
         "ask",
-        "what to do with a crash report: ask, always (file without asking), never (keep local only)",
+        "the older name of `reports`; read when `reports` is not set",
     ),
     (
         "crash_rollback",
@@ -123,6 +128,12 @@ impl Config {
             ));
         };
         match (key, value) {
+            ("reports", "ask" | "always" | "never") => {}
+            ("reports", other) => {
+                return Err(format!(
+                    "reports must be ask, always or never, not `{other}`"
+                ))
+            }
             ("crash_reports", "ask" | "always" | "never") => {}
             ("crash_reports", other) => {
                 return Err(format!(

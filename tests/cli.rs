@@ -54,6 +54,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // A runner's CI must not reach the sandbox: the one test that
+            // wants it sets it itself.
+            .env_remove("CI")
             // No test reaches the releases page: a pin that needs a fetch
             // finds no network here, as a machine offline would.
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
@@ -93,6 +96,7 @@ impl Sandbox {
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
+            .env_remove("CI")
             .envs(envs.iter().copied())
             .output()
             .expect("run cig")
@@ -551,6 +555,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .env("NO_COLOR", "1")
         .env("CIG_SEAL_KEY", "file")
         .env("CIG_INTERNAL_PANIC", "1")
+        .env_remove("CI")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(70));
@@ -582,6 +587,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .current_dir(sb.path())
         .env("CIGSCRIPT_HOME", sb.home())
         .env("CIG_INTERNAL_PANIC", "1")
+        .env_remove("CI")
         .output()
         .unwrap();
     assert!(String::from_utf8_lossy(&out.stderr).contains("crash_reports is \"never\""));
@@ -6293,6 +6299,7 @@ fn a_chatty_undo_neither_hangs_the_rollback_nor_floods_the_report() {
         .env("CIGSCRIPT_HOME", sb.home())
         .env("NO_COLOR", "1")
         .env("CIG_SEAL_KEY", "file")
+        .env_remove("CI")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped())
@@ -6786,4 +6793,585 @@ fn a_box_inside_a_box_is_refused_in_the_plan_with_the_reason() {
         "{run}"
     );
     assert_eq!(sb.read("p/q/f.txt"), "v2\n");
+}
+
+// ----- 1.7.0: the tool reports its own bugs (#101) ----------------------------------
+
+/// A failed run to report: one burn, then a cough.
+fn failed_run(sb: &Sandbox) -> String {
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"a.txt\", \"1\")\n  cough \"boom\"\n}\n",
+    );
+    sb.run_err(&["run", "s.cig"], 1);
+    sb.runs()[0]["id"].as_str().unwrap().to_string()
+}
+
+/// Wait for the background flush to have filed `n` reports.
+#[cfg(unix)]
+fn wait_filed(sb: &Sandbox, n: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        let v: serde_json::Value =
+            serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+        let filed = v
+            .as_array()
+            .map(|a| a.iter().filter(|r| r["issue"].is_object()).count())
+            .unwrap_or(0);
+        if filed >= n {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "only {filed} of {n} reports were filed in time: {v}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+fn issue_file(tracker: &Path, number: u64) -> serde_json::Value {
+    let text = fs::read_to_string(tracker.join(format!("otmof-ops__CigScript/{number}.json")))
+        .unwrap_or_else(|e| {
+            let mut listing = Vec::new();
+            fn walk(d: &Path, out: &mut Vec<String>) {
+                for e in fs::read_dir(d).into_iter().flatten().flatten() {
+                    out.push(e.path().display().to_string());
+                    if e.path().is_dir() {
+                        walk(&e.path(), out);
+                    }
+                }
+            }
+            walk(tracker, &mut listing);
+            panic!("issue {number}: {e}; the tracker holds: {listing:?}")
+        });
+    serde_json::from_str(&text).unwrap()
+}
+
+#[test]
+fn report_send_files_the_bundle() {
+    let sb = Sandbox::new();
+    let id = failed_run(&sb);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("filed at file://"), "{err}");
+    let issue = issue_file(&tracker, 1);
+    assert!(
+        issue["title"].as_str().unwrap().starts_with("report ["),
+        "{issue}"
+    );
+    let body = issue["body"].as_str().unwrap();
+    assert!(
+        body.contains("Run bundle filed with `cig report --send`")
+            && body.contains("\"kind\": \"cigscript-report\"")
+            && body.contains("<!-- cig-stats"),
+        "{body}"
+    );
+    assert!(issue["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l == "report"));
+    let list = sb.run_ok(&["crash", "list"]);
+    assert!(list.contains("report") && list.contains("filed"), "{list}");
+    // An explicit never sends nothing, whatever was typed.
+    sb.run_ok(&["config", "reports", "never"]);
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("reports is \"never\""));
+    assert!(!tracker.join("otmof-ops__CigScript/2.json").exists());
+}
+
+#[test]
+fn a_report_made_offline_is_sent_on_the_next_run() {
+    let sb = Sandbox::new();
+    let id = failed_run(&sb);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    // Offline: the send fails, the report waits with the reason written on it.
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+            ("CIG_INTERNAL_OFFLINE", "1"),
+        ],
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        out.status.success() && err.contains("waits in the ashtray"),
+        "{err}"
+    );
+    assert!(!tracker.exists());
+    let list = sb.run_ok(&["crash", "list"]);
+    assert!(
+        list.contains("failed: the network")
+            && list.contains("last try: the network is unreachable"),
+        "{list}"
+    );
+    // Back online: a run of anything sends it in the background, and the
+    // run itself does not wait.
+    sb.write("t.cig", "exhale \"hello\"\n");
+    let out = sb.cig_env(&["run", "t.cig"], &[("CIG_INTERNAL_TRACKER_DIR", &t)]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        if issue.exists()
+            && sb
+                .run_ok(&["--json", "crash", "list"])
+                .contains("\"issue\"")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(
+        issue.exists(),
+        "the background flush did not file the report"
+    );
+    let list = sb.run_ok(&["crash", "list"]);
+    assert!(list.contains("filed"), "{list}");
+    // Nothing left to send.
+    let out = sb.cig_env(
+        &["--json", "crash", "flush"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["filed"].as_array().map(Vec::len), Some(0), "{v}");
+    assert_eq!(v["failed"].as_array().map(Vec::len), Some(0), "{v}");
+}
+
+#[test]
+fn ci_never_files_without_the_setting() {
+    let sb = Sandbox::new();
+    let id = failed_run(&sb);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    // Under CI with nothing set: never, and the message says what would change it.
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t), ("CI", "true")],
+    );
+    assert_eq!(out.status.code(), Some(3));
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("reports is \"never\" under CI unless `cig config reports always`"),
+        "{err}"
+    );
+    assert!(!tracker.exists());
+    assert_eq!(sb.run_ok(&["--json", "crash", "list"]).trim(), "[]");
+    // The setting, made explicit, holds under CI.
+    sb.run_ok(&["config", "reports", "always"]);
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t), ("CI", "true")],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(tracker.join("otmof-ops__CigScript/1.json").exists());
+    // And `reports` is the one setting: the older name still reads.
+    sb.run_ok(&["config", "reports", "--unset"]);
+    sb.run_ok(&["config", "crash_reports", "never"]);
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    assert_eq!(out.status.code(), Some(3));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_rollback_that_restores_the_wrong_mode_trips() {
+    let sb = Sandbox::new();
+    sb.write("p/f.txt", "before\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/f.txt\", \"after\")\n  cough \"boom\"\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    // The fault: the restore puts one mode bit back wrong. The run's own
+    // outcome is what it was (the cough, exit 1); the tripwire says so.
+    let out = sb.cig_env(
+        &["run", "s.cig"],
+        &[
+            ("CIG_INTERNAL_FAULT", "restore-mode"),
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("tripwire: cig noticed something it got wrong")
+            && err.contains("a report is queued"),
+        "{err}"
+    );
+    assert_eq!(sb.read("p/f.txt"), "before\n");
+    let reports: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    let r = &reports[0];
+    assert_eq!(r["kind"], "tripwire", "{r}");
+    assert!(
+        r["title"].as_str().unwrap().contains("should have mode"),
+        "{r}"
+    );
+    // The path travels as its placeholder, never as the person's name.
+    assert_eq!(
+        r["details"]["found"]["mismatches"][0]["path"], "root0/f1.txt",
+        "{r}"
+    );
+    // Filed in the background, labelled for what it is.
+    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !issue.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(issue.exists(), "the tripwire report was not filed");
+    let filed = issue_file(&tracker, 1);
+    assert!(
+        filed["title"].as_str().unwrap().starts_with("tripwire ["),
+        "{filed}"
+    );
+    assert!(filed["labels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|l| l == "tripwire"));
+    // The same run without the fault trips nothing.
+    sb.run_ok(&["crash", "delete", "--all"]);
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_TRACKER_DIR", &t)]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!err.contains("tripwire:"), "{err}");
+    assert_eq!(sb.run_ok(&["--json", "crash", "list"]).trim(), "[]");
+}
+
+#[test]
+fn a_cough_in_the_users_script_is_never_reported() {
+    let sb = Sandbox::new();
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    // The script's own failures: a cough, a runtime error, a type error.
+    sb.write(
+        "cough.cig",
+        "burn {\n  fs.write_text(\"a.txt\", \"1\")\n  cough \"boom\"\n}\n",
+    );
+    sb.write("runtime.cig", "burn {\n  stick x = 1 / 0\n}\n");
+    sb.write("typed.cig", "stick s = \"a\" + 1\n");
+    for script in ["cough.cig", "runtime.cig", "typed.cig"] {
+        let out = sb.cig_env(&["run", script], &[("CIG_INTERNAL_TRACKER_DIR", &t)]);
+        assert!(!out.status.success(), "{script}");
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(
+            !err.contains("noticed something it got wrong"),
+            "{script}: {err}"
+        );
+    }
+    assert_eq!(sb.run_ok(&["--json", "crash", "list"]).trim(), "[]");
+    assert!(!tracker.exists());
+    // An internal error is cig's own: reported, filed, labelled.
+    let out = sb.cig_env(
+        &["run", "cough.cig"],
+        &[
+            ("CIG_INTERNAL_FAULT", "internal"),
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+        ],
+    );
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("error[E900 internal]")
+            && err.contains("internal: cig noticed something it got wrong"),
+        "{err}"
+    );
+    let reports: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    assert_eq!(reports.as_array().unwrap().len(), 1);
+    assert_eq!(reports[0]["kind"], "internal");
+    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !issue.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    assert!(issue.exists(), "the internal error was not filed");
+    assert!(issue_file(&tracker, 1)["title"]
+        .as_str()
+        .unwrap()
+        .starts_with("internal ["));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_repro_contains_no_user_path_or_content() {
+    let sb = Sandbox::new();
+    // Names and bytes a report must never carry.
+    sb.write(
+        "books/Clients-Private/Ledger-2026.txt",
+        "ACCOUNT-7781 owes 40\n",
+    );
+    sb.write(
+        "books/Clients-Private/notes.md",
+        "call Maria about the Zürich invoice\n",
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./books\" }\nburn {\n  fs.write_text(\"books/Clients-Private/Ledger-2026.txt\", \"ACCOUNT-7781 owes 0\")\n  fs.write_text(\"books/Clients-Private/notes.md\", \"paid\")\n  proc.run(\"sh\", [\"-c\", \"echo receipt > books/Clients-Private/receipt.txt\"], {touches: [\"books/Clients-Private/**\"]})\n  cough \"boom\"\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    let out = sb.cig_env(
+        &["run", "s.cig"],
+        &[
+            ("CIG_INTERNAL_FAULT", "restore-mode"),
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    // The flush verifies the repro in a sandbox and files it.
+    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while std::time::Instant::now() < deadline {
+        if issue.exists()
+            && sb
+                .run_ok(&["--json", "crash", "list"])
+                .contains("\"issue\"")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(issue.exists(), "the report was not filed");
+    let filed = fs::read_to_string(&issue).unwrap();
+    let report = sb.run_ok(&["--json", "crash", "list"]);
+    let v: serde_json::Value = serde_json::from_str(&report).unwrap();
+    let r = &v[0];
+    assert_eq!(r["repro"]["verified"], true, "{r}");
+    let script = r["repro"]["script"].as_str().unwrap();
+    assert!(
+        script.contains("pack { \"root0\" }") && script.contains("fs.write_text(\"root0/"),
+        "{script}"
+    );
+    // Three ops went in; the shrinker kept what still trips.
+    assert!(
+        r["repro"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("shrunk from 3 to"),
+        "{r}"
+    );
+    for needle in [
+        "books", "Clients", "Private", "Ledger", "2026.txt", "notes.md", "ACCOUNT", "7781",
+        "Maria", "Zürich", "receipt",
+    ] {
+        assert!(
+            !filed.contains(needle),
+            "the issue carries `{needle}`:\n{filed}"
+        );
+        assert!(
+            !report.contains(needle),
+            "the report carries `{needle}`:\n{report}"
+        );
+    }
+    assert!(filed.contains("Repro (verified in a sandbox"), "{filed}");
+    // Placeholders keep what a filesystem bug may depend on: the capital
+    // letter, the extension, the depth.
+    assert!(
+        r["repro"]["seeds"].as_array().unwrap().iter().any(|s| {
+            let p = s["path"].as_str().unwrap();
+            p.starts_with("root0/D") && p.contains("/F") && p.ends_with(".txt")
+        }),
+        "{r}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unverified_repro_is_not_attached() {
+    let sb = Sandbox::new();
+    sb.write("p/f.txt", "before\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/f.txt\", \"after\")\n  cough \"boom\"\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    // The fault fires once: the run trips, the sandbox run does not.
+    let marker = sb.path().join("fired-once");
+    let fault = format!("restore-mode-once:{}", marker.display());
+    let out = sb.cig_env(
+        &["run", "s.cig"],
+        &[
+            ("CIG_INTERNAL_FAULT", &fault),
+            ("CIG_INTERNAL_TRACKER_DIR", &t),
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("tripwire: cig noticed"));
+    assert!(marker.exists());
+    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while std::time::Instant::now() < deadline {
+        if issue.exists()
+            && sb
+                .run_ok(&["--json", "crash", "list"])
+                .contains("\"issue\"")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    assert!(issue.exists(), "the report was not filed");
+    let v: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    let r = &v[0];
+    assert_eq!(r["repro"]["verified"], false, "{r}");
+    assert!(
+        r["repro"]["note"]
+            .as_str()
+            .unwrap()
+            .contains("did not reproduce"),
+        "{r}"
+    );
+    let filed = fs::read_to_string(&issue).unwrap();
+    assert!(
+        filed.contains("Repro: none attached") && !filed.contains("Repro (verified"),
+        "{filed}"
+    );
+    // The report still says what was found, with the path as a placeholder.
+    assert!(
+        r["title"].as_str().unwrap().contains("should have mode"),
+        "{r}"
+    );
+    let details = r["details"].to_string();
+    assert!(
+        details.contains("root0/f1.txt") && !details.contains("p/f.txt"),
+        "{details}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_second_report_updates_the_stats_not_a_comment() {
+    let sb = Sandbox::new();
+    sb.write("p/f.txt", "before\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/f.txt\", \"after\")\n  cough \"boom\"\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    let env = [
+        ("CIG_INTERNAL_FAULT", "restore-mode"),
+        ("CIG_INTERNAL_TRACKER_DIR", &t),
+    ];
+    sb.cig_env(&["run", "s.cig"], &env);
+    wait_filed(&sb, 1);
+    let first = issue_file(&tracker, 1);
+    let stats = first["body"].as_str().unwrap();
+    assert!(stats.contains("\"count\":1"), "{stats}");
+    // The same bug again: the issue's count moves, nothing is commented,
+    // no second issue opens.
+    sb.cig_env(&["run", "s.cig"], &env);
+    wait_filed(&sb, 2);
+    let again = issue_file(&tracker, 1);
+    let body = again["body"].as_str().unwrap();
+    assert!(body.contains("\"count\":2"), "{body}");
+    assert!(body.contains("| 2 |"), "{body}");
+    assert_eq!(
+        again["comments"].as_array().map(Vec::len),
+        Some(0),
+        "{again}"
+    );
+    assert!(!tracker.join("otmof-ops__CigScript/2.json").exists());
+    let list = sb.run_ok(&["--json", "crash", "list"]);
+    let v: serde_json::Value = serde_json::from_str(&list).unwrap();
+    assert_eq!(v.as_array().unwrap().len(), 2);
+    assert!(
+        v.as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["issue"]["number"] == 1),
+        "{v}"
+    );
+    // What the first report said stays as it was: the body keeps its section.
+    assert!(
+        body.contains("<!-- cig-report -->") && body.contains("### What cig found"),
+        "{body}"
+    );
+}
+
+#[test]
+fn a_fixed_report_is_announced_on_update_check() {
+    let sb = Sandbox::new();
+    let id = failed_run(&sb);
+    let tracker = sb.path().join("tracker");
+    let t = tracker.to_string_lossy().to_string();
+    let out = sb.cig_env(
+        &["report", &id, "--send"],
+        &[("CIG_INTERNAL_TRACKER_DIR", &t)],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let issue_path = tracker.join("otmof-ops__CigScript/1.json");
+    // The maintainer closes the issue; a release's notes say it fixed #1.
+    let mut issue: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&issue_path).unwrap()).unwrap();
+    issue["state"] = serde_json::Value::String("closed".to_string());
+    issue["closed_at"] = serde_json::Value::String("2026-10-30T00:00:00Z".to_string());
+    fs::write(&issue_path, issue.to_string()).unwrap();
+    let manifest = serde_json::json!([
+        {"tag_name": "v99.0.0", "prerelease": false, "draft": false, "html_url": "https://example.invalid/99", "published_at": "",
+         "body": "## 99.0.0\n\n- the rollback kept its promise (#1).\n", "assets": []},
+        {"tag_name": "v98.0.0", "prerelease": false, "draft": false, "html_url": "https://example.invalid/98", "published_at": "",
+         "body": "nothing about it (#10 is another issue)", "assets": []}
+    ]);
+    sb.write("manifest.json", &manifest.to_string());
+    let m = sb
+        .path()
+        .join("manifest.json")
+        .to_string_lossy()
+        .to_string();
+    let env = [
+        ("CIG_INTERNAL_TRACKER_DIR", &t[..]),
+        ("CIG_UPDATE_MANIFEST", &m[..]),
+    ];
+    let out = sb.cig_env(&["update", "--check"], &env);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("fixed: a bug you reported (#1, boom) is fixed in 99.0.0: cig update"),
+        "{err}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    assert_eq!(v[0]["fixed_in"], "99.0.0", "{v}");
+    assert_eq!(v[0]["announced"], true, "{v}");
+    // Said once.
+    let out = sb.cig_env(&["update", "--check"], &env);
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("a bug you reported"));
+    let out = sb.cig_env(&["--json", "update", "--check"], &env);
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["fixed_reports"].as_array().map(Vec::len), Some(0), "{j}");
 }

@@ -1950,6 +1950,7 @@ fn restore(
                         if let Some(ns) = mtime_ns {
                             set_mtime(path, *ns)?;
                         }
+                        inject_wrong_mode(path);
                         return Ok((None, taken));
                     }
                 }
@@ -1971,6 +1972,7 @@ fn restore(
             if let Some(ns) = mtime_ns {
                 set_mtime(path, *ns)?;
             }
+            inject_wrong_mode(path);
             Ok((note, taken))
         }
         Before::Dir { snapshot } => {
@@ -2124,6 +2126,24 @@ fn staging_path(path: &Path) -> PathBuf {
         }
         n += 1;
     }
+}
+
+/// The test hook that proves the rollback tripwire on a real fault: with
+/// `CIG_INTERNAL_FAULT=restore-mode` a restored file gets one mode bit
+/// wrong, exactly the bug the tripwire exists to catch.
+fn inject_wrong_mode(path: &Path) {
+    #[cfg(unix)]
+    {
+        if crate::tripwire::injected("restore-mode") {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(m) = fs::metadata(path) {
+                let wrong = (m.permissions().mode() ^ 0o100) & 0o7777;
+                let _ = fs::set_permissions(path, fs::Permissions::from_mode(wrong));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// `remove_any`, for the box's apply.

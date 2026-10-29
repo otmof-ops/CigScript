@@ -175,6 +175,14 @@ impl Interp {
 
     /// Called by effectful builtins before they act.
     pub fn effect(&mut self, name: &str, op: Op, span: Span) -> Result<Decision, Diagnostic> {
+        // Test hook for the reporter: an internal error (E900) at the first
+        // effect, the state a bug in cig's own code would leave.
+        if std::env::var("CIG_INTERNAL_FAULT").as_deref() == Ok("internal") {
+            return Err(crate::diagnostics::internal(format!(
+                "deliberate internal error at {name} (CIG_INTERNAL_FAULT=internal)"
+            ))
+            .at(span));
+        }
         if self.burn_depth == 0 {
             return Err(burn_error(format!(
                 "{name} changes the world, so it must be inside a burn block"

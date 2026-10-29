@@ -250,8 +250,9 @@ per step; the journal records the effects.
   intents.jsonl   unlit burns (only when there were any)
 ```
 
-Beside `runs/`, the state directory holds `crashes/` (crash reports, yours
-until you send them), `reports/` (`cig report <run>` bundles), `humidor/`
+Beside `runs/`, the state directory holds `ashtray/` (every report cig made
+about its own bugs, yours until you send them; `crashes/` from before 1.7.0
+is read too), `reports/` (`cig report <run>` bundles), `humidor/`
 (every other version of cig kept for pinned scripts and old journals, one
 directory per version with `index.json` beside them; see `cig versions`),
 `tin/` (below) and `update-check.json`.

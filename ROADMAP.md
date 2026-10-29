@@ -39,6 +39,10 @@ Done in 1.5.0: rows 9 (the tin in chunks, #82), 10 (git blob reuse, #87),
 11 (the hash chain, #88) and 15 (sealed, #83), each with its tests and wall
 rows; the words settled in LEXICON.md as planned.
 
+Done in 1.7.0: the tool reports its own bugs (#101): tripwires after the work, the
+ashtray, a verified anonymised repro from the journal, one issue per bug with live stats,
+the fix announced on `cig update --check`, and one pipeline for the family.
+
 Done in 1.2.0 instead of waiting: the tin for whole files (`touches`, `cig tin`, `.cigignore`;
 cig-orchestrator #18 steps 1 to 4 and 8), the pin, the humidor and the trial (#22), crash
 reports that name the function and put the run back (#23, #24), and the `cig.*` namespace.

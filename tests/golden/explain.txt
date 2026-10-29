@@ -119,6 +119,7 @@ E850-E869  the updater and doctor
 E900-E999  internal: a bug in CigScript itself
   E900  internal error                     internal
   E901  crash                              internal
+  E902  tripwire                           internal
 
 cig explain <code> for the page; cig explain --schema for the JSON schema
 
@@ -1774,5 +1775,21 @@ E901 crash  (internal, internal family, since 1.0.0)
   1. CigScript panicked; a redacted report was written under the state directory
      probe: crash-reports (the crash reports saved under the state directory)
      remedy: `cig crash list`, then `cig crash send <id>`; you can read the file first, it is plain JSON
+
+  arises in: any
+
+======== E902 ========
+E902 tripwire  (internal, internal family, since 1.7.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  After the work, cig checked one of its own promises (a restore, its journal, the tin, the box) and found it broken. A report is in the ashtray; the run's outcome is what it was.
+
+  what to type next: nothing in your script: `cig crash show <id>` reads the report, `cig crash send <id>` files it, `cig config reports always` lets cig file its own bugs
+
+  known causes, ranked; doctor checks them in this order
+  1. a restored path is not as the journal recorded it, the journal does not read back as written, a tin object or an applied box file does not hash as it should
+     probe: crash-reports (the crash reports saved under the state directory)
+     remedy: `cig crash list` shows the report; it carries an anonymised repro when one reproduced in a sandbox, and the fix is announced on `cig update --check`
 
   arises in: any

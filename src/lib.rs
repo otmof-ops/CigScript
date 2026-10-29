@@ -14,6 +14,7 @@
 //!
 //! The `cig` binary in `src/main.rs` is a thin CLI over these modules.
 
+pub mod ashtray;
 pub mod burn;
 pub mod check;
 pub mod config;
@@ -24,10 +25,13 @@ pub mod errors;
 pub mod humidor;
 pub mod interp;
 pub mod pin;
+pub mod repro;
 pub mod since;
 pub mod stdlib;
 pub mod syntax;
+pub mod tracker;
 pub mod trial;
+pub mod tripwire;
 pub mod update;
 pub mod value;
 

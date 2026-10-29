@@ -12,14 +12,20 @@ the plan said, and what actually happened. `cig runs` gives you the run id;
 `cig report <run>` bundles the plan, the journal, the diagnostic and doctor's
 diagnosis into one file, redacted the same way crash reports are (home paths
 become `~`, secret-shaped values are removed, file contents are never
-included), and it's fine to attach it after you've read it. The run record
-under `~/.cigscript/runs/<id>/` has the journal and the snapshots if more is
-needed. Use the [cheat issue
+included), and it's fine to attach it after you've read it; `cig report
+<run> --send` files it for you, through the ashtray, as an issue labelled
+`report`. The run record under `~/.cigscript/runs/<id>/` has the journal
+and the snapshots if more is needed. Use the [cheat issue
 template](https://github.com/otmof-ops/CigScript/issues/new?template=cheat.yml).
 
-Crash reports are opt-in (`crash_reports=ask`) and redacted before they
-leave your machine. `cig doctor` shows you every one it's holding and
-sends only when you say so. You can read the file first; it's plain JSON.
+cig also reports its own bugs: a crash, an internal error, or a tripwire
+that found one of its promises broken after the work. Every such report
+lands in the ashtray (`cig crash list`) before anything is sent, redacted,
+with an anonymised repro built from the journal when one reproduces; it
+goes only when you say so (`reports = ask` asks once and remembers;
+`always`, `never`; under CI with nothing set, never). You can read the file
+first; it's plain JSON. [docs/REPORTS.md](docs/REPORTS.md) has the whole
+pipeline.
 
 The reply you'll get is the same shape every time: what broke, why, the
 fix, and the test that now covers it. No trial.
@@ -35,9 +41,9 @@ nothing.
 
 - **Bugs that are not cheats** (a wrong message, a missing hint): open an
   issue with the script, the command you ran, and the full error, including
-  its code (`E502` and so on). If `cig` crashed, `cig crash show <id>` has
-  everything we need; send it with `cig crash send <id>` or paste it into
-  the issue.
+  its code (`E502` and so on). If `cig` crashed or a tripwire went, `cig
+  crash show <id>` has everything we need; send it with `cig crash send
+  <id>` or paste it into the issue.
 - **Features:** open an issue first and say what problem it solves. The
   language is kept deliberately small; `docs/DESIGN.md` explains why and lists
   what is already planned.

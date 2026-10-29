@@ -23,7 +23,7 @@ pub fn reports_dir() -> PathBuf {
     runs::home_dir().join("reports")
 }
 
-pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>) -> i32 {
+pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>, send: bool) -> i32 {
     let rec = match runs::find(id) {
         Ok(Some(r)) => r,
         Ok(None) => {
@@ -38,6 +38,9 @@ pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>) -> i32 {
         }
     };
     let bundle = bundle(&rec);
+    if send {
+        return send_bundle(ctx, &rec, bundle);
+    }
     let text = serde_json::to_string_pretty(&bundle).unwrap_or_default();
     let to_stdout = ctx.json || out.as_deref() == Some(Path::new("-"));
     if to_stdout {
@@ -80,6 +83,87 @@ pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>) -> i32 {
 
 fn r(s: &str) -> String {
     redact_text(s)
+}
+
+/// `--send`: the bundle joins the ashtray as a report of kind `report` and
+/// goes to the tracker the way a crash does, under the same consent; one
+/// that cannot go now waits and goes with a later run.
+fn send_bundle(ctx: &Ctx, rec: &runs::RunRecord, bundle: serde_json::Value) -> i32 {
+    use cigscript::crash::{Consent, CrashReport, Kind};
+    let cfg = cigscript::config::Config::load();
+    if cigscript::crash::consent(&cfg) == Consent::Never {
+        eprintln!(
+            "{} reports is \"never\"{}, so nothing leaves this machine; `cig report {}` writes the bundle to a file instead",
+            ctx.red("error[E800 usage]:"),
+            if cigscript::crash::under_ci() && !cfg.is_set("reports") && !cfg.is_set("crash_reports") {
+                " under CI unless `cig config reports always` says otherwise"
+            } else {
+                ""
+            },
+            rec.id
+        );
+        eprintln!("  = explain: cig explain E800");
+        return exit::USAGE;
+    }
+    let what = rec
+        .error
+        .clone()
+        .map(|e| r(&e))
+        .unwrap_or_else(|| format!("run {} finished {}", rec.id, rec.status));
+    let code = rec
+        .diagnostic
+        .as_ref()
+        .and_then(|d| d.get("code"))
+        .and_then(|c| c.as_str())
+        .unwrap_or("none");
+    let mut report = CrashReport::new(
+        Kind::Report,
+        &format!("run bundle, {code}"),
+        &what,
+        Some(bundle),
+        Some(rec.id.clone()),
+    );
+    report.queue.requested = true;
+    if let Err(e) = cigscript::ashtray::queue(&mut report) {
+        eprintln!(
+            "{} could not save the report: {e}",
+            ctx.red("error[E802 usage]:")
+        );
+        return exit::USAGE;
+    }
+    let repo = cigscript::ashtray::repo_for(&cfg, &report);
+    match cigscript::ashtray::try_send(&mut report, &cfg) {
+        Ok(cigscript::crash::SendOutcome::Filed(url)) => {
+            eprintln!("{} run {} filed at {url}", ctx.green("sent:"), rec.id);
+            exit::OK
+        }
+        Ok(cigscript::crash::SendOutcome::Commented(url)) => {
+            eprintln!(
+                "{} this failure is already known; its count was updated on {url}",
+                ctx.green("sent:")
+            );
+            exit::OK
+        }
+        Ok(cigscript::crash::SendOutcome::Manual(url)) => {
+            eprintln!(
+                "{} {}, so nothing was sent; the bundle waits in the ashtray as {} and goes with a later run once a tool is there.",
+                ctx.yellow("note:"),
+                cigscript::tracker::why_none(),
+                report.id
+            );
+            eprintln!("open this link to file it yourself now (the report is prefilled):");
+            eprintln!("  {url}");
+            exit::OK
+        }
+        Err(e) => {
+            eprintln!("{} could not file on {repo} now: {e}", ctx.yellow("note:"));
+            eprintln!(
+                "the bundle waits in the ashtray as {} and goes with a later run; cig crash flush tries again now",
+                report.id
+            );
+            exit::OK
+        }
+    }
 }
 
 fn bundle(rec: &runs::RunRecord) -> serde_json::Value {

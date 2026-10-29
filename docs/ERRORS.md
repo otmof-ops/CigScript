@@ -1713,6 +1713,7 @@ internal: a bug in CigScript itself.
 |---|---|---|---|
 | [`E900`](#e900-internal-error) | internal error | not one of the four | please report it: `cig crash send` after the crash, or file an issue with the script |
 | [`E901`](#e901-crash) | crash | not one of the four | `cig crash list` then `cig crash send <id>`, or say yes at the prompt |
+| [`E902`](#e902-tripwire) | tripwire | not one of the four | nothing in your script: `cig crash show <id>` reads the report, `cig crash send <id>` files it, `cig config reports always` lets cig file its own bugs |
 
 ### E900 internal error
 
@@ -1742,4 +1743,19 @@ CigScript panicked. A crash report was written locally.
 **Known causes**, ranked; doctor checks them in this order:
 
 1. CigScript panicked; a redacted report was written under the state directory (probe `crash-reports`). **Remedy:** `cig crash list`, then `cig crash send <id>`; you can read the file first, it is plain JSON
+
+
+### E902 tripwire
+
+*internal · since 1.7.0 · arises in any*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+After the work, cig checked one of its own promises (a restore, its journal, the tin, the box) and found it broken. A report is in the ashtray; the run's outcome is what it was.
+
+**What to type next:** nothing in your script: `cig crash show <id>` reads the report, `cig crash send <id>` files it, `cig config reports always` lets cig file its own bugs
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a restored path is not as the journal recorded it, the journal does not read back as written, a tin object or an applied box file does not hash as it should (probe `crash-reports`). **Remedy:** `cig crash list` shows the report; it carries an anonymised repro when one reproduced in a sandbox, and the fix is announced on `cig update --check`
 

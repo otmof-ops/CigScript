@@ -40,7 +40,14 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
         .collect();
     let run_bytes = dir_size(&runs::runs_dir());
     let crashes = crash::list().unwrap_or_default();
-    let unsent = crashes.iter().filter(|c| c.sent.is_none()).count();
+    let unsent = crashes
+        .iter()
+        .filter(|c| c.sent.is_none() && c.issue.is_none())
+        .count();
+    let failing = crashes
+        .iter()
+        .filter(|c| c.issue.is_none() && c.queue.last_error.is_some())
+        .count();
     let tools = vec![
         Tool {
             name: "curl",
@@ -84,8 +91,13 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
     }
     if unsent > 0 {
         problems.push(format!(
-            "{unsent} crash report{} not sent yet; `cig crash list`",
-            if unsent == 1 { "" } else { "s" }
+            "{unsent} report{} of cig's own bugs not filed yet{}; `cig crash list`",
+            if unsent == 1 { "" } else { "s" },
+            if failing > 0 {
+                format!(" ({failing} tried and failed, waiting for a retry)")
+            } else {
+                String::new()
+            }
         ));
     }
     if run_bytes > 1 << 30 {
@@ -148,10 +160,23 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
             ctx.red(&format!("  {} interrupted", interrupted.len()))
         }
     );
-    outln!("  crash reports {} saved, {unsent} unsent", crashes.len());
     outln!(
-        "  config        crash_reports={}  issues_repo={}  update_channel={}",
-        cfg.get("crash_reports"),
+        "  ashtray       {} report{} saved, {unsent} not filed{}",
+        crashes.len(),
+        if crashes.len() == 1 { "" } else { "s" },
+        if failing > 0 {
+            format!(", {failing} waiting for a retry")
+        } else {
+            String::new()
+        }
+    );
+    outln!(
+        "  config        reports={}  issues_repo={}  update_channel={}",
+        match crash::consent(&cfg) {
+            crash::Consent::Ask => "ask",
+            crash::Consent::Always => "always",
+            crash::Consent::Never => "never",
+        },
         cfg.get("issues_repo"),
         cfg.get("update_channel")
     );

@@ -51,6 +51,9 @@ pub struct Release {
     pub url: String,
     pub published_at: String,
     pub assets: Vec<Asset>,
+    /// The release notes, read for the issues a release says it fixed.
+    #[serde(default)]
+    pub body: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -110,6 +113,21 @@ fn curl_base() -> Command {
         "120",
     ]);
     c
+}
+
+/// Every published release, newest version first, notes included.
+pub fn releases(repo: &str) -> Result<Vec<Release>, String> {
+    let text = releases_json(repo)?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("releases response is not JSON: {e}"))?;
+    let items = v.as_array().ok_or("releases response is not a list")?;
+    let mut out: Vec<Release> = items
+        .iter()
+        .filter(|i| !i["draft"].as_bool().unwrap_or(false))
+        .filter_map(|i| pick(&serde_json::Value::Array(vec![i.clone()]).to_string(), true).ok())
+        .collect();
+    out.sort_by_key(|r| std::cmp::Reverse(r.version()));
+    Ok(out)
 }
 
 /// Fetch the releases list and pick the newest matching the channel.
@@ -195,6 +213,7 @@ fn pick(json: &str, prerelease_ok: bool) -> Result<Release, String> {
             prerelease,
             url: item["html_url"].as_str().unwrap_or("").to_string(),
             published_at: item["published_at"].as_str().unwrap_or("").to_string(),
+            body: item["body"].as_str().unwrap_or("").to_string(),
             assets: item["assets"]
                 .as_array()
                 .map(|a| {

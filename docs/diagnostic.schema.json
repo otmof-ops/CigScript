@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/otmof-ops/CigScript/blob/main/docs/diagnostic.schema.json",
   "title": "CigScript diagnostic",
-  "description": "One diagnostic as `cig --json` prints it. Generated from errors/registry.toml (registry version 1) for cigscript 1.6.0.",
+  "description": "One diagnostic as `cig --json` prints it. Generated from errors/registry.toml (registry version 1) for cigscript 1.7.0.",
   "type": "object",
   "required": [
     "code",
@@ -104,7 +104,8 @@
         "E807",
         "E808",
         "E900",
-        "E901"
+        "E901",
+        "E902"
       ]
     },
     "kind": {

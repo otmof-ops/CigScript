@@ -165,10 +165,13 @@ exhale prs.filter(pack(p) => p.title.contains("fix")).len()
 
 **A runtime that looks after itself.** `cig doctor` reports on the install and
 offers to fix what it can, asking first. `cig update` fetches the newest
-release, verifies its checksum, and swaps the binary atomically. A crash writes
-a redacted report you can read with `cig crash show` and file with one command,
-and it never sends anything without asking. `cig report <run>` bundles a run
-that went wrong *without* crashing the same way.
+release, verifies its checksum, and swaps the binary atomically. It reports its
+own bugs, never yours: a crash, an internal error, or a tripwire that found one
+of its promises broken after the work, each written to the ashtray with an
+anonymised repro built from the journal and proved in a sandbox, filed as one
+issue per bug when you have said yes once, and the fix announced back by
+`cig update --check`. `cig report <run> --send` files a run that went wrong
+*without* crashing the same way.
 
 **The pack and the compensation, two halves of one feature.** `pack {
 "./build" }` at the top of a script declares the scope every write must stay
@@ -199,6 +202,9 @@ talking about.
 | `pull f(a) { }` | a function definition | "pull on it, get something back" | you pull on it, you get something back |
 | `pack(x) => x` | a lambda (anonymous function) | "small, portable, hands you one" | small, portable, hands you one when asked |
 | `snuff v` | return | "put it out, take what you got" | put it out, walk off with what you got |
+| `ashtray` | where cig keeps the reports of its own bugs before and after they are sent | "it goes in the ashtray first" | nothing leaves until it has landed somewhere you can look at |
+| `tripwire` | a check of cig's own promise, run after the work, that turns a silent bug into a report | "the tripwire went" | you only know it was there when it trips |
+| `repro` | the smallest script that still shows the bug, built from the journal with none of your data in it | "here's the repro" | the maintainer gets the case, you keep your files |
 | `exhale v` | print to stdout | "what leaves you and enters the room" | everyone can see it |
 | `cough e` | raise an error | "from somewhere deep; interrupts everything" | the body's exception handler |
 | `try { } ashtray e { }` | catch | "where the mess lands" | so it doesn't land on the carpet |
@@ -245,7 +251,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.3/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.7.0/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -255,7 +261,7 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.6.3 cigscript
+cargo install --git https://github.com/otmof-ops/CigScript --tag v1.7.0 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
@@ -266,7 +272,7 @@ irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.6.3-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.7.0-linux-x86_64 -R otmof-ops/CigScript`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -349,15 +355,21 @@ file under it while it runs. Yank the power. Fold something that shouldn't
 fold. If the kernel ever lies about what it can undo, or loses a file, or
 says "aww yea" when it should have said no, I want to know that day.
 
-**When it crashes:** it already wrote a report. `cig doctor` shows what's
-saved and what's unsent; say yes and it goes straight to this repo
-(redacted; you can read it first). If you'd rather not send it, attach the
-file to an issue instead.
+**When it crashes, or catches itself:** it already wrote a report to the
+ashtray. After every run the tripwires check its promises (each restored path
+re-hashed against the journal, the journal read back, the tin and the box
+sampled) and a broken one becomes a report too, with an anonymised repro built
+from the journal and proved in a sandbox. `cig crash list` shows what is
+saved and what went; say yes once (`reports = always`) and reports of cig's
+own bugs go straight to this repo, one issue per bug (redacted; `cig crash
+show` prints exactly what travels). Your script's failures are never reported.
+[docs/REPORTS.md](docs/REPORTS.md) has the whole pipeline.
 
 **When it's wrong without crashing** (the dangerous kind: exit 0, "file
-restored", wrong file): `cig runs` for the run id, then `cig report <run>`
-bundles the script's hash, the plan, the journal, the diagnostic and doctor's
-diagnosis into one redacted file. Open [a cheat
+restored", wrong file): `cig runs` for the run id, then `cig report <run>
+--send` files the script's hash, the plan, the journal, the diagnostic and
+doctor's diagnosis as one redacted issue; `cig report <run>` writes the same
+to a file to attach to [a cheat
 issue](https://github.com/otmof-ops/CigScript/issues/new?template=cheat.yml)
 with the script, the command, what the plan said, and what happened.
 
@@ -496,6 +508,15 @@ for.
 | a boxed hop's run dies in the hop, leaving overlayfs's unreadable work directory under the record | `cig unburn` removes the layers with the rollback, and the record prunes | 1.6.2 | `the_layers_an_interrupted_boxed_hop_left_go_with_the_unburn` |
 | the same, and nobody unburns the dead run | the next `cig run`, of anything, sweeps the layers of every run that is not alive | 1.6.2 | `the_layers_a_dead_run_left_are_swept_when_the_next_run_starts` |
 | a boxed hop starts a `cig run` whose state directory is inside the box, with a boxed hop of its own | the inner plan says before the run that the box cannot be made here, naming the overlay its layers would sit on; the inner hop runs on the tin (`E763`) and the outer box applies the lot (Linux) | 1.6.3 | `a_box_inside_a_box_is_refused_in_the_plan_with_the_reason` |
+| `cig report <run> --send` | the bundle is filed as an issue through the ashtray, labelled `report`, with the live stats block; an explicit `reports = never` sends nothing | 1.7.0 | `report_send_files_the_bundle` |
+| a report is sent while the network is down | it waits in the ashtray with the reason; the next `cig run` of anything sends it in the background, the run itself never waiting | 1.7.0 | `a_report_made_offline_is_sent_on_the_next_run` |
+| `cig report --send` under `CI` with nothing set | refused, `never` by default there so no pipeline files public issues by surprise; `cig config reports always` holds under CI | 1.7.0 | `ci_never_files_without_the_setting` |
+| the script coughs, divides by zero, adds a string to a number | nothing reported: the script's failures are the script's; an internal error (`E900`) is cig's and is filed, labelled `internal` | 1.7.0 | `a_cough_in_the_users_script_is_never_reported` |
+| the rollback puts a file back with one mode bit wrong (a fault injected for the test) | the rollback tripwire re-hashes and re-checks every restored path, trips, queues a report (`E902`) and the run's outcome stays what it was | 1.7.0 | `a_rollback_that_restores_the_wrong_mode_trips` |
+| the pack holds `books/Clients-Private/Ledger-2026.txt` with account numbers when a tripwire trips | the repro built from the journal names `root0/D1/F1.txt`, generated bytes of the same size, a stub for the hop; neither the issue nor the report carries a name, a byte or a path of yours; the shrinker keeps what still trips | 1.7.0 | `a_repro_contains_no_user_path_or_content` |
+| the bug does not reproduce in the sandbox | the report goes without a repro and says so; what was found is still said, the path as its placeholder | 1.7.0 | `an_unverified_repro_is_not_attached` |
+| the same bug twice | one issue: its stats block counts two, no comment, no second issue; a comment only brings a new version, a new OS or a smaller repro | 1.7.0 | `a_second_report_updates_the_stats_not_a_comment` |
+| the issue a report opened is closed and a release's notes name it | `cig update --check` says `a bug you reported (#N, …) is fixed in X: cig update`, once | 1.7.0 | `a_fixed_report_is_announced_on_update_check` |
 
 Add a row. The rules for reporting one are in
 [CONTRIBUTING.md](CONTRIBUTING.md#reporting-a-cheat-that-worked).
@@ -512,9 +533,9 @@ Add a row. The rules for reporting one are in
 | `cig runs [id] [--prune N]` / `cig unburn <id> [--dry-run] [--force]` | run records; put one back |
 | `cig explain [code] [--schema]` | the page for an error code: which kind of no, what to type next, the ranked causes; the JSON Schema for a diagnostic |
 | `cig doctor [run] [--fix]` | the installation's health, or a stored run's error diagnosed again, read-only; `--fix` asks before each repair |
-| `cig report <run> [--out file]` | one redacted file for a bug report: plan, journal, diagnostic, diagnosis, install facts |
-| `cig update [--check]` | install the newest release, verified |
-| `cig crash [list\|show\|send\|delete]` | crash reports, under your control |
+| `cig report <run> [--out file\|--send]` | one redacted file for a bug report: plan, journal, diagnostic, diagnosis, install facts; `--send` files it through the ashtray |
+| `cig update [--check]` | install the newest release, verified; says which bugs you reported it fixes |
+| `cig crash [list\|show\|send\|flush\|submit\|delete]` | the ashtray: every report cig made about its own bugs (crashes, internal errors, tripwires), under your control; `flush` sends what is waiting, `submit` takes a report from another tool of the family |
 | `cig versions [add\|remove\|prune]` | the humidor: every other version of cig, for pinned scripts and old journals |
 | `cig pin <file> [--to 1.2]` | write `# cig 1.2` into a script, so a newer cig hands it to that version |
 | `cig tin [du\|verify\|gc]` | the tin: the before-bytes of files hops may change, outside the project |
@@ -536,6 +557,7 @@ usage or environment problem, `70` `cig` itself crashed.
 - [docs/LANGUAGE.md](docs/LANGUAGE.md): the language, statement by statement.
 - [docs/DOCTOR.md](docs/DOCTOR.md): automatic diagnosis on every error, and why it never fixes.
 - [docs/SMOKE.md](docs/SMOKE.md): the lexicon, explained by a smoker.
+- [docs/REPORTS.md](docs/REPORTS.md): the tool reports its own bugs: whose fault it is, the tripwires, the ashtray, the anonymised repro, one issue per bug, the fix announced back.
 - [docs/CHAINS.md](docs/CHAINS.md): chains, the automation layer.
 - [docs/HOPS.md](docs/HOPS.md): running other programs, and the rules that hold at the boundary.
 - [docs/BURN.md](docs/BURN.md): effects, modes, the journal, rollback, and what it can't undo and says so.
