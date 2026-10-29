@@ -35,6 +35,197 @@ pub struct CrashReport {
     /// back before this report was sent. `null` when no run was in progress.
     #[serde(default)]
     pub rolled_back: Option<bool>,
+    /// What kind of report: a crash (a panic), an internal error (E900), a
+    /// tripwire (a promise cig checked after the run and found broken), or a
+    /// run bundle `cig report --send` filed.
+    #[serde(default)]
+    pub kind: Kind,
+    /// The tool that made it: `cig`, or another of the family handing its
+    /// report through `cig crash submit --origin`.
+    #[serde(default = "default_origin")]
+    pub origin: String,
+    /// Where it goes, when the tool that made it said; cig's `issues_repo`
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<String>,
+    /// One line for a report that is not a panic: what the tripwire found,
+    /// what the internal error said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Kind-specific detail, redacted: a tripwire's mismatches, a bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+    /// The anonymised repro built from the run's journal, when one was.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repro: Option<crate::repro::Repro>,
+    /// The issue it was filed on, or added to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<Issue>,
+    /// The ashtray's bookkeeping: whether sending was asked for, how often
+    /// it was tried, why it failed last, when to try again.
+    #[serde(default)]
+    pub queue: Queue,
+    /// The release that fixed it, once known; `announced` once said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_in: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub announced: bool,
+}
+
+fn default_origin() -> String {
+    "cig".to_string()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Crash,
+    Internal,
+    Tripwire,
+    Report,
+}
+
+impl Kind {
+    /// The word in an issue title and a label.
+    pub fn word(self) -> &'static str {
+        match self {
+            Kind::Crash => "crash",
+            Kind::Internal => "internal",
+            Kind::Tripwire => "tripwire",
+            Kind::Report => "report",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Issue {
+    pub repo: String,
+    pub number: u64,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Queue {
+    /// The person asked for it to be sent (`cig crash send`, `--send`, or
+    /// the one yes that set `reports = always`).
+    #[serde(default)]
+    pub requested: bool,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_try: Option<String>,
+}
+
+/// What the person said about sending reports: the `reports` setting, the
+/// older `crash_reports` when that alone is set, and `never` under CI with
+/// nothing set, so no pipeline files public issues by surprise.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Consent {
+    Ask,
+    Always,
+    Never,
+}
+
+pub fn under_ci() -> bool {
+    use std::io::IsTerminal;
+    std::env::var("CI").is_ok_and(|v| !matches!(v.as_str(), "" | "0" | "false"))
+        && !std::io::stdin().is_terminal()
+}
+
+pub fn consent(cfg: &crate::config::Config) -> Consent {
+    let explicit = cfg.is_set("reports")
+        || std::env::var_os("CIG_REPORTS").is_some()
+        || cfg.is_set("crash_reports")
+        || std::env::var_os("CIG_CRASH_REPORTS").is_some();
+    let value = if cfg.is_set("reports") || std::env::var_os("CIG_REPORTS").is_some() {
+        cfg.get("reports")
+    } else if explicit {
+        cfg.get("crash_reports")
+    } else if under_ci() {
+        return Consent::Never;
+    } else {
+        "ask".to_string()
+    };
+    match value.as_str() {
+        "always" => Consent::Always,
+        "never" => Consent::Never,
+        _ => Consent::Ask,
+    }
+}
+
+impl CrashReport {
+    /// A report that is not a panic: what cig found (`title`), where
+    /// (`location`: a tripwire's name, an error code and place), with its
+    /// detail, redacted as everything else is.
+    pub fn new(
+        kind: Kind,
+        location: &str,
+        title: &str,
+        details: Option<serde_json::Value>,
+        run_id: Option<String>,
+    ) -> CrashReport {
+        let now = chrono::Utc::now();
+        let fingerprint = {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(kind.word().as_bytes());
+            h.update(b"\n");
+            h.update(location.as_bytes());
+            h.update(b"\n");
+            h.update(strip_numbers(title).as_bytes());
+            hex::encode(h.finalize())[..8].to_string()
+        };
+        CrashReport {
+            id: format!("{}-{}", now.format("%Y%m%dT%H%M%S"), &fingerprint[..6]),
+            fingerprint,
+            version: crate::VERSION.to_string(),
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            timestamp: now.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+            command: std::env::args().map(|a| redact_arg(&a)).collect(),
+            cwd: std::env::current_dir()
+                .map(|p| tilde(&p))
+                .unwrap_or_else(|_| "?".to_string()),
+            panic_message: redact_text(&truncate(title, 500)),
+            panic_location: location.to_string(),
+            backtrace: Vec::new(),
+            active_run_id: run_id,
+            sent: None,
+            rolled_back: None,
+            kind,
+            origin: default_origin(),
+            repo: None,
+            title: Some(redact_text(&truncate(title, 500))),
+            details,
+            repro: None,
+            issue: None,
+            queue: Queue::default(),
+            fixed_in: None,
+            announced: false,
+        }
+    }
+
+    /// The one line that says what happened.
+    pub fn headline(&self) -> &str {
+        self.title.as_deref().unwrap_or(&self.panic_message)
+    }
+
+    /// Where it stands: `filed`, `pending`, `failed (reason)` or `local`.
+    pub fn state(&self) -> String {
+        if self.issue.is_some() || self.sent.is_some() {
+            return "filed".to_string();
+        }
+        if let Some(e) = &self.queue.last_error {
+            return format!("failed: {}", truncate(e, 60));
+        }
+        if self.queue.requested {
+            return "pending".to_string();
+        }
+        "local".to_string()
+    }
 }
 
 static LAST: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
@@ -42,6 +233,12 @@ static CONTEXT: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 pub fn crashes_dir() -> PathBuf {
     crate::burn::runs::home_dir().join("crashes")
+}
+
+/// Where a report lands before anything is sent, and stays once filed.
+/// Reports from before 1.7.0 are read from `crashes/` too.
+pub fn ashtray_dir() -> PathBuf {
+    crate::burn::runs::home_dir().join("ashtray")
 }
 
 /// Remember the run in progress so a crash report can name it.
@@ -147,13 +344,26 @@ fn build(message: &str, location: &str, backtrace: &str) -> CrashReport {
         active_run_id,
         sent: None,
         rolled_back: None,
+        kind: Kind::Crash,
+        origin: default_origin(),
+        repo: None,
+        title: None,
+        details: None,
+        repro: None,
+        issue: None,
+        queue: Queue::default(),
+        fixed_in: None,
+        announced: false,
     }
 }
 
 pub fn write(report: &CrashReport) -> io::Result<PathBuf> {
-    let dir = crashes_dir();
+    let path = path_of(report);
+    let dir = path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(ashtray_dir);
     fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{}.json", report.id));
     let json = serde_json::to_string_pretty(report)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let tmp = path.with_extension("json.tmp");
@@ -167,20 +377,21 @@ pub fn load(path: &Path) -> io::Result<CrashReport> {
     serde_json::from_str(&text).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
-/// All reports, newest first.
+/// All reports, newest first: the ashtray and the old crashes directory.
 pub fn list() -> io::Result<Vec<CrashReport>> {
-    let dir = crashes_dir();
     let mut out = Vec::new();
-    let entries = match fs::read_dir(&dir) {
-        Ok(e) => e,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(out),
-        Err(e) => return Err(e),
-    };
-    for entry in entries.flatten() {
-        let p = entry.path();
-        if p.extension().is_some_and(|e| e == "json") {
-            if let Ok(r) = load(&p) {
-                out.push(r);
+    for dir in [ashtray_dir(), crashes_dir()] {
+        let entries = match fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().is_some_and(|e| e == "json") {
+                if let Ok(r) = load(&p) {
+                    out.push(r);
+                }
             }
         }
     }
@@ -207,7 +418,12 @@ pub fn find(id_or_prefix: &str) -> io::Result<Option<CrashReport>> {
 }
 
 pub fn path_of(report: &CrashReport) -> PathBuf {
-    crashes_dir().join(format!("{}.json", report.id))
+    let name = format!("{}.json", report.id);
+    let old = crashes_dir().join(&name);
+    if old.is_file() {
+        return old;
+    }
+    ashtray_dir().join(name)
 }
 
 // ----- redaction ---------------------------------------------------------------------
@@ -419,213 +635,306 @@ pub fn truncate(s: &str, max: usize) -> String {
 
 // ----- rendering and sending ------------------------------------------------------------
 
+/// The markers around the live stats in an issue body, and before the first
+/// report's own section, which later reports leave as it is.
+const STATS_OPEN: &str = "<!-- cig-stats ";
+const STATS_CLOSE: &str = " -->";
+const REPORT_MARK: &str = "<!-- cig-report -->";
+
+/// One issue per fingerprint; this block in its body counts the reports.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Stats {
+    pub count: u64,
+    pub versions: Vec<String>,
+    pub oses: Vec<String>,
+    pub first: String,
+    pub last: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smallest_repro_ops: Option<usize>,
+}
+
+/// What a repeated report brought that the issue did not have.
+#[derive(Debug, Default)]
+pub struct News {
+    pub version: Option<String>,
+    pub os: Option<String>,
+    pub smaller_repro: Option<usize>,
+}
+
+impl News {
+    pub fn any(&self) -> bool {
+        self.version.is_some() || self.os.is_some() || self.smaller_repro.is_some()
+    }
+}
+
+impl Stats {
+    pub fn first(r: &CrashReport) -> Stats {
+        Stats {
+            count: 1,
+            versions: vec![r.version.clone()],
+            oses: vec![r.os.clone()],
+            first: r.timestamp.clone(),
+            last: r.timestamp.clone(),
+            smallest_repro_ops: r.repro.as_ref().filter(|x| x.verified).map(|x| x.ops),
+        }
+    }
+
+    /// Count one more report; say what was new about it.
+    pub fn absorb(&mut self, r: &CrashReport) -> News {
+        let mut news = News::default();
+        self.count += 1;
+        if !self.versions.contains(&r.version) {
+            self.versions.push(r.version.clone());
+            news.version = Some(r.version.clone());
+        }
+        if !self.oses.contains(&r.os) {
+            self.oses.push(r.os.clone());
+            news.os = Some(r.os.clone());
+        }
+        if r.timestamp > self.last {
+            self.last = r.timestamp.clone();
+        }
+        if self.first.is_empty() || r.timestamp < self.first {
+            self.first = r.timestamp.clone();
+        }
+        if let Some(ops) = r.repro.as_ref().filter(|x| x.verified).map(|x| x.ops) {
+            if self.smallest_repro_ops.is_none_or(|s| ops < s) {
+                self.smallest_repro_ops = Some(ops);
+                news.smaller_repro = Some(ops);
+            }
+        }
+        news
+    }
+
+    pub fn parse(body: &str) -> Option<Stats> {
+        let start = body.find(STATS_OPEN)? + STATS_OPEN.len();
+        let end = body[start..].find(STATS_CLOSE)? + start;
+        serde_json::from_str(body[start..end].trim()).ok()
+    }
+
+    pub fn render(&self) -> String {
+        format!(
+            "{STATS_OPEN}{}{STATS_CLOSE}\n\n| seen | versions | OSes | first | last | smallest repro |\n|---|---|---|---|---|---|\n| {} | {} | {} | {} | {} | {} |\n",
+            serde_json::to_string(self).unwrap_or_default(),
+            self.count,
+            self.versions.join(", "),
+            self.oses.join(", "),
+            self.first,
+            self.last,
+            self.smallest_repro_ops
+                .map(|n| format!("{n} op{}", if n == 1 { "" } else { "s" }))
+                .unwrap_or_else(|| "none verified".to_string())
+        )
+    }
+}
+
 pub fn issue_title(r: &CrashReport) -> String {
     format!(
-        "crash [{}]: {} (cig {}, {})",
+        "{} [{}]: {} (cig {}, {})",
+        r.kind.word(),
         r.fingerprint,
-        truncate(&r.panic_message, 60),
+        truncate(r.headline(), 60),
         r.version,
         r.os
     )
 }
 
-pub fn issue_body(r: &CrashReport) -> String {
-    let json = serde_json::to_string_pretty(r).unwrap_or_default();
+/// The labels an issue gets: the kind, and the area the location or the
+/// message names.
+pub fn labels(r: &CrashReport) -> Vec<String> {
+    let mut out = vec![r.kind.word().to_string()];
+    let text = format!("{} {}", r.panic_location, r.headline()).to_ascii_lowercase();
+    for (word, label) in [
+        ("tin", "tin"),
+        ("seal", "tin"),
+        ("box", "box"),
+        ("overlay", "box"),
+        ("hop", "hop"),
+        ("proc", "hop"),
+        ("parcel", "parcel"),
+        ("journal", "journal"),
+        ("rollback", "journal"),
+        ("chain", "journal"),
+    ] {
+        if text.contains(word) && !out.iter().any(|l| l == label) {
+            out.push(label.to_string());
+        }
+    }
+    out
+}
+
+fn header(r: &CrashReport) -> String {
+    let what = match r.kind {
+        Kind::Crash => "Automated crash report",
+        Kind::Internal => "Automated report of an internal error",
+        Kind::Tripwire => "Automated report: a tripwire found a promise broken",
+        Kind::Report => "Run bundle filed with `cig report --send`",
+    };
     format!(
-        "Automated crash report from `cig`. The person who hit this chose to send it.\n\n\
-         - version: {}\n- os/arch: {}/{}\n- location: `{}`\n- fingerprint: `{}`\n\n\
-         <details><summary>Full report</summary>\n\n```json\n{}\n```\n</details>\n",
-        r.version, r.os, r.arch, r.panic_location, r.fingerprint, json
+        "{what} from `{}`. The person who hit this chose to send it.\n\n- {}: {}\n- os/arch: {}/{}\n- location: `{}`\n- fingerprint: `{}`\n\n",
+        r.origin, r.origin, r.version, r.os, r.arch, r.panic_location, r.fingerprint
     )
+}
+
+fn report_section(r: &CrashReport) -> String {
+    let json = serde_json::to_string_pretty(r).unwrap_or_default();
+    let mut s = format!(
+        "{REPORT_MARK}\n### What {} found\n\n{}\n\n<details><summary>Full report</summary>\n\n```json\n{}\n```\n</details>\n",
+        r.origin,
+        r.headline(),
+        json
+    );
+    match &r.repro {
+        Some(x) if x.verified => {
+            s.push_str(&format!(
+                "\n<details><summary>Repro (verified in a sandbox, {} op{})</summary>\n\n{}\n\n```cig\n{}```\n",
+                x.ops,
+                if x.ops == 1 { "" } else { "s" },
+                if x.expect.is_empty() { String::new() } else { format!("Expected: {}", x.expect) },
+                x.script
+            ));
+            if !x.seeds.is_empty() {
+                s.push_str("\n| seed | kind | bytes | mode |\n|---|---|---|---|\n");
+                for seed in &x.seeds {
+                    s.push_str(&format!(
+                        "| `{}` | {} | {} | {} |\n",
+                        seed.path,
+                        seed.kind,
+                        seed.bytes,
+                        seed.mode.map(|m| format!("{m:o}")).unwrap_or_default()
+                    ));
+                }
+            }
+            for (name, text) in &x.stubs {
+                s.push_str(&format!("\n`{name}`:\n\n```sh\n{text}```\n"));
+            }
+            s.push_str("</details>\n");
+        }
+        Some(x) => {
+            s.push_str(&format!(
+                "\nRepro: none attached. {}\n",
+                if x.note.is_empty() {
+                    "It did not reproduce in the sandbox.".to_string()
+                } else {
+                    x.note.clone()
+                }
+            ));
+        }
+        None => {}
+    }
+    s
+}
+
+pub fn issue_body(r: &CrashReport) -> String {
+    format!(
+        "{}{}\n{}",
+        header(r),
+        Stats::first(r).render(),
+        report_section(r)
+    )
+}
+
+/// The existing body with its stats block replaced; a body from before the
+/// stats block gets one appended.
+fn with_stats(existing: &str, stats: &Stats) -> String {
+    match (existing.find(STATS_OPEN), existing.find(REPORT_MARK)) {
+        (Some(a), Some(b)) if a < b => {
+            format!("{}{}\n{}", &existing[..a], stats.render(), &existing[b..])
+        }
+        _ => format!("{}\n\n{}", existing.trim_end(), stats.render()),
+    }
 }
 
 pub enum SendOutcome {
     Filed(String),
+    /// Added to the issue already open for this fingerprint.
     Commented(String),
     /// No tool could file it; the user gets a URL or a file to attach.
     Manual(String),
 }
 
-fn which(name: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|p| {
-            std::env::split_paths(&p)
-                .any(|d| d.join(name).is_file() || d.join(format!("{name}.exe")).is_file())
-        })
-        .unwrap_or(false)
-}
-
-/// Send a report to `repo` (owner/name). Tries `gh`, then a token with
-/// curl, then hands back a prefilled URL.
+/// Send a report to `repo` (owner/name): one issue per fingerprint, the
+/// stats block of a known one updated instead of a comment, a comment only
+/// when the report brings a version, an OS or a smaller repro the issue did
+/// not have. Hands back a prefilled link when nothing here can file.
 pub fn send(report: &mut CrashReport, repo: &str) -> Result<SendOutcome, String> {
-    let title = issue_title(report);
-    let body = issue_body(report);
-    let outcome = if which("gh") {
-        send_with_gh(report, repo, &title, &body)?
-    } else if std::env::var("CIG_GITHUB_TOKEN").is_ok_and(|t| !t.is_empty()) && which("curl") {
-        send_with_curl(repo, &title, &body)?
-    } else {
+    let Some(tracker) = crate::tracker::pick() else {
         let url = format!(
             "https://github.com/{repo}/issues/new?title={}&body={}",
-            urlencode(&title),
-            urlencode(&truncate(&body, 5000))
+            urlencode(&issue_title(report)),
+            urlencode(&truncate(&issue_body(report), 5000))
         );
-        SendOutcome::Manual(url)
+        return Ok(SendOutcome::Manual(url));
     };
-    match &outcome {
-        SendOutcome::Filed(url) | SendOutcome::Commented(url) => {
-            report.sent = Some(url.clone());
-            let _ = write(report);
-        }
-        SendOutcome::Manual(_) => {}
-    }
-    Ok(outcome)
+    file_with(tracker.as_ref(), report, repo)
 }
 
-fn send_with_gh(
-    report: &CrashReport,
+pub fn file_with(
+    tracker: &dyn crate::tracker::Tracker,
+    report: &mut CrashReport,
     repo: &str,
-    title: &str,
-    body: &str,
 ) -> Result<SendOutcome, String> {
-    // Duplicate control: one issue per fingerprint, one comment per day after that.
-    let search = std::process::Command::new("gh")
-        .args([
-            "issue",
-            "list",
-            "-R",
-            repo,
-            "--state",
-            "all",
-            "--search",
-            &format!("[{}] in:title", report.fingerprint),
-            "--json",
-            "number,url",
-            "--limit",
-            "1",
-        ])
-        .output()
-        .map_err(|e| format!("gh: {e}"))?;
-    if search.status.success() {
-        let text = String::from_utf8_lossy(&search.stdout);
-        if let Ok(serde_json::Value::Array(items)) =
-            serde_json::from_str::<serde_json::Value>(&text)
-        {
-            if let Some(first) = items.first() {
-                let number = first["number"].as_i64().unwrap_or(0);
-                let url = first["url"].as_str().unwrap_or("").to_string();
-                if number > 0 {
-                    if recently_commented(&report.fingerprint) {
-                        return Ok(SendOutcome::Commented(url));
-                    }
-                    let comment = format!(
-                        "Seen again: cig {} on {}/{} at {} (report id `{}`).",
-                        report.version, report.os, report.arch, report.timestamp, report.id
-                    );
-                    let out = std::process::Command::new("gh")
-                        .args([
-                            "issue",
-                            "comment",
-                            &number.to_string(),
-                            "-R",
-                            repo,
-                            "--body",
-                            &comment,
-                        ])
-                        .output()
-                        .map_err(|e| format!("gh: {e}"))?;
-                    if out.status.success() {
-                        mark_commented(&report.fingerprint);
-                        return Ok(SendOutcome::Commented(url));
-                    }
-                }
+    let outcome = match tracker.find(repo, &report.fingerprint)? {
+        Some(existing) => {
+            let mut stats = Stats::parse(&existing.body).unwrap_or_default();
+            if stats.count == 0 {
+                // An issue from before the stats block: count it as the first.
+                stats.count = 1;
+                stats.first = existing.closed_at.clone().unwrap_or_default();
             }
+            let news = stats.absorb(report);
+            tracker.edit_body(repo, existing.number, &with_stats(&existing.body, &stats))?;
+            if news.any() {
+                let mut parts = Vec::new();
+                if let Some(v) = &news.version {
+                    parts.push(format!("a new version, {} {v}", report.origin));
+                }
+                if let Some(o) = &news.os {
+                    parts.push(format!("a new OS, {o}"));
+                }
+                if let Some(n) = news.smaller_repro {
+                    parts.push(format!(
+                        "a smaller repro, {n} op{}",
+                        if n == 1 { "" } else { "s" }
+                    ));
+                }
+                let mut text = format!(
+                    "Seen again with {} (report `{}`, {}).",
+                    parts.join("; "),
+                    report.id,
+                    report.timestamp
+                );
+                if let (Some(_), Some(x)) = (news.smaller_repro, &report.repro) {
+                    text.push_str(&format!("\n\n```cig\n{}```\n", x.script));
+                }
+                tracker.comment(repo, existing.number, &text)?;
+            }
+            report.issue = Some(Issue {
+                repo: repo.to_string(),
+                number: existing.number,
+                url: existing.url.clone(),
+            });
+            report.sent = Some(existing.url.clone());
+            SendOutcome::Commented(existing.url)
         }
-    }
-    let tmp = std::env::temp_dir().join(format!("cig-crash-{}.md", report.id));
-    fs::write(&tmp, body).map_err(|e| e.to_string())?;
-    let out = std::process::Command::new("gh")
-        .args([
-            "issue",
-            "create",
-            "-R",
-            repo,
-            "--title",
-            title,
-            "--body-file",
-        ])
-        .arg(&tmp)
-        .output()
-        .map_err(|e| format!("gh: {e}"))?;
-    let _ = fs::remove_file(&tmp);
-    if out.status.success() {
-        Ok(SendOutcome::Filed(
-            String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        ))
-    } else {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        if err.contains("Could not resolve") || err.contains("404") {
-            Err(format!("gh cannot reach {repo}; if the repository is private you need access to file issues ({err})"))
-        } else {
-            Err(format!("gh issue create failed: {err}"))
+        None => {
+            let issue = tracker.create(
+                repo,
+                &issue_title(report),
+                &issue_body(report),
+                &labels(report),
+            )?;
+            report.issue = Some(Issue {
+                repo: repo.to_string(),
+                number: issue.number,
+                url: issue.url.clone(),
+            });
+            report.sent = Some(issue.url.clone());
+            SendOutcome::Filed(issue.url)
         }
-    }
-}
-
-fn send_with_curl(repo: &str, title: &str, body: &str) -> Result<SendOutcome, String> {
-    let token = std::env::var("CIG_GITHUB_TOKEN").map_err(|_| "no token".to_string())?;
-    // The token travels in a config file, never on the command line.
-    let cfg = std::env::temp_dir().join(format!("cig-curl-{}.cfg", std::process::id()));
-    fs::write(&cfg, format!("header = \"Authorization: Bearer {token}\"\nheader = \"Accept: application/vnd.github+json\"\n"))
-        .map_err(|e| e.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(&cfg, fs::Permissions::from_mode(0o600));
-    }
-    let payload = serde_json::json!({"title": title, "body": body}).to_string();
-    let out = std::process::Command::new("curl")
-        .args([
-            "-sS",
-            "-f",
-            "--proto",
-            "=https",
-            "--tlsv1.2",
-            "--max-time",
-            "30",
-            "-K",
-        ])
-        .arg(&cfg)
-        .args(["-X", "POST", "-d", &payload])
-        .arg(format!("https://api.github.com/repos/{repo}/issues"))
-        .output();
-    let _ = fs::remove_file(&cfg);
-    let out = out.map_err(|e| format!("curl: {e}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "curl failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
-    Ok(SendOutcome::Filed(
-        v["html_url"].as_str().unwrap_or("").to_string(),
-    ))
-}
-
-fn marker(fp: &str) -> PathBuf {
-    crashes_dir().join(format!(".commented-{fp}"))
-}
-
-fn recently_commented(fp: &str) -> bool {
-    fs::metadata(marker(fp))
-        .and_then(|m| m.modified())
-        .map(|t| t.elapsed().map(|d| d.as_secs() < 86_400).unwrap_or(false))
-        .unwrap_or(false)
-}
-
-fn mark_commented(fp: &str) {
-    let _ = fs::write(marker(fp), b"");
+    };
+    let _ = write(report);
+    Ok(outcome)
 }
 
 pub fn urlencode(s: &str) -> String {
@@ -644,6 +953,51 @@ pub fn urlencode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_stats_block_counts_and_says_what_is_new() {
+        let mut r = CrashReport::new(
+            Kind::Tripwire,
+            "tripwire rollback",
+            "mode wrong",
+            None,
+            None,
+        );
+        let mut stats = Stats::first(&r);
+        assert_eq!(stats.count, 1);
+        // The same again: counted, nothing new.
+        let news = stats.absorb(&r);
+        assert_eq!(stats.count, 2);
+        assert!(!news.any());
+        // Another OS and version: both news.
+        r.os = "windows".to_string();
+        r.version = "9.9.9".to_string();
+        let news = stats.absorb(&r);
+        assert_eq!(news.os.as_deref(), Some("windows"));
+        assert_eq!(news.version.as_deref(), Some("9.9.9"));
+        assert_eq!(stats.oses.len(), 2);
+        // A verified repro smaller than any before: news; a bigger one: not.
+        r.repro = Some(crate::repro::Repro {
+            script: String::new(),
+            seeds: Vec::new(),
+            stubs: Vec::new(),
+            ops: 3,
+            verified: true,
+            expect: String::new(),
+            check: String::new(),
+            note: String::new(),
+        });
+        assert_eq!(stats.absorb(&r).smaller_repro, Some(3));
+        r.repro.as_mut().unwrap().ops = 5;
+        assert_eq!(stats.absorb(&r).smaller_repro, None);
+        // The block survives a round trip through an issue body.
+        let body = format!("head\n{}\n{REPORT_MARK}\nrest", stats.render());
+        let parsed = Stats::parse(&body).unwrap();
+        assert_eq!(parsed.count, 5);
+        assert_eq!(parsed.smallest_repro_ops, Some(3));
+        let replaced = with_stats(&body, &parsed);
+        assert!(replaced.starts_with("head\n") && replaced.ends_with("rest"));
+    }
 
     #[test]
     fn redaction_rules() {

@@ -3,6 +3,67 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.7.0 — 2026-10-29
+
+**The tool reports its own bugs** (#101): never the person's. cig notices
+when it is at fault, including bugs nobody saw, saves the report locally,
+builds an anonymised repro from the journal and checks that it reproduces,
+files it (or adds to the issue already open for it) with no typing, and
+tells the person who hit it when the fix ships. `docs/REPORTS.md` is the
+whole pipeline; `SECURITY.md` says what travels.
+
+- **Whose fault.** Only cig's own failures are reported: a panic (`E901`),
+  an internal error (`E900`), a tripwire (`E902`). A `cough`, a runtime or
+  type error in the script, a failed hop, a usage error are the script's or
+  the person's business and are never reported.
+- **Tripwires.** After the work, cig checks its promises, never changing the
+  run's outcome: every path a rollback restored is read back against the
+  journal (bytes re-hashed, mode, link target, absence); the journal on disk
+  is re-read (chain intact, as many entries as written, the kernel's head);
+  up to three tin objects the run refers to are re-hashed; the first eight
+  files a box applied are hashed against the layer. A broken promise is a
+  report and one line: `tripwire: cig noticed something it got wrong; a
+  report is queued (cig crash show <id>; cig explain E902)`.
+- **The ashtray.** Every report is written to `~/.cigscript/ashtray/` before
+  anything is sent (`crashes/` from before 1.7.0 is read too); a run never
+  waits on the network. At the end of a command, anything waiting and due
+  goes in the background through `cig crash flush --quiet`; a failed send
+  keeps the reason and a retry time on the report (the next run, then five
+  minutes, half an hour, two hours, twelve, a day), one sender at a time.
+  `cig crash list` shows each report as local, pending, failed with its
+  reason, or filed with its issue; `cig crash flush` sends what is waiting.
+- **One setting.** `reports = ask | always | never` governs every kind
+  (`crash_reports` is the older name, read when `reports` is not set).
+  `ask`, the default, shows the report once in a terminal and remembers the
+  answer; `always` files without asking and says so in a line; `never`
+  keeps reports local; under CI with nothing set, `never`.
+- **A verified, anonymised repro** travels with every report that has a
+  journal to build from: placeholder paths that keep depth, extension, a
+  leading dot, a capital letter and a non-ASCII character (`root0/D1/F3.txt`),
+  bytes generated from the recorded hash (equal files stay equal), each hop
+  a stub shell script doing what the journal saw, the hop's command never
+  copied. It is run in a sandbox and attached only when it shows the same
+  finding, then shrunk one op at a time while it still does. The report's
+  own text names paths by their placeholders.
+- **One issue per bug.** A fingerprint (kind, location, the message without
+  its numbers) opens one issue, labelled by kind and area, with a stats block
+  in its body (count, versions, OSes, first and last seen, smallest verified
+  repro). A repeat updates the block; a comment comes only with a new
+  version, a new OS or a smaller repro.
+- **The loop closed.** A filed report remembers its issue; `cig update
+  --check` asks whether it is closed and which release's notes name it, and
+  says once: `a bug you reported (#N, what it was) is fixed in X: cig update`.
+  The humidor hint (a pinned script on a version with a known fixed bug) is
+  not here yet.
+- **One pipeline for the family.** `cig crash submit --origin <tool> --repo
+  owner/name --file report.json [--now]` hands another tool's report into
+  the ashtray under cig's setting, redaction and routes; cig-orchestrator
+  1.1.0 sends its own through it.
+- **`cig report <run> --send`** files a run's bundle the same way, as a
+  report labelled `report`; an explicit `never` sends nothing.
+- The curl route sends `Content-Type: application/json` (noted on #25).
+  Doctor shows the ashtray.
+
 ## 1.6.3 — 2026-10-29
 
 - **The box does not nest, and says so before the run.** overlayfs refuses

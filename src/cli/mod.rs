@@ -154,6 +154,9 @@ pub enum Command {
         /// Write here instead of ~/.cigscript/reports/<id>.json; `-` prints to stdout.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// File the bundle on the issue tracker through the ashtray, as a crash report is filed.
+        #[arg(long, conflicts_with = "out")]
+        send: bool,
     },
     /// The humidor: every version of cig kept for pinned scripts and old journals; list, add, remove, prune.
     Versions {
@@ -305,7 +308,23 @@ pub fn main() -> i32 {
             return code;
         }
     }
-    match cli.command {
+    // Not after the commands that just tried a send themselves: a second
+    // try in the same breath would only spend a retry.
+    let flush_after = !matches!(
+        cli.command,
+        Command::Crash { .. } | Command::Report { send: true, .. }
+    );
+    let code = dispatch(ctx, cli.command);
+    // What the ashtray holds goes in the background, after the work: a run
+    // never waits on the network.
+    if flush_after {
+        cigscript::ashtray::spawn_flush(&cigscript::config::Config::load());
+    }
+    code
+}
+
+fn dispatch(ctx: Ctx, command: Command) -> i32 {
+    match command {
         Command::Run(args) => run::run(&ctx, args, None),
         Command::Light(a) => run::run(
             &ctx,
@@ -349,7 +368,7 @@ pub fn main() -> i32 {
         Command::Explain { code, schema } => explain::explain(&ctx, code, schema),
         Command::Config { key, value, unset } => config::config(&ctx, key, value, unset),
         Command::Crash { command } => crash::crash(&ctx, command),
-        Command::Report { id, out } => report::report(&ctx, &id, out),
+        Command::Report { id, out, send } => report::report(&ctx, &id, out, send),
         Command::Update {
             check,
             allow_downgrade,

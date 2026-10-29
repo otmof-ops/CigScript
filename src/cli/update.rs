@@ -34,6 +34,9 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
     };
     let _ = update::write_cache(&release);
     let ordering = target.cmp(&current);
+    // Close the loop: a bug this machine reported, fixed in a release.
+    let fixed =
+        cigscript::ashtray::announce_fixed(&cfg, &update::releases(&repo).unwrap_or_default());
 
     if ctx.json {
         outln!(
@@ -45,12 +48,16 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
                 "url": release.url,
                 "newer": ordering == Ordering::Greater,
                 "checked_only": check_only,
+                "fixed_reports": fixed,
             })
         );
         if check_only {
             return exit::OK;
         }
     } else {
+        for line in &fixed {
+            eprintln!("{} {line}", ctx.green("fixed:"));
+        }
         match ordering {
             Ordering::Greater => eprintln!(
                 "{} {current} -> {target}  {}",

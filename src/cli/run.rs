@@ -472,6 +472,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             );
         }
         save_intents(&record, &interp);
+        settle_own_bugs(ctx, &result, rolled_back.as_ref(), &interp, &record);
         // A run that a hop of another cig started reports to its parent
         // (the burn protocol): the parent's rollback puts this run back
         // through this run's own journal, which is exact.
@@ -586,6 +587,131 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         }
     }
     code
+}
+
+/// Whose fault was it, and did cig keep its promises? A cough, a runtime
+/// or type error in the script is the script's business. An internal error
+/// (E900) is cig's, and so is anything a tripwire finds after the work:
+/// each becomes a report in the ashtray, said in one line, under the
+/// person's consent. Nothing here changes the run's outcome.
+fn settle_own_bugs(
+    ctx: &Ctx,
+    result: &Result<(), Diagnostic>,
+    rolled_back: Option<&cigscript::burn::journal::RollbackReport>,
+    interp: &Interp,
+    record: &RunRecord,
+) {
+    use cigscript::crash::{CrashReport, Kind as ReportKind};
+    let mut reports: Vec<CrashReport> = Vec::new();
+    if let Err(d) = result {
+        if d.kind == Kind::Internal {
+            let mut v = serde_json::to_value(d).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                for key in ["message", "hint", "subject", "file"] {
+                    if let Some(s) = obj.get(key).and_then(|x| x.as_str()).map(str::to_string) {
+                        obj.insert(
+                            key.to_string(),
+                            serde_json::Value::String(cigscript::crash::redact_text(&s)),
+                        );
+                    }
+                }
+            }
+            reports.push(CrashReport::new(
+                ReportKind::Internal,
+                &format!("{} internal error", d.code),
+                &d.message,
+                Some(v),
+                Some(record.id.clone()),
+            ));
+        }
+    }
+    let journal = interp.kernel.journal();
+    let mut trips = Vec::new();
+    if let Some(rep) = rolled_back {
+        trips.extend(cigscript::tripwire::after_rollback(journal, rep));
+    }
+    if !journal.is_empty() {
+        trips.extend(cigscript::tripwire::journal_reread(journal));
+        trips.extend(cigscript::tripwire::tin_sample(journal));
+    }
+    for (check, what) in &interp.kernel.trips {
+        trips.push(cigscript::tripwire::Trip {
+            check,
+            what: what.clone(),
+            details: serde_json::json!({}),
+        });
+    }
+    for t in trips {
+        reports.push(CrashReport::new(
+            ReportKind::Tripwire,
+            &format!("tripwire {}", t.check),
+            &t.what,
+            Some(serde_json::json!({"check": t.check, "found": t.details})),
+            Some(record.id.clone()),
+        ));
+    }
+    for mut r in reports {
+        // The repro, built from the journal with placeholder paths; the
+        // same placeholders stand in for the person's paths everywhere the
+        // report names one. Verified later, when it is sent.
+        let (check, expect) = match r.kind {
+            ReportKind::Tripwire => {
+                let c = r
+                    .details
+                    .as_ref()
+                    .and_then(|d| d["check"].as_str())
+                    .unwrap_or("")
+                    .to_string();
+                (format!("tripwire:{c}"), format!("the `{c}` tripwire trips"))
+            }
+            ReportKind::Internal => (
+                "internal".to_string(),
+                "an internal error (E900)".to_string(),
+            ),
+            _ => ("crash".to_string(), "a crash".to_string()),
+        };
+        match cigscript::repro::build(record, journal, &check, &expect) {
+            Some((repro, mut mapping)) => {
+                if let Some(t) = r.title.take() {
+                    r.title = Some(mapping.anonymise_text(&t));
+                }
+                r.panic_message = mapping.anonymise_text(&r.panic_message);
+                if let Some(d) = r.details.as_mut() {
+                    mapping.anonymise_value(d);
+                }
+                r.repro = Some(repro);
+            }
+            None => {
+                if let Some(d) = r.details.as_mut() {
+                    reduce_paths(d);
+                }
+            }
+        }
+        if let Err(e) = cigscript::ashtray::queue(&mut r) {
+            eprintln!(
+                "{} cig noticed something it got wrong and could not save the report: {e}",
+                ctx.yellow("warning:")
+            );
+            continue;
+        }
+        super::crash::settle_new(ctx, &mut r);
+    }
+}
+
+/// Without a repro's mapping, a path in a report is cut to its file name.
+fn reduce_paths(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(s) => {
+            if s.contains('/') || s.contains('\\') {
+                *s = cigscript::crash::redact_arg(s);
+            } else {
+                *s = cigscript::crash::redact_text(s);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(reduce_paths),
+        serde_json::Value::Object(map) => map.values_mut().for_each(reduce_paths),
+        _ => {}
+    }
 }
 
 fn save_intents(record: &RunRecord, interp: &Interp) -> Option<()> {

@@ -338,6 +338,9 @@ pub struct Kernel {
     seq: u64,
     pub executed: usize,
     pub irreversible: usize,
+    /// What the box's own check found after applying a layer: (check, what).
+    /// Read by the run, which turns each into a tripwire report.
+    pub trips: Vec<(&'static str, String)>,
     /// The ghost filesystem: present in dry-run mode only.
     ghost: Option<ghost::Ghost>,
     /// The declared pack: every native write must stay inside these roots.
@@ -782,6 +785,7 @@ impl Kernel {
             journal: Journal::open(run_dir)
                 .map_err(|e| burn_error(format!("could not open the run journal: {e}")))?,
             planned: Vec::new(),
+            trips: Vec::new(),
             seq: 0,
             executed: 0,
             irreversible: 0,
@@ -1887,6 +1891,26 @@ impl Kernel {
                 };
                 match done {
                     Ok(()) => {
+                        // The tripwire: the file applied hashes as the layer's.
+                        if let overlay::Change::File { upper, .. } = &c {
+                            if writes.created.len() < 8 {
+                                if let (Ok(a), Ok(b)) =
+                                    (journal::sha256_file(&real), journal::sha256_file(upper))
+                                {
+                                    if a != b {
+                                        self.trips.push((
+                                            "box",
+                                            format!(
+                                                "the box applied {} but its bytes do not hash as the layer's ({} against {})",
+                                                crate::crash::tilde(&real),
+                                                &a[..12],
+                                                &b[..12]
+                                            ),
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         // A directory the hop replaced whole is applied as the
                         // delete above and the entries that follow it.
                         match c {
