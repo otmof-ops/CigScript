@@ -6,6 +6,7 @@
 //! connection to the parent's proxy on the Unix socket; it has no opinion
 //! of its own and prints nothing. It dies with the namespace.
 
+#[cfg(unix)]
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
