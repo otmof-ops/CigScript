@@ -59,7 +59,17 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     (
         "seal_key",
         "keyring",
-        "where the tin's key lives: keyring (the OS keyring, with the key file as the fallback where there is none) or file (~/.cigscript/tin/seal.key, readable by you alone)",
+        "where the tin's key lives: keyring (the OS keyring, with a key file apart from the tin as the fallback where there is none) or file (that key file, readable by you alone)",
+    ),
+    (
+        "tin_perms",
+        "strict",
+        "what a state directory other users can write does: strict (refuse on a terminal, warn when unattended), warn (always warn), off (do not look)",
+    ),
+    (
+        "key_reminder",
+        "on",
+        "remind you once, in cig doctor, to back up the tin's key when sealed objects exist and the key was never exported",
     ),
 ];
 

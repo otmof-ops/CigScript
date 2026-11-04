@@ -32,6 +32,7 @@ pub(crate) fn test_env_lock() -> std::sync::MutexGuard<'static, ()> {
 use crate::diagnostics::{burn as burn_error, Diagnostic};
 use journal::Journal;
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 /// A side effect a builtin wants to perform.
@@ -538,6 +539,115 @@ pub(crate) fn case_variants(a: &Path, b: &Path) -> bool {
         (Some(p), Some(q)) => p == q,
         _ => false,
     }
+}
+
+/// Make `$CIGSCRIPT_HOME` private to its owner before anything is written
+/// there, and refuse (or, unattended, warn about) a state directory other
+/// users can write. Called once, at the start of a run; cheap (a stat, and
+/// at most one chmod). The `tin_perms` setting decides what a loose home
+/// does; `off` skips the check.
+pub fn ensure_private() -> Result<(), String> {
+    let home = runs::home_dir();
+    let mode = crate::config::Config::load().get("tin_perms");
+    if mode == "off" {
+        if fs::metadata(&home).is_err() {
+            let _ = fs::create_dir_all(&home);
+            make_private(&home);
+        }
+        return Ok(());
+    }
+    match fs::symlink_metadata(&home) {
+        Err(_) => {
+            // First use: create it private from the start.
+            fs::create_dir_all(&home).map_err(|e| e.to_string())?;
+            make_private(&home);
+            Ok(())
+        }
+        Ok(_) => guard_existing(&home, &mode),
+    }
+}
+
+#[cfg(unix)]
+fn guard_existing(home: &Path, mode: &str) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = fs::metadata(home) else {
+        return Ok(());
+    };
+    let perms = meta.permissions().mode() & 0o777;
+    let mine = meta.uid() == unsafe { libc::geteuid() };
+    let writable_by_others = perms & 0o022 != 0;
+    if !mine || writable_by_others {
+        // Dangerous: another user could tamper with your undo.
+        let reason = if !mine {
+            format!("{} is owned by another user", crate::crash::tilde(home))
+        } else {
+            format!(
+                "{} can be written by other users",
+                crate::crash::tilde(home)
+            )
+        };
+        let fix = format!("chmod 700 {}", crate::crash::tilde(home));
+        if mode == "strict" && attended() {
+            return Err(format!("{reason}; fix it with: {fix}"));
+        }
+        // Unattended (CI, a container), or `warn`: once, and carry on.
+        warn_once(&format!(
+            "{reason}; your undo is not kept private there (fix it with: {fix})"
+        ));
+        return Ok(());
+    }
+    if perms & 0o077 != 0 {
+        // Readable or executable by others: tighten it to owner-only. Silent,
+        // because cig's own earlier directory creation can leave it group-
+        // readable under a loose umask, and a note on every such run would be
+        // noise.
+        make_private(home);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn guard_existing(_home: &Path, _mode: &str) -> Result<(), String> {
+    Ok(())
+}
+
+/// Set a directory to 0700 on Unix; on Windows the user's profile already
+/// grants the user alone (a DACL is a later step).
+fn make_private(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+}
+
+/// Is a person at the keyboard? A terminal on stderr, no CI marker, no
+/// container marker. Unattended work gets a warning, never a refusal.
+fn attended() -> bool {
+    use std::io::IsTerminal;
+    if std::env::var_os("CIG_INTERNAL_ATTENDED").is_some() {
+        return true;
+    }
+    if std::env::var_os("CI").is_some() {
+        return false;
+    }
+    if Path::new("/.dockerenv").exists() || Path::new("/run/.containerenv").exists() {
+        return false;
+    }
+    std::io::stderr().is_terminal()
+}
+
+fn warn_once(msg: &str) {
+    use std::sync::OnceLock;
+    static SAID: OnceLock<()> = OnceLock::new();
+    SAID.get_or_init(|| {
+        eprintln!("warning[E707 burn]: {msg}");
+    });
 }
 
 /// Expand `~`, make absolute against the working directory, and normalise

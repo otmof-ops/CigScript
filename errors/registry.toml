@@ -1416,6 +1416,36 @@ reversible = false
 # --- folds and packs (E75x) ---
 
 [[code]]
+code = "E707"
+title = "the tin is open to others"
+meaning = "The state directory can be written by other users, or is owned by someone else, so the run records that let you undo are not kept private. On a terminal cig refuses to write there; unattended (CI, a container) it warns once and carries on."
+fix = "chmod 700 ~/.cigscript"
+no = "these-are-mine"
+arises = ["run"]
+tags = ["kernel", "ci-likely"]
+since = "1.8.0"
+related = ["E703"]
+[[code.cause]]
+why = "the state directory is group- or world-writable, or owned by another user"
+probe = "path-permissions"
+remedy = "chmod 700 ~/.cigscript (cig config tin_perms warn makes it a warning; off stops the check)"
+
+[[code]]
+code = "E715"
+title = "debugging is allowed"
+meaning = "CIG_ALLOW_DEBUG is set, so cig does not stop a debugger or another process of the same user from reading the tin's key out of its memory. This is for contributors debugging cig; cig says so on every run while it is set."
+fix = "unset CIG_ALLOW_DEBUG"
+no = "none"
+arises = ["run", "any"]
+tags = ["kernel"]
+since = "1.8.0"
+related = ["E707"]
+[[code.cause]]
+why = "CIG_ALLOW_DEBUG is set in the environment"
+probe = "none"
+remedy = "unset CIG_ALLOW_DEBUG when you are done debugging cig"
+
+[[code]]
 code = "E750"
 title = "literal path outside the pack"
 meaning = "A write names a literal path that sits outside the script's declared pack (its scope), so the checker refuses it before anything runs."

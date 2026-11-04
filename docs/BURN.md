@@ -406,6 +406,33 @@ shows one with its journal, `cig runs --prune N` keeps the newest N, and
 `CIGSCRIPT_HOME` relocates the whole state directory (tests use this to stay
 isolated).
 
+## Keeping the tin private
+
+The tin is your undo, so cig keeps it to you and keeps the key that seals it
+out of reach of what cig runs.
+
+- **Owner-only.** The state directory is created `0700`, its files `0600` and
+  its objects `0400`, set explicitly. An older directory readable by other
+  users is tightened once, with a note. One that other users can *write*, or
+  that another user owns, means your undo is not safe there: on a terminal cig
+  refuses (`E707`) and names the fix (`chmod 700 ~/.cigscript`); unattended it
+  warns once and carries on, so CI and containers are never broken by a
+  surprise refusal. `cig config tin_perms` is `strict` (the default), `warn`
+  or `off`.
+- **The key lives apart from what it opens.** The fallback key file is kept in
+  the OS config directory, not in the tin, so a copy of the tin does not carry
+  the key. The stored secret is a master key; each use derives its own subkey
+  with HKDF-SHA256 under a label, so the seal key, and later the journal and
+  ledger MAC keys, are never the same key. `cig tin key export` wraps the key
+  with a passphrase to carry to another machine, and `cig tin key import` puts
+  it back. `cig doctor` reminds you once to back it up when sealed objects
+  exist and it was never exported.
+- **Out of cig's memory.** Once a key is loaded cig blocks a debugger and
+  `/proc/<pid>/mem` of the same user (Linux `PR_SET_DUMPABLE`, macOS
+  `PT_DENY_ATTACH`), so a hop cannot read the key out of cig. It resets for
+  every program cig starts. `CIG_ALLOW_DEBUG=1` turns it off for anyone
+  debugging cig, and says so every run.
+
 ## The box
 
 The tin makes a hop's changes undoable after they happen; the box makes a

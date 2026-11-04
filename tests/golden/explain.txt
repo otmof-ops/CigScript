@@ -85,6 +85,8 @@ E700-E749  the burn kernel and its journal (write-ahead log)
   E704  file changed since the run         burn
   E705  already rolled back                burn
   E706  interrupted run                    burn
+  E707  the tin is open to others          burn
+  E715  debugging is allowed               burn
 
 E750-E769  folds and packs: refusals when automation is composed
   E750  literal path outside the pack      burn
@@ -1325,6 +1327,38 @@ E706 interrupted run  (burn, kernel family, since 1.1.0)
      remedy: `cig unburn <id>` puts back what it burned; `cig runs <id>` shows the journal first  [doctor can apply it with a y; not reversible]
 
   arises in: doctor, runs  ·  related: E703  ·  tags: kernel, fixable-by-doctor
+
+======== E707 ========
+E707 the tin is open to others  (burn, kernel family, since 1.8.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The state directory can be written by other users, or is owned by someone else, so the run records that let you undo are not kept private. On a terminal cig refuses to write there; unattended (CI, a container) it warns once and carries on.
+
+  what to type next: chmod 700 ~/.cigscript
+
+  known causes, ranked; doctor checks them in this order
+  1. the state directory is group- or world-writable, or owned by another user
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: chmod 700 ~/.cigscript (cig config tin_perms warn makes it a warning; off stops the check)
+
+  arises in: run  ·  related: E703  ·  tags: kernel, ci-likely
+
+======== E715 ========
+E715 debugging is allowed  (burn, kernel family, since 1.8.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  CIG_ALLOW_DEBUG is set, so cig does not stop a debugger or another process of the same user from reading the tin's key out of its memory. This is for contributors debugging cig; cig says so on every run while it is set.
+
+  what to type next: unset CIG_ALLOW_DEBUG
+
+  known causes, ranked; doctor checks them in this order
+  1. CIG_ALLOW_DEBUG is set in the environment
+     probe: none; a suggestion, not a finding
+     remedy: unset CIG_ALLOW_DEBUG when you are done debugging cig
+
+  arises in: run, any  ·  related: E707  ·  tags: kernel
 
 ======== E750 ========
 E750 literal path outside the pack  (burn, fold family, since 1.1.0)

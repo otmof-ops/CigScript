@@ -4087,6 +4087,149 @@ fn a_partial_rollback_is_finished_by_a_plain_unburn() {
     assert!(third.contains("error[E705 burn]:"), "{third}");
 }
 
+#[cfg(unix)]
+#[test]
+fn the_tin_key_is_kept_out_of_the_tin_and_a_sealed_run_unburns() {
+    let sb = Sandbox::new();
+    sb.write(".env", "SECRET=hunter2\n");
+    sb.write(
+        "s.cig",
+        "pack { \".\" }\nburn {\n  fs.write_text(\".env\", \"SECRET=changed\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    // The key is in the keys directory beside the state root, never in the tin.
+    let keys = sb.path().join(".cigscript-keys").join("seal.key");
+    assert!(keys.exists(), "key not at {}", keys.display());
+    assert!(
+        !sb.home().join("tin").join("seal.key").exists(),
+        "the key is still in the tin"
+    );
+    // A sealed before-copy was made (a `.cig-sealed` file under the state
+    // root), and it opens again on unburn (the CIGSEAL2 round-trip).
+    fn has_sealed(dir: &std::path::Path) -> bool {
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            if let Ok(rd) = std::fs::read_dir(&d) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else if p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().ends_with(".cig-sealed"))
+                        .unwrap_or(false)
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+    assert!(
+        has_sealed(&sb.home()),
+        "no sealed object under {}",
+        sb.home().display()
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read(".env"), "SECRET=hunter2\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pre_1_8_key_in_the_tin_is_migrated_out() {
+    let sb = Sandbox::new();
+    std::fs::create_dir_all(sb.home().join("tin")).unwrap();
+    let legacy = sb.home().join("tin").join("seal.key");
+    let hexkey = "11".repeat(32);
+    std::fs::write(&legacy, format!("{hexkey}\n")).unwrap();
+    sb.write(".env", "SECRET=one\n");
+    sb.write(
+        "s.cig",
+        "pack { \".\" }\nburn {\n  fs.write_text(\".env\", \"SECRET=two\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    assert!(!legacy.exists(), "the legacy key was left in the tin");
+    let moved = sb.path().join(".cigscript-keys").join("seal.key");
+    assert_eq!(
+        std::fs::read_to_string(&moved).unwrap().trim(),
+        hexkey,
+        "the migrated key changed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_tin_key_exports_and_imports() {
+    let sb = Sandbox::new();
+    sb.write(".env", "SECRET=one\n");
+    sb.write(
+        "s.cig",
+        "pack { \".\" }\nburn {\n  fs.write_text(\".env\", \"SECRET=two\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    let keyfile = sb.path().join(".cigscript-keys").join("seal.key");
+    let before = std::fs::read_to_string(&keyfile).unwrap();
+    let export = sb.path().join("key.export");
+    let out = sb.cig_in(
+        ".",
+        &["tin", "key", "export", "--out", export.to_str().unwrap()],
+        &[("CIG_KEY_PASSPHRASE", "correct horse")],
+    );
+    assert!(out.status.success(), "export failed");
+    assert!(export.exists());
+    // Lose the key, then put it back from the export.
+    std::fs::remove_file(&keyfile).unwrap();
+    let bad = sb.cig_in(
+        ".",
+        &["tin", "key", "import", export.to_str().unwrap()],
+        &[("CIG_KEY_PASSPHRASE", "wrong")],
+    );
+    assert_eq!(bad.status.code(), Some(1), "a wrong passphrase imported");
+    let ok = sb.cig_in(
+        ".",
+        &["tin", "key", "import", export.to_str().unwrap()],
+        &[("CIG_KEY_PASSPHRASE", "correct horse")],
+    );
+    assert!(ok.status.success(), "import failed");
+    assert_eq!(
+        std::fs::read_to_string(&keyfile).unwrap().trim(),
+        before.trim(),
+        "the imported key differs"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_loose_state_directory_warns_unattended_and_refuses_on_a_terminal() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    std::fs::create_dir_all(sb.home()).unwrap();
+    std::fs::set_permissions(sb.home(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    sb.write("s.cig", "burn {\n  fs.write_text(\"a.txt\", \"1\")\n}\n");
+    // Unattended (no tty in the harness): a warning, and the run carries on.
+    let warned = sb.cig(&["run", "s.cig"]);
+    assert!(
+        warned.status.success(),
+        "a loose home broke an unattended run"
+    );
+    assert!(
+        String::from_utf8_lossy(&warned.stderr).contains("E707"),
+        "no E707 warning"
+    );
+    // On a terminal (forced): refused with the fix.
+    std::fs::set_permissions(sb.home(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    let refused = sb.cig_in("", &["run", "s.cig"], &[("CIG_INTERNAL_ATTENDED", "1")]);
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "a loose home was not refused"
+    );
+    let err = String::from_utf8_lossy(&refused.stderr);
+    assert!(err.contains("E707") && err.contains("chmod 700"), "{err}");
+}
+
 #[cfg(windows)]
 #[test]
 fn a_timeout_kills_the_grandchild_on_windows() {
@@ -5431,7 +5574,7 @@ fn a_private_key_under_touches_is_never_stored_in_the_clear() {
     // The two secrets, and the hop's rotated key the rollback set aside.
     assert_eq!(du["sealed"], 3, "{du}");
     assert_eq!(du["objects"], 2, "the readme and its changed version: {du}");
-    assert!(sb.exists("home/tin/seal.key"));
+    assert!(sb.exists(".cigscript-keys/seal.key"));
     sb.run_ok(&["tin", "verify"]);
     sb.run_ok(&["tin", "verify", "--quick"]);
     let text = sb.run_ok(&["tin"]);
@@ -5555,7 +5698,7 @@ fn without_the_key_a_restore_refuses_and_names_the_file() {
     let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
     // The key is gone: nothing takes its place while sealed objects depend
     // on it, and the restore names the key, where it was, and the file.
-    let key = sb.home().join("tin/seal.key");
+    let key = sb.path().join(".cigscript-keys").join("seal.key");
     let aside = sb.home().join("key-aside");
     fs::rename(&key, &aside).unwrap();
     let err = sb.run_err(&["unburn", &id], 1);
@@ -6535,8 +6678,8 @@ fn a_missing_seal_key_is_refused_rather_than_replaced() {
     );
     sb.run_ok(&["run", "s.cig"]);
     let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
-    let key = sb.home().join("tin/seal.key");
-    let aside = sb.home().join("tin/key-aside");
+    let key = sb.path().join(".cigscript-keys").join("seal.key");
+    let aside = sb.path().join(".cigscript-keys").join("key-aside");
     fs::rename(&key, &aside).unwrap();
     // The restore names the missing key; it makes no new one.
     let out = sb.cig(&["unburn", &id]);
