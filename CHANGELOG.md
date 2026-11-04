@@ -3,6 +3,16 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.11.1 — 2026-11-05
+
+- **Fixed: a boxed hop's timeout fires.** The box's relay and init (1.11.0's
+  PID namespace) inherited the standard library's exec-status pipe and held
+  it until the hop ended, so `spawn` returned only then and the hop's
+  timeout never fired; cig-orchestrator's suite caught it the same hour.
+  Both now put the child-exit signal back to its default and close every
+  descriptor above stderr once they have forked, and the forwarder's own
+  stdio goes to `/dev/null`.
+
 ## 1.11.0 — 2026-11-05
 
 The first half of the box for untrusted code (#106, steps 1, 2 and 6): the
