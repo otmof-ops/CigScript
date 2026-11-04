@@ -2950,7 +2950,7 @@ fn a_run_from_1_1_1_reads_on_the_current_version() {
         "home/runs/{}/journal.jsonl",
         runs[0]["id"].as_str().unwrap()
     ));
-    assert!(journal.starts_with("{\"format\":2,\"run\":\""), "{journal}");
+    assert!(journal.starts_with("{\"format\":3,\"run\":\""), "{journal}");
     let id2 = "20260102T000000-def456";
     write_run(
         &sb,
@@ -4230,6 +4230,237 @@ fn a_loose_state_directory_warns_unattended_and_refuses_on_a_terminal() {
     assert!(err.contains("E707") && err.contains("chmod 700"), "{err}");
 }
 
+/// Seam 2 of #105: the signed journal and the ledger.
+#[cfg(unix)]
+fn journal_path(sb: &Sandbox, id: &str) -> PathBuf {
+    sb.home().join("runs").join(id).join("journal.jsonl")
+}
+
+/// What an attacker who cut or swapped a journal also does: take the head
+/// out of the record, so only the ledger can tell.
+#[cfg(unix)]
+fn forget_head(sb: &Sandbox, id: &str) {
+    let p = sb.home().join("runs").join(id).join("run.json");
+    let mut v: serde_json::Value = serde_json::from_str(&fs::read_to_string(&p).unwrap()).unwrap();
+    v["journal_head"] = serde_json::Value::Null;
+    fs::write(&p, serde_json::to_string_pretty(&v).unwrap()).unwrap();
+}
+
+#[cfg(unix)]
+fn two_op_run(sb: &Sandbox) -> String {
+    sb.write("a.txt", "one\n");
+    sb.write(
+        "s.cig",
+        "burn {\n  fs.write_text(\"a.txt\", \"two\")\n  fs.write_text(\"b.txt\", \"new\")\n}\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    sb.runs()[0]["id"].as_str().unwrap().to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn a_journal_is_signed_and_a_recomputed_chain_does_not_verify() {
+    use sha2::Digest;
+    let sb = Sandbox::new();
+    let id = two_op_run(&sb);
+    let path = journal_path(&sb, &id);
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        text.lines().next().unwrap().contains("\"format\":3"),
+        "{text}"
+    );
+    // The attack format 2 could not see: rewrite a line, then recompute every
+    // prev as the plain hash of the line before it.
+    let mut lines: Vec<serde_json::Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    lines[1]["at"] = serde_json::Value::String("2001-01-01T00:00:00Z".to_string());
+    let mut prev = lines[0]["prev"].as_str().unwrap().to_string();
+    let mut out = String::new();
+    for (i, v) in lines.iter_mut().enumerate() {
+        if i > 0 {
+            v["prev"] = serde_json::Value::String(prev.clone());
+        }
+        let line = serde_json::to_string(v).unwrap();
+        prev = hex::encode(sha2::Sha256::digest(line.as_bytes()));
+        out.push_str(&line);
+        out.push('\n');
+    }
+    fs::write(&path, out).unwrap();
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(err.contains("error[E760 burn]:"), "{err}");
+    assert_eq!(sb.read("a.txt"), "two");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_journal_cut_short_is_caught_by_the_ledger() {
+    let sb = Sandbox::new();
+    let id = two_op_run(&sb);
+    let path = journal_path(&sb, &id);
+    let text = fs::read_to_string(&path).unwrap();
+    let kept: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    fs::write(&path, format!("{}\n", kept[..kept.len() - 1].join("\n"))).unwrap();
+    forget_head(&sb, &id);
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(
+        err.contains("error[E709 burn]:") && err.contains("cut short"),
+        "{err}"
+    );
+    // --force restores from it as it is.
+    sb.run_ok(&["unburn", &id, "--force"]);
+}
+
+#[cfg(unix)]
+#[test]
+fn an_older_copy_of_the_journal_is_caught_by_the_ledger() {
+    let sb = Sandbox::new();
+    let id = two_op_run(&sb);
+    let path = journal_path(&sb, &id);
+    let before = fs::read_to_string(&path).unwrap();
+    // The unburn grows the record and the ledger follows it; the earlier
+    // copy put back is an older record than the ledger knows.
+    sb.run_ok(&["unburn", &id]);
+    fs::write(&path, before).unwrap();
+    forget_head(&sb, &id);
+    // The run is rolled back already (E705 would answer a real unburn
+    // first); the dry run shows the ledger's verdict on the old copy.
+    let plan = sb.cig(&["unburn", &id, "--dry-run"]);
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&plan.stdout),
+        String::from_utf8_lossy(&plan.stderr)
+    );
+    assert!(
+        text.contains("E709") && text.contains("cut short"),
+        "{text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pruned_run_is_quiet_and_a_hand_deleted_run_is_a_note() {
+    let sb = Sandbox::new();
+    let first = two_op_run(&sb);
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    sb.write("t.cig", "burn {\n  fs.write_text(\"c.txt\", \"c\")\n}\n");
+    sb.run_ok(&["run", "t.cig"]);
+    let second = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert_ne!(first, second);
+    sb.run_ok(&["runs", "--prune", "1"]);
+    let quiet = sb.cig(&["runs"]);
+    assert!(
+        !String::from_utf8_lossy(&quiet.stderr).contains("E710"),
+        "a pruned run was noted"
+    );
+    fs::remove_dir_all(sb.home().join("runs").join(&second)).unwrap();
+    let noted = sb.cig(&["runs"]);
+    let err = String::from_utf8_lossy(&noted.stderr).to_string();
+    assert!(err.contains("E710") && err.contains(&second), "{err}");
+    sb.run_ok(&["runs", "--forget", &second]);
+    let silent = sb.cig(&["runs"]);
+    assert!(
+        !String::from_utf8_lossy(&silent.stderr).contains("E710"),
+        "forgotten run still noted"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_run_signed_by_another_key_restores_with_accept_unsigned() {
+    let sb = Sandbox::new();
+    let id = two_op_run(&sb);
+    // The key is replaced: this run's journal is under another key now.
+    let key = sb.path().join(".cigscript-keys").join("seal.key");
+    fs::write(&key, format!("{}\n", "22".repeat(32))).unwrap();
+    let err = sb.run_err(&["unburn", &id], 1);
+    assert!(err.contains("error[E708 burn]:"), "{err}");
+    assert_eq!(sb.read("a.txt"), "two");
+    sb.run_ok(&["unburn", &id, "--accept-unsigned"]);
+    assert_eq!(sb.read("a.txt"), "one\n");
+    assert!(!sb.exists("b.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn journal_sign_off_writes_format_2_and_no_ledger_line() {
+    let sb = Sandbox::new();
+    sb.run_ok(&["config", "journal_sign", "off"]);
+    let id = two_op_run(&sb);
+    let text = fs::read_to_string(journal_path(&sb, &id)).unwrap();
+    assert!(
+        text.lines().next().unwrap().contains("\"format\":2"),
+        "{text}"
+    );
+    assert!(!sb
+        .path()
+        .join(".cigscript-keys")
+        .join("ledger.jsonl")
+        .exists());
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("a.txt"), "one\n");
+}
+
+#[cfg(unix)]
+#[test]
+fn tin_head_matches_the_ledger_and_an_edited_ledger_is_caught() {
+    let sb = Sandbox::new();
+    two_op_run(&sb);
+    let head = sb.run_ok(&["tin", "head"]);
+    assert!(head.trim().starts_with("1 "), "{head}");
+    sb.run_ok(&["tin", "verify", "--head", head.trim()]);
+    let err = sb.run_err(&["tin", "verify", "--head", "1 deadbeef"], 1);
+    assert!(err.contains("cut short or swapped"), "{err}");
+    // A line edited in the ledger no longer carries cig's signature.
+    let ledger = sb.path().join(".cigscript-keys").join("ledger.jsonl");
+    let text = fs::read_to_string(&ledger).unwrap();
+    fs::write(
+        &ledger,
+        text.replace("\"kind\":\"run\"", "\"kind\":\"ran\""),
+    )
+    .unwrap();
+    let err = sb.run_err(&["tin", "verify"], 1);
+    assert!(err.contains("ledger") && err.contains("E709"), "{err}");
+}
+
+/// Two state directories under one parent sit beside one key and so share
+/// one ledger file. They are two tins: each line names the tin it
+/// witnesses, so a run in one is not a missing run in the other. The
+/// portability probe keeps every case's home under one parent and found
+/// the note firing across them.
+#[cfg(unix)]
+#[test]
+fn two_tins_beside_one_key_keep_separate_accounts() {
+    let sb = Sandbox::new();
+    let id = two_op_run(&sb);
+    let other = sb.path().join("home2");
+    let other = other.to_string_lossy().to_string();
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIGSCRIPT_HOME", &other)]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ledger = sb.read(".cigscript-keys/ledger.jsonl");
+    assert_eq!(ledger.lines().count(), 2, "{ledger}");
+    assert!(ledger.contains("\"tin\":\""), "{ledger}");
+    // Neither tin sees the other's run as missing.
+    let err = String::from_utf8_lossy(&sb.cig(&["runs"]).stderr).to_string();
+    assert!(!err.contains("E710"), "{err}");
+    let out = sb.cig_env(&["runs"], &[("CIGSCRIPT_HOME", &other)]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!err.contains("E710"), "{err}");
+    // A run really removed by hand is still noted, in its own tin only.
+    fs::remove_dir_all(sb.home().join("runs").join(&id)).unwrap();
+    let err = String::from_utf8_lossy(&sb.cig(&["runs"]).stderr).to_string();
+    assert!(err.contains("E710") && err.contains(&id), "{err}");
+    let out = sb.cig_env(&["runs"], &[("CIGSCRIPT_HOME", &other)]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!err.contains("E710"), "{err}");
+}
+
 /// Doctor looks at the tin's protection; looking must not make a key.
 #[cfg(unix)]
 #[test]
@@ -5182,7 +5413,7 @@ fn an_edited_journal_line_breaks_the_chain() {
     let text = fs::read_to_string(&jp).unwrap();
     let lines: Vec<&str> = text.lines().collect();
     assert_eq!(lines.len(), 3, "{text}");
-    assert!(lines[0].starts_with("{\"format\":2,\"run\":\""), "{text}");
+    assert!(lines[0].starts_with("{\"format\":3,\"run\":\""), "{text}");
     for l in &lines[1..] {
         assert!(l.contains("\"prev\":\""), "{l}");
     }
@@ -6021,6 +6252,14 @@ fn a_parcel_unburns_on_another_machine() {
             && shown.contains("chain     intact")
             && shown.contains("objects   every snapshot"),
         "{shown}"
+    );
+    // Signed again under this machine's key on the way in, and its origin
+    // recorded: the ledger here has an `origin` line for it.
+    let ledger = fs::read_to_string(b.path().join(".cigscript-keys").join("ledger.jsonl"))
+        .unwrap_or_default();
+    assert!(
+        ledger.contains("\"kind\":\"origin\"") && ledger.contains(&id),
+        "no origin line for {id} in the ledger: {ledger}"
     );
     let plan = b.run_ok(&["unburn", &id, "--dry-run"]);
     assert!(

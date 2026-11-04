@@ -463,6 +463,19 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         record.trial = trial_note.clone();
         record.journal_head = Some(interp.kernel.journal().head().to_string());
         record.finish(status, error);
+        // The ledger: where this run's record ended, under this machine's
+        // key, so a journal cut short or swapped is caught later.
+        if interp.kernel.journal().format() >= 3 {
+            if let Err(e) = cigscript::burn::ledger::append(
+                "run",
+                &record.id,
+                interp.kernel.journal().head(),
+                &record.status,
+                interp.kernel.journal().chain().lines as u64,
+            ) {
+                eprintln!("{} could not write the ledger: {e}", ctx.yellow("warning:"));
+            }
+        }
         if !record.rolled_back && !interp.kernel.journal().is_empty() {
             if let Err(e) = interp.kernel.journal().write_after_state() {
                 eprintln!(

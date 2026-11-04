@@ -7,9 +7,32 @@ use super::{exit, Ctx};
 use cigscript::burn::journal::{Before, Journal};
 use cigscript::burn::runs::{self, RunRecord};
 
-pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>, verify: bool) -> i32 {
+pub fn runs(
+    ctx: &Ctx,
+    id: Option<String>,
+    prune: Option<usize>,
+    verify: bool,
+    forget: Option<String>,
+) -> i32 {
     if let Some(keep) = prune {
         return prune_runs(ctx, keep);
+    }
+    if let Some(gone) = forget {
+        // The user says the run is gone on purpose: the ledger records it,
+        // and the missing-run note stops.
+        return match cigscript::burn::ledger::append("forgotten", &gone, "", "forgotten", 0) {
+            Ok(()) => {
+                eprintln!(
+                    "{} {gone} will not be noted as missing again",
+                    ctx.green("ok:")
+                );
+                exit::OK
+            }
+            Err(e) => {
+                eprintln!("{} could not write the ledger: {e}", ctx.red("error:"));
+                exit::SCRIPT_ERROR
+            }
+        };
     }
     let all = match runs::list() {
         Ok(r) => r,
@@ -25,6 +48,7 @@ pub fn runs(ctx: &Ctx, id: Option<String>, prune: Option<usize>, verify: bool) -
                 outln!("{}", serde_json::to_string(&all).unwrap_or_default());
                 return exit::OK;
             }
+            note_missing_runs(ctx, &all);
             if all.is_empty() {
                 eprintln!(
                     "no runs recorded yet (state dir: {})",
@@ -249,12 +273,94 @@ struct Verified {
 /// the record saved as the chain's head (edited, or lines added or removed
 /// at the end after the record was written; an unburn or a give-back
 /// saves the head again after the markers it appends).
+/// Runs the ledger lists that are not in `runs/` and were not pruned or
+/// forgotten: one calm note (E710), never an alarm. Only a ledger line that
+/// fails its MAC is a tripwire, and that is reported by the verify path.
+fn note_missing_runs(ctx: &Ctx, all: &[RunRecord]) {
+    let Ok(ledger) = cigscript::burn::ledger::load() else {
+        return;
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut missing: Vec<String> = Vec::new();
+    // Only this tin's lines: another state directory beside the same key
+    // keeps its own runs, and they are not missing from here.
+    for l in ledger.of_this_tin().rev() {
+        if l.kind != "run" && l.kind != "unburn" && l.kind != "origin" {
+            continue;
+        }
+        if !seen.insert(l.run.clone()) {
+            continue;
+        }
+        if all.iter().any(|r| r.id == l.run) || cigscript::burn::ledger::is_let_go(&ledger, &l.run)
+        {
+            continue;
+        }
+        missing.push(l.run.clone());
+    }
+    if missing.is_empty() {
+        return;
+    }
+    missing.sort();
+    for id in &missing {
+        eprintln!(
+            "{} run {id} is in the ledger but not in runs/ (removed by hand?); cig runs --forget {id} to stop this note",
+            ctx.yellow("note[E710 burn]:")
+        );
+    }
+}
+
+/// What the ledger says this run's journal ended at, against the journal
+/// on disk: `Some(reason)` when the journal was cut short or swapped for
+/// an older copy (E709). `None` when it fits, when the ledger has no entry
+/// for the run (a run from before the ledger), or when the ledger cannot
+/// be read (the key is not here: nothing to compare with).
+fn ledger_disagrees(rec: &RunRecord, journal: &Journal) -> Option<String> {
+    // A journal under another key cannot be judged against this ledger, and
+    // a ledger whose own chain is broken judges nothing (that is E709 in
+    // `cig tin verify`, not a verdict on this run).
+    if journal.chain().other_key || journal.chain().unverified {
+        return None;
+    }
+    // The record speaks first: a journal whose head is not the one its own
+    // record saved is reported by `tampered` (E760). The ledger judges what
+    // the record cannot: a journal cut short or swapped whose record was
+    // made to agree with it, or carries no head at all.
+    if rec
+        .journal_head
+        .as_deref()
+        .is_some_and(|h| h != journal.head())
+    {
+        return None;
+    }
+    let ledger = cigscript::burn::ledger::load().ok()?;
+    if ledger.broken_at.is_some() {
+        return None;
+    }
+    let line = cigscript::burn::ledger::last_record_of(&ledger, &rec.id)?;
+    let lines = journal.chain().lines as u64;
+    if lines < line.lines {
+        return Some(format!(
+            "this run's journal ends at line {lines}, but the ledger says it went to {}: cut short",
+            line.lines
+        ));
+    }
+    if line.head != journal.head() && lines == line.lines {
+        return Some(
+            "this is an old copy of the record: the ledger has a later one with the same length and another head".to_string(),
+        );
+    }
+    None
+}
+
 fn tampered(rec: &RunRecord, journal: &Journal) -> Option<(usize, String)> {
     let chain = journal.chain();
     if let Some(b) = &chain.broken_at {
         return Some((b.line, b.reason.clone()));
     }
-    if !chain.checked() {
+    // Under another key, or with no key to check with, the head computed
+    // here is not the one the record saved: that is E708's business, or a
+    // note, not tampering.
+    if !chain.checked() || chain.other_key || chain.unverified {
         return None;
     }
     match &rec.journal_head {
@@ -495,6 +601,13 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     }
     let mut rec = rec;
     rec.journal_head = Some(journal.head().to_string());
+    let _ = cigscript::burn::ledger::append(
+        "unburn",
+        &rec.id,
+        journal.head(),
+        "given_back",
+        journal.chain().lines as u64,
+    );
     if let Err(e) = rec.save() {
         eprintln!(
             "{} could not record the give-back in {}: {e}",
@@ -527,6 +640,8 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
         }
         if cigscript::burn::overlay::remove_tree_force(&r.dir()).is_ok() {
             removed += 1;
+            // Recorded, so the missing-run note never fires for it.
+            let _ = cigscript::burn::ledger::append("pruned", &r.id, "", "pruned", 0);
         }
     }
     if ctx.json {
@@ -544,7 +659,7 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
     exit::OK
 }
 
-pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
+pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: bool) -> i32 {
     // A rollback writes run state: the state directory must be ours alone.
     if !dry_run {
         if let Err(e) = cigscript::burn::ensure_private() {
@@ -597,6 +712,52 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     if journal.is_empty() {
         eprintln!("{} burned nothing; there is nothing to unburn", rec.id);
         return exit::OK;
+    }
+    if journal.chain().unverified {
+        eprintln!(
+            "{} this run's journal is signed and the tin's key is not available to check it; restoring by the hashes it carries",
+            ctx.yellow("note:")
+        );
+    }
+    // A signed journal under another key (another machine's, or one since
+    // replaced) is not tampering: its objects still verify by hash, and
+    // `--accept-unsigned` restores from it after you have read that.
+    if journal.chain().other_key {
+        if !accept_unsigned && !dry_run {
+            eprintln!(
+                "{} this run was signed by another key; its files still match their hashes",
+                ctx.red("error[E708 burn]:")
+            );
+            eprintln!(
+                "  = hint: cig unburn {} --accept-unsigned restores it anyway (sealed objects still need the key that sealed them: cig tin key import)",
+                rec.id
+            );
+            eprintln!("  = explain: cig explain E708");
+            return exit::SCRIPT_ERROR;
+        }
+        eprintln!(
+            "{} this run was signed by another key; restoring from it as its hashes allow",
+            ctx.yellow("note:")
+        );
+    }
+    // The ledger recorded where this run's journal ended: a journal cut
+    // short, or an older copy swapped in, is caught here.
+    if let Some(reason) = ledger_disagrees(&rec, &journal) {
+        if !force && !dry_run {
+            eprintln!("{} {reason}", ctx.red("error[E709 burn]:"));
+            eprintln!("  = hint: the record was changed since it was written; --force restores from it as it is");
+            eprintln!("  = explain: cig explain E709");
+            return exit::SCRIPT_ERROR;
+        }
+        eprintln!(
+            "{} {reason}; {}",
+            ctx.yellow("note:"),
+            if dry_run {
+                "a real unburn would refuse [E709] unless --force"
+            } else {
+                "--force given"
+            }
+        );
     }
     // Every line of a format 2 journal carries the hash of the one before
     // it: a journal that no longer fits itself is not the record, and is
@@ -904,6 +1065,19 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     }
     rec.rolled_back = true;
     rec.rollback_failed = report.failed.clone();
+    if let Err(e) = cigscript::burn::ledger::append(
+        "unburn",
+        &rec.id,
+        journal.head(),
+        if report.clean() {
+            "unburned"
+        } else {
+            "unburn_failed"
+        },
+        journal.chain().lines as u64,
+    ) {
+        eprintln!("{} could not write the ledger: {e}", ctx.yellow("warning:"));
+    }
     // The layers of a boxed hop the run never got to apply (it died in the
     // hop) were never the pack's: they go with the rollback.
     let _ = cigscript::burn::overlay::remove_tree_force(&rec.dir().join("box"));

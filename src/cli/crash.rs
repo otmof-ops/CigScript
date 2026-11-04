@@ -683,7 +683,7 @@ fn offer_rollback(ctx: &Ctx, report: &mut CrashReport, cfg: &Config) {
         }
     };
     if put_back {
-        let code = super::runs::unburn(ctx, &id, false, false);
+        let code = super::runs::unburn(ctx, &id, false, false, false);
         report.rolled_back = Some(code == exit::OK);
     } else {
         if cfg.get("crash_rollback") == "ask" && interactive {

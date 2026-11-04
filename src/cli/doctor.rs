@@ -282,7 +282,7 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
         if ask(&format!(
             "run {id} was interrupted mid-burn; roll back what it burned with `cig unburn {id}`?"
         )) {
-            let code = super::runs::unburn(ctx, id, false, false);
+            let code = super::runs::unburn(ctx, id, false, false, false);
             if code == exit::OK {
                 fixed += 1;
             }

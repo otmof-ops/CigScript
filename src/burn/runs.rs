@@ -275,10 +275,15 @@ pub fn newer_format(what: &str, format: u32, version: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "{what} is format {format}, written by cig {}; this cig ({}) reads up to format {}",
+            "{what} is format {format}, written by cig {}; this cig ({}) reads up to format {}{}",
             if version.is_empty() { "?" } else { version },
             crate::VERSION,
-            RECORD_FORMAT
+            RECORD_FORMAT,
+            if what == "journal.jsonl" {
+                " (E711)"
+            } else {
+                ""
+            }
         ),
     )
 }

@@ -99,6 +99,9 @@ pub enum Command {
         /// With an id: walk the journal's hash chain, compare its head with the record, and check every snapshot and tin object it needs.
         #[arg(long, requires = "id")]
         verify: bool,
+        /// Stop noting that this run (listed in the ledger) is missing from runs/: it was removed on purpose.
+        #[arg(long, value_name = "ID")]
+        forget: Option<String>,
     },
     /// Put the world back the way it was, newest op first (rollback).
     Unburn {
@@ -113,6 +116,9 @@ pub enum Command {
         /// Put back what this run's rollback moved into the tin: files saved while a hop ran, or the hop's own output (--dry-run previews it, --force writes over a path changed since).
         #[arg(long)]
         give_back: bool,
+        /// Restore from a journal signed by another key (another machine's, or one since replaced); its objects are still checked by hash.
+        #[arg(long)]
+        accept_unsigned: bool,
     },
     /// Look the install over, or diagnose a past run again; asks before it fixes anything (diagnostics).
     Doctor {
@@ -375,17 +381,23 @@ fn dispatch(ctx: Ctx, command: Command) -> i32 {
         } => run::check(&ctx, &file, deny_warnings),
         Command::Eval { code } => run::eval(&ctx, &code),
         Command::Repl => repl::repl(&ctx),
-        Command::Runs { id, prune, verify } => runs::runs(&ctx, id, prune, verify),
+        Command::Runs {
+            id,
+            prune,
+            verify,
+            forget,
+        } => runs::runs(&ctx, id, prune, verify, forget),
         Command::Unburn {
             id,
             dry_run,
             force,
             give_back,
+            accept_unsigned,
         } => {
             if give_back {
                 runs::give_back(&ctx, &id, dry_run, force)
             } else {
-                runs::unburn(&ctx, &id, dry_run, force)
+                runs::unburn(&ctx, &id, dry_run, force, accept_unsigned)
             }
         }
         Command::Doctor { fix, run } => match run {

@@ -137,10 +137,14 @@ pub struct Compensation {
 /// The shape of `journal.jsonl` and `after.json` this cig writes. The
 /// journal's first line says which; a cig that reads an older format reads
 /// it as it always did, and a newer one is refused by its number (E808).
+/// Format 3 (1.9.0) signs the chain: `prev` is an HMAC-SHA256 under the
+/// `journal-mac` subkey of the line before it, so a script that rewrites the
+/// journal cannot recompute it without the key; `journal_sign = off` keeps
+/// writing format 2 for anyone who needs older cigs to read new runs.
 /// Format 2 (1.5.0) chains the lines: each carries `prev`, the SHA-256 of
 /// the line before it as written, and the first line that of the run's id,
 /// so a line edited, removed or reordered after the run no longer fits.
-pub const JOURNAL_FORMAT: u32 = 2;
+pub const JOURNAL_FORMAT: u32 = 3;
 
 /// The state of a journal's hash chain, found when it was loaded. A format
 /// 1 journal has no chain and is never checked.
@@ -154,6 +158,15 @@ pub struct Chain {
     pub lines: usize,
     /// The first line whose `prev` is not the hash of the line before it.
     pub broken_at: Option<ChainBreak>,
+    /// A signed journal (format 3) whose very first link does not verify
+    /// under this machine's key: signed by another key. Not tampering,
+    /// which breaks the chain part-way (E708, not E760).
+    #[serde(default)]
+    pub other_key: bool,
+    /// A signed journal this cig could not check: the tin's key is not
+    /// available. Nothing is judged; a note, never a refusal.
+    #[serde(default)]
+    pub unverified: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -173,6 +186,87 @@ impl Chain {
     pub fn intact(&self) -> bool {
         self.broken_at.is_none()
     }
+}
+
+/// HMAC-SHA256 under the journal's MAC key, hex.
+fn hmac_hex(key: &[u8; 32], bytes: &[u8]) -> String {
+    use hmac::Mac;
+    let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("HMAC takes any key length");
+    m.update(bytes);
+    hex::encode(m.finalize().into_bytes())
+}
+
+/// One link of the chain: keyed (format 3) or plain (format 2).
+fn link(key: Option<&[u8; 32]>, bytes: &[u8]) -> String {
+    match key {
+        Some(k) => hmac_hex(k, bytes),
+        None => sha256_hex(bytes),
+    }
+}
+
+/// The journal MAC subkey, when the master key can be had.
+fn journal_key() -> Option<[u8; 32]> {
+    super::seal::key()
+        .ok()
+        .map(|(m, _)| super::seal::derive(&m, super::seal::LABEL_JOURNAL_MAC))
+}
+
+/// Does the setting ask for signed journals? (`journal_sign`, on by default.)
+fn signing_wanted() -> bool {
+    crate::config::Config::load().get("journal_sign") != "off"
+}
+
+/// Rewrite a journal's chain under another link: this machine's keyed chain
+/// (format 3) when a parcel's run is taken in, or the plain chain (format 2)
+/// when `to_key` is `None`. Every line's `prev` is recomputed from the
+/// header's seed; the header's `format` is set to match; nothing else in a
+/// line changes. Returns the new text and the new head.
+pub fn rechain(text: &str, to_key: Option<&[u8; 32]>) -> (String, String) {
+    let mut out = String::new();
+    let mut prev: Option<String> = None;
+    for raw in text.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(mut v) = serde_json::from_str::<serde_json::Value>(raw) else {
+            out.push_str(raw);
+            out.push('\n');
+            continue;
+        };
+        if v.get("format").is_some() && v.get("op").is_none() {
+            v["format"] =
+                serde_json::Value::from(if to_key.is_some() { JOURNAL_FORMAT } else { 2 });
+            if let Some(id) = v.get("run").and_then(|r| r.as_str()).map(str::to_string) {
+                prev = Some(link(to_key, id.as_bytes()));
+            }
+        }
+        if let Some(p) = &prev {
+            v["prev"] = serde_json::Value::String(p.clone());
+        }
+        let line = serde_json::to_string(&v).unwrap_or_else(|_| raw.to_string());
+        prev = Some(link(to_key, line.as_bytes()));
+        out.push_str(&line);
+        out.push('\n');
+    }
+    (out, prev.unwrap_or_default())
+}
+
+/// Re-sign a run's journal under this machine's key, in place, and return
+/// the new head (to record on the run). Used when a parcel's run is taken
+/// in: the record then verifies here like any other. With no key to be
+/// had, the journal is left as it came (it reads as another key's, E708).
+pub fn resign_in_place(run_dir: &Path) -> io::Result<Option<String>> {
+    let Some(key) = journal_key() else {
+        return Ok(None);
+    };
+    let path = run_dir.join("journal.jsonl");
+    let text = fs::read_to_string(&path)?;
+    let (new_text, head) = rechain(&text, Some(&key));
+    let tmp = run_dir.join("journal.jsonl.resign");
+    fs::write(&tmp, new_text.as_bytes())?;
+    let f = fs::File::open(&tmp)?;
+    full_sync_data(&f)?;
+    drop(f);
+    fs::rename(&tmp, &path)?;
+    sync_dir(run_dir)?;
+    Ok(Some(head))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -209,6 +303,9 @@ pub struct Journal {
     head: String,
     /// What the chain check found when the journal was loaded.
     chain: Chain,
+    /// The MAC key a signed journal (format 3) links with; `None` for an
+    /// unsigned one, or when the key could not be had.
+    mac_key: Option<[u8; 32]>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -241,6 +338,8 @@ impl Journal {
     pub fn open(run_dir: Option<PathBuf>) -> Result<Self, io::Error> {
         let mut head = String::new();
         let mut chain = Chain::default();
+        let mut format = JOURNAL_FORMAT;
+        let mut mac_key: Option<[u8; 32]> = None;
         let file = match &run_dir {
             Some(dir) => {
                 fs::create_dir_all(dir.join("snapshots"))?;
@@ -251,24 +350,33 @@ impl Journal {
                 if f.metadata()?.len() == 0 {
                     // The first line names the format and seeds the chain.
                     // It has no `op`, so a cig from before formats reads it
-                    // as a marker and goes on.
+                    // as a marker and goes on. Signed (format 3) when the
+                    // setting asks and the key can be had; else format 2.
+                    mac_key = if signing_wanted() {
+                        journal_key()
+                    } else {
+                        None
+                    };
+                    format = if mac_key.is_some() { JOURNAL_FORMAT } else { 2 };
                     let id = dir_id(dir);
                     let line = format!(
-                        "{{\"format\":{JOURNAL_FORMAT},\"run\":\"{id}\",\"prev\":\"{}\"}}",
-                        chain_seed(&id)
+                        "{{\"format\":{format},\"run\":\"{id}\",\"prev\":\"{}\"}}",
+                        link(mac_key.as_ref(), id.as_bytes())
                     );
                     f.write_all(line.as_bytes())?;
                     f.write_all(b"\n")?;
                     f.flush()?;
                     full_sync_data(&f)?;
-                    head = sha256_hex(line.as_bytes());
-                    chain.format = JOURNAL_FORMAT;
+                    head = link(mac_key.as_ref(), line.as_bytes());
+                    chain.format = format;
                     chain.lines = 1;
                 } else {
                     // Reopened: the chain goes on from the last intact line.
                     let loaded = Self::load(dir)?;
                     head = loaded.head;
                     chain = loaded.chain;
+                    format = loaded.format;
+                    mac_key = loaded.mac_key;
                 }
                 sync_dir(dir)?;
                 Some(f)
@@ -279,10 +387,11 @@ impl Journal {
             run_dir,
             file,
             entries: Vec::new(),
-            format: JOURNAL_FORMAT,
+            format,
             truncated: false,
             head,
             chain,
+            mac_key,
         })
     }
 
@@ -300,6 +409,10 @@ impl Journal {
         // or of the run's id for the first (the id the first line names;
         // the directory's name when it does not, as 1.4 journals do not).
         let mut expect = chain_seed(&dir_id(run_dir));
+        // Set when the header says format 3: the key, or none (then nothing
+        // is checked and the chain reads as another key's).
+        let mut mac_key: Option<[u8; 32]> = None;
+        let mut unverifiable = false;
         let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
         for (i, line) in lines.iter().enumerate() {
             let parsed: Result<serde_json::Value, _> = serde_json::from_str(line);
@@ -329,8 +442,15 @@ impl Journal {
                     }
                     format = f as u32;
                     chain.format = format;
+                    if format >= 3 {
+                        mac_key = journal_key();
+                        if mac_key.is_none() {
+                            unverifiable = true;
+                            chain.unverified = true;
+                        }
+                    }
                     if let Some(id) = v.get("run").and_then(|r| r.as_str()) {
-                        expect = chain_seed(id);
+                        expect = link(mac_key.as_ref(), id.as_bytes());
                         chain.run = Some(id.to_string());
                     }
                 }
@@ -338,9 +458,17 @@ impl Journal {
             // From format 2 on, every line names the hash of the line before
             // it. The first break is kept; what follows it is read all the
             // same, so the record can still be shown.
-            if chain.format >= 2 && chain.broken_at.is_none() {
+            if chain.format >= 2 && chain.broken_at.is_none() && !unverifiable {
                 let reason = match v.get("prev").and_then(|p| p.as_str()) {
                     Some(p) if p == expect => None,
+                    Some(_) if i == 0 && chain.format >= 3 => {
+                        // The very first link does not verify: this journal
+                        // was signed by another key (another machine, a key
+                        // since replaced). Nothing after it can be judged.
+                        chain.other_key = true;
+                        unverifiable = true;
+                        None
+                    }
                     Some(_) => Some(
                         "its prev is not the hash of the line before it: a line was edited, removed or reordered",
                     ),
@@ -353,7 +481,7 @@ impl Journal {
                     });
                 }
             }
-            expect = sha256_hex(line.as_bytes());
+            expect = link(mac_key.as_ref(), line.as_bytes());
             chain.lines = i + 1;
             // Markers: `{"seq": N, "undone": true}` says an earlier entry was
             // rolled back by a retry, or never happened (`"failed": true`);
@@ -408,6 +536,7 @@ impl Journal {
             truncated,
             head: expect,
             chain,
+            mac_key,
         })
     }
 
@@ -510,7 +639,7 @@ impl Journal {
         f.write_all(b"\n")?;
         f.flush()?;
         full_sync_data(f)?;
-        self.head = sha256_hex(line.as_bytes());
+        self.head = link(self.mac_key.as_ref(), line.as_bytes());
         self.chain.lines += 1;
         Ok(())
     }

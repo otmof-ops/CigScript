@@ -1147,6 +1147,10 @@ the burn kernel and its journal (write-ahead log).
 | [`E705`](#e705-already-rolled-back) | already rolled back | these are MY ciggies | nothing, the world is already back; pass --force only if you mean to restore the old snapshots again |
 | [`E706`](#e706-interrupted-run) | interrupted run | not one of the four | `cig unburn <id>` restores what the run had burned; `cig runs <id>` shows the journal |
 | [`E707`](#e707-the-tin-is-open-to-others) | the tin is open to others | these are MY ciggies | chmod 700 ~/.cigscript |
+| [`E708`](#e708-signed-by-another-key) | signed by another key | one of the four; the message says which | cig unburn <id> --accept-unsigned, after reading that; cig tin key import for the sealed objects |
+| [`E709`](#e709-the-record-was-cut-short-or-swapped) | the record was cut short or swapped | these are MY ciggies | look at what changed the record; cig unburn <id> --force if you mean to restore from it anyway |
+| [`E710`](#e710-a-run-went-missing) | a run went missing | don't have any over here | cig runs --forget <id> if you removed it on purpose |
+| [`E711`](#e711-a-newer-journal-format) | a newer journal format | can't see any ciggies bro | cig update, or run the cig that wrote it (cig use <version>) |
 | [`E715`](#e715-debugging-is-allowed) | debugging is allowed | not one of the four | unset CIG_ALLOW_DEBUG |
 
 ### E700 burn refused
@@ -1287,6 +1291,74 @@ The state directory can be written by other users, or is owned by someone else, 
 1. the state directory is group- or world-writable, or owned by another user (probe `path-permissions`). **Remedy:** chmod 700 ~/.cigscript (cig config tin_perms warn makes it a warning; off stops the check)
 
 Related: `E703`.
+
+
+### E708 signed by another key
+
+*burn · since 1.9.0 · arises in unburn*
+
+**Kind of no:** one of the four; the message says which (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below).
+
+This run's journal is signed (format 3) under a key that is not this machine's: it came from another machine, or the key was replaced since. Its objects still match their hashes, so it can be restored on purpose with --accept-unsigned; sealed objects still need the key that sealed them.
+
+**What to type next:** cig unburn <id> --accept-unsigned, after reading that; cig tin key import for the sealed objects
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the run was made on another machine (a parcel), or this machine's tin key was replaced (no probe; a suggestion, not a finding). **Remedy:** restore with --accept-unsigned; import the original key (cig tin key import) if sealed objects are involved
+
+Related: `E760`, `E709`.
+
+
+### E709 the record was cut short or swapped
+
+*burn · since 1.9.0 · arises in unburn, runs*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+The ledger recorded where this run's journal ended, and the journal on disk does not match it: it ends earlier (lines cut off) or it is an older copy with the same length and another head. Restoring from it is refused; --force restores from it as it is.
+
+**What to type next:** look at what changed the record; cig unburn <id> --force if you mean to restore from it anyway
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the journal file was truncated, or replaced with an earlier copy, after the run ended (no probe; a suggestion, not a finding). **Remedy:** cig runs <id> --verify shows the chain; --force to restore from the journal as it is
+
+Related: `E760`, `E708`.
+
+
+### E710 a run went missing
+
+*burn · since 1.9.0 · arises in runs*
+
+**Kind of no:** don't have any over here (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result).
+
+The ledger lists a run that is no longer in runs/. A run removed by cig runs --prune is recorded and never noted; one removed by hand gets this one calm note, which cig runs --forget <id> stops.
+
+**What to type next:** cig runs --forget <id> if you removed it on purpose
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the run's directory was deleted by hand (not by cig runs --prune) (no probe; a suggestion, not a finding). **Remedy:** cig runs --forget <id> records that it is gone on purpose
+
+Related: `E709`.
+
+
+### E711 a newer journal format
+
+*burn · since 1.9.0 · arises in unburn, runs*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+This run's journal was written in a format newer than this cig reads (format 3 is signed, from 1.9.0). An older cig refuses it by its number rather than misreading it.
+
+**What to type next:** cig update, or run the cig that wrote it (cig use <version>)
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the run was made by a newer cig than this one (no probe; a suggestion, not a finding). **Remedy:** cig update; or cig use <version> to run the cig that wrote it
+
+Related: `E808`.
 
 
 ### E715 debugging is allowed

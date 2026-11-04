@@ -12,6 +12,7 @@
 pub mod ghost;
 pub mod git;
 pub mod journal;
+pub mod ledger;
 pub mod lock;
 pub mod overlay;
 pub mod parcel;

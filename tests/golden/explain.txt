@@ -86,6 +86,10 @@ E700-E749  the burn kernel and its journal (write-ahead log)
   E705  already rolled back                burn
   E706  interrupted run                    burn
   E707  the tin is open to others          burn
+  E708  signed by another key              burn
+  E709  the record was cut short or swapped burn
+  E710  a run went missing                 burn
+  E711  a newer journal format             burn
   E715  debugging is allowed               burn
 
 E750-E769  folds and packs: refusals when automation is composed
@@ -1343,6 +1347,70 @@ E707 the tin is open to others  (burn, kernel family, since 1.8.0)
      remedy: chmod 700 ~/.cigscript (cig config tin_perms warn makes it a warning; off stops the check)
 
   arises in: run, unburn  ·  related: E703  ·  tags: kernel, ci-likely
+
+======== E708 ========
+E708 signed by another key  (burn, kernel family, since 1.9.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  This run's journal is signed (format 3) under a key that is not this machine's: it came from another machine, or the key was replaced since. Its objects still match their hashes, so it can be restored on purpose with --accept-unsigned; sealed objects still need the key that sealed them.
+
+  what to type next: cig unburn <id> --accept-unsigned, after reading that; cig tin key import for the sealed objects
+
+  known causes, ranked; doctor checks them in this order
+  1. the run was made on another machine (a parcel), or this machine's tin key was replaced
+     probe: none; a suggestion, not a finding
+     remedy: restore with --accept-unsigned; import the original key (cig tin key import) if sealed objects are involved
+
+  arises in: unburn  ·  related: E760, E709  ·  tags: kernel
+
+======== E709 ========
+E709 the record was cut short or swapped  (burn, kernel family, since 1.9.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The ledger recorded where this run's journal ended, and the journal on disk does not match it: it ends earlier (lines cut off) or it is an older copy with the same length and another head. Restoring from it is refused; --force restores from it as it is.
+
+  what to type next: look at what changed the record; cig unburn <id> --force if you mean to restore from it anyway
+
+  known causes, ranked; doctor checks them in this order
+  1. the journal file was truncated, or replaced with an earlier copy, after the run ended
+     probe: none; a suggestion, not a finding
+     remedy: cig runs <id> --verify shows the chain; --force to restore from the journal as it is
+
+  arises in: unburn, runs  ·  related: E760, E708  ·  tags: kernel
+
+======== E710 ========
+E710 a run went missing  (burn, kernel family, since 1.9.0)
+
+  kind of no: don't have any over here  (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result)
+
+  The ledger lists a run that is no longer in runs/. A run removed by cig runs --prune is recorded and never noted; one removed by hand gets this one calm note, which cig runs --forget <id> stops.
+
+  what to type next: cig runs --forget <id> if you removed it on purpose
+
+  known causes, ranked; doctor checks them in this order
+  1. the run's directory was deleted by hand (not by cig runs --prune)
+     probe: none; a suggestion, not a finding
+     remedy: cig runs --forget <id> records that it is gone on purpose
+
+  arises in: runs  ·  related: E709  ·  tags: kernel
+
+======== E711 ========
+E711 a newer journal format  (burn, kernel family, since 1.9.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  This run's journal was written in a format newer than this cig reads (format 3 is signed, from 1.9.0). An older cig refuses it by its number rather than misreading it.
+
+  what to type next: cig update, or run the cig that wrote it (cig use <version>)
+
+  known causes, ranked; doctor checks them in this order
+  1. the run was made by a newer cig than this one
+     probe: none; a suggestion, not a finding
+     remedy: cig update; or cig use <version> to run the cig that wrote it
+
+  arises in: unburn, runs  ·  related: E808  ·  tags: kernel
 
 ======== E715 ========
 E715 debugging is allowed  (burn, kernel family, since 1.8.0)

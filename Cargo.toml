@@ -1,6 +1,6 @@
 [package]
 name = "cigscript"
-version = "1.8.0"
+version = "1.9.0"
 edition = "2021"
 rust-version = "1.82"
 description = "CigScript: a small scripting language where nothing real happens unless you burn"
@@ -37,6 +37,7 @@ fastcdc = { version = "3", default-features = false }
 chacha20poly1305 = { version = "0.10", features = ["stream", "getrandom"] }
 getrandom = "0.2"
 hkdf = "0.12"
+hmac = "0.12"
 argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 keyring = { version = "3.6", default-features = false, features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 tar = "0.4"
