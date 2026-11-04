@@ -79,6 +79,11 @@ pub struct RunRecord {
     /// its paths map to this machine (the journal reads through the map).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported: Option<serde_json::Value>,
+    /// Set when this run was a cig inside another run's hop: that run's id.
+    /// Its changes reached the pack through the hop's layer and are in the
+    /// parent's journal; a child is unburned through its parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     /// Process id of the run, to tell an interrupted run from a live one.
     #[serde(default)]
     pub pid: Option<u32>,
@@ -138,6 +143,7 @@ impl RunRecord {
             pack: Vec::new(),
             journal_head: None,
             imported: None,
+            parent: None,
             pid: Some(std::process::id()),
             pid_started: if mode == "dry-run" {
                 None
@@ -183,6 +189,7 @@ impl RunRecord {
             pack: Vec::new(),
             journal_head: None,
             imported: None,
+            parent: None,
             pid: None,
             pid_started: None,
             trial: None,

@@ -1151,6 +1151,9 @@ the burn kernel and its journal (write-ahead log).
 | [`E709`](#e709-the-record-was-cut-short-or-swapped) | the record was cut short or swapped | these are MY ciggies | look at what changed the record; cig unburn <id> --force if you mean to restore from it anyway |
 | [`E710`](#e710-a-run-went-missing) | a run went missing | don't have any over here | cig runs --forget <id> if you removed it on purpose |
 | [`E711`](#e711-a-newer-journal-format) | a newer journal format | can't see any ciggies bro | cig update, or run the cig that wrote it (cig use <version>) |
+| [`E712`](#e712-the-guard-is-not-available-here) | the guard is not available here | one of the four; the message says which | cig config tin_guard auto runs hops without it; cig doctor says what the system lacks |
+| [`E713`](#e713-the-inbox-held-something-that-is-not-a-run) | the inbox held something that is not a run | don't have any over here | nothing to do for the run; if a tool of yours wrote there, it was writing where a cig's state root would be (CIGSCRIPT_HOME inside the hop) |
+| [`E714`](#e714-a-child-run-is-unburned-through-its-parent) | a child run is unburned through its parent | can't see any ciggies bro | cig unburn <parent>; cig runs <child> names the parent |
 | [`E715`](#e715-debugging-is-allowed) | debugging is allowed | not one of the four | unset CIG_ALLOW_DEBUG |
 
 ### E700 burn refused
@@ -1359,6 +1362,57 @@ This run's journal was written in a format newer than this cig reads (format 3 i
 1. the run was made by a newer cig than this one (no probe; a suggestion, not a finding). **Remedy:** cig update; or cig use <version> to run the cig that wrote it
 
 Related: `E808`.
+
+
+### E712 the guard is not available here
+
+*burn · since 1.10.0 · arises in run*
+
+**Kind of no:** one of the four; the message says which (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below).
+
+The tin guard (the state directory read-only to a boxed hop, the key folder hidden) could not be made on this system: user namespaces or the mounts it needs are not allowed. Under tin_guard = auto the hop runs boxed without it and this is said once; under on the hop is refused.
+
+**What to type next:** cig config tin_guard auto runs hops without it; cig doctor says what the system lacks
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. unprivileged user namespaces are disabled, or a bind mount inside one is refused (a container, a hardened kernel) (no probe; a suggestion, not a finding). **Remedy:** cig config tin_guard auto (the default) carries on with detection; on a machine of your own, enable unprivileged user namespaces
+
+Related: `E763`.
+
+
+### E713 the inbox held something that is not a run
+
+*burn · since 1.10.0 · arises in run*
+
+**Kind of no:** don't have any over here (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result).
+
+A guarded hop can write one place under the state directory, the inbox, where a cig started inside the hop keeps its own runs; when the hop ends they are taken in as children of the run. Something else was there: a folder that is not a run, a record that does not parse, or a run naming an id already recorded. It was dropped, and the hop's own result stands.
+
+**What to type next:** nothing to do for the run; if a tool of yours wrote there, it was writing where a cig's state root would be (CIGSCRIPT_HOME inside the hop)
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a hop wrote into its CIGSCRIPT_HOME (the inbox) something other than cig's own records (no probe; a suggestion, not a finding). **Remedy:** point the tool elsewhere; the inbox is for the cig inside the hop
+
+Related: `E712`, `E714`.
+
+
+### E714 a child run is unburned through its parent
+
+*burn · since 1.10.0 · arises in unburn*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+This run was a cig started inside another run's hop. Its changes reached the pack through that hop's layer, so they are in the parent's journal with their before-images, and the child keeps its record and journal for the reading, not its objects. Unburning the parent puts them back with the rest of that run.
+
+**What to type next:** cig unburn <parent>; cig runs <child> names the parent
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. cig unburn was given a child run's id (no probe; a suggestion, not a finding). **Remedy:** give the parent's id instead; the child's changes are part of that run
+
+Related: `E713`, `E700`.
 
 
 ### E715 debugging is allowed

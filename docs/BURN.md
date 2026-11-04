@@ -427,6 +427,28 @@ out of reach of what cig runs.
   with a passphrase to carry to another machine, and `cig tin key import` puts
   it back. `cig doctor` reminds you once to back it up when sealed objects
   exist and it was never exported.
+- **The tin guarded.** From 1.10.0 a boxed hop on Linux sees the state
+  directory read-only and the key folder empty: in the user and mount
+  namespaces the box is made in, the state root is bound over itself and
+  remounted read-only after the hop's own layers and the inbox were bound
+  writable underneath, and an empty tmpfs goes over the key folder. A hop
+  that overwrites or deletes a tin object or a journal gets `EROFS`; one
+  that looks for the key finds nothing. The inbox (`inbox/<run>/` under the
+  state directory) is the one place a hop may write: a cig started inside
+  the hop has it as its own state root (`CIGSCRIPT_HOME`, `CIG_KEYS_DIR`,
+  a key file of its own, the parent's settings copied in), runs as it would
+  anywhere, and when the hop ends its runs are taken in as **children** of
+  the run (`cig runs <id>` names them; `parent` on the child's record). A
+  child's changes reached the pack through the hop's layer and are in the
+  parent's journal with their before-images, so a child keeps its record
+  and journal for the reading, not its objects, and is unburned through its
+  parent (`E714`). Anything else in the inbox is dropped with a note
+  (`E713`). `tin_guard` is `auto` (boxed hops, wherever the kernel allows;
+  one note, `E712`, where it does not), `on` (every hop, boxed or not, and
+  a refusal where the guard cannot be made) or `off`; `CIG_TIN_GUARD=0` is
+  off for one run. Outside Linux, and where user namespaces are not
+  allowed, the tin is checked (the ledger, the hashes, `cig tin verify`)
+  rather than protected, and `cig doctor` says which.
 - **A record scripts cannot rewrite.** From 1.9.0 the journal is signed:
   each line's `prev` is an HMAC under a subkey of the tin's key, so a
   recomputed chain does not verify (`E760`); a journal under another

@@ -11,6 +11,7 @@
 
 pub mod ghost;
 pub mod git;
+pub mod inbox;
 pub mod journal;
 pub mod ledger;
 pub mod lock;
@@ -1910,6 +1911,20 @@ impl Kernel {
             overlay::prepare(dir, self.seq, roots)
                 .map_err(|e| format!("the layers could not be made under the run directory: {e}")),
         )
+    }
+
+    /// The guard alone, for a hop outside the box under `tin_guard = on`:
+    /// which run it is and where its notes go. None in a dry run, or when
+    /// the run keeps no directory to guard from.
+    pub fn guard_prepare(&self) -> Option<overlay::Plan<'static>> {
+        if self.mode == Mode::DryRun {
+            return None;
+        }
+        let dir = self.journal.run_dir()?;
+        Some(overlay::Plan::GuardOnly {
+            run_dir: dir.to_path_buf(),
+            seq: self.seq,
+        })
     }
 
     /// Apply a boxed hop's upper layers to the real pack, each change a

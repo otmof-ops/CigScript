@@ -247,6 +247,12 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
                 "a hop cannot read the key out of cig"
             })
         );
+        let (guard_ok, guard_text) = guard_status();
+        outln!(
+            "    guard         {}  {}",
+            yes_no(ctx, guard_ok),
+            ctx.dim(&guard_text)
+        );
         if seal::has_sealed()
             && !seal::was_exported()
             && cigscript::config::Config::load().get("key_reminder") != "off"
@@ -369,6 +375,60 @@ fn path_line(dir: &Path) -> Option<(PathBuf, String)> {
         ".bashrc"
     };
     Some((home.join(rc), format!("export PATH=\"{shown}:$PATH\"")))
+}
+
+/// Can the tin guard be made here: user and mount namespaces for this
+/// user, tried rather than guessed (`true` run inside them).
+fn guard_status() -> (bool, String) {
+    let setting = cigscript::burn::overlay::guard_setting();
+    if setting == "off" {
+        return (
+            false,
+            "tin_guard = off: hops run on the tin, unguarded".to_string(),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        let mut c = std::process::Command::new("true");
+        c.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        // SAFETY: unshare alone, between fork and exec.
+        unsafe {
+            c.pre_exec(|| {
+                if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        match c.status() {
+            Ok(st) if st.success() => (
+                true,
+                format!(
+                    "tin_guard = {setting}: {} see the tin read-only and no key",
+                    if setting == "on" { "all hops" } else { "boxed hops" }
+                ),
+            ),
+            _ => (
+                false,
+                format!(
+                    "tin_guard = {setting}: user namespaces are not allowed here; the tin is checked, not protected (E712)"
+                ),
+            ),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (
+            false,
+            format!(
+                "tin_guard = {setting}: the guard is Linux-only; the tin is checked, not protected"
+            ),
+        )
+    }
 }
 
 fn append_line(rc: &Path, line: &str) -> io::Result<()> {

@@ -1491,6 +1491,51 @@ probe = "none"
 remedy = "cig update; or cig use <version> to run the cig that wrote it"
 
 [[code]]
+code = "E712"
+title = "the guard is not available here"
+meaning = "The tin guard (the state directory read-only to a boxed hop, the key folder hidden) could not be made on this system: user namespaces or the mounts it needs are not allowed. Under tin_guard = auto the hop runs boxed without it and this is said once; under on the hop is refused."
+fix = "cig config tin_guard auto runs hops without it; cig doctor says what the system lacks"
+no = "depends"
+arises = ["run"]
+tags = ["kernel", "ci-likely"]
+since = "1.10.0"
+related = ["E763"]
+[[code.cause]]
+why = "unprivileged user namespaces are disabled, or a bind mount inside one is refused (a container, a hardened kernel)"
+probe = "none"
+remedy = "cig config tin_guard auto (the default) carries on with detection; on a machine of your own, enable unprivileged user namespaces"
+
+[[code]]
+code = "E713"
+title = "the inbox held something that is not a run"
+meaning = "A guarded hop can write one place under the state directory, the inbox, where a cig started inside the hop keeps its own runs; when the hop ends they are taken in as children of the run. Something else was there: a folder that is not a run, a record that does not parse, or a run naming an id already recorded. It was dropped, and the hop's own result stands."
+fix = "nothing to do for the run; if a tool of yours wrote there, it was writing where a cig's state root would be (CIGSCRIPT_HOME inside the hop)"
+no = "dont-have-any"
+arises = ["run"]
+tags = ["kernel"]
+since = "1.10.0"
+related = ["E712", "E714"]
+[[code.cause]]
+why = "a hop wrote into its CIGSCRIPT_HOME (the inbox) something other than cig's own records"
+probe = "none"
+remedy = "point the tool elsewhere; the inbox is for the cig inside the hop"
+
+[[code]]
+code = "E714"
+title = "a child run is unburned through its parent"
+meaning = "This run was a cig started inside another run's hop. Its changes reached the pack through that hop's layer, so they are in the parent's journal with their before-images, and the child keeps its record and journal for the reading, not its objects. Unburning the parent puts them back with the rest of that run."
+fix = "cig unburn <parent>; cig runs <child> names the parent"
+no = "cant-see-any"
+arises = ["unburn"]
+tags = ["kernel"]
+since = "1.10.0"
+related = ["E713", "E700"]
+[[code.cause]]
+why = "cig unburn was given a child run's id"
+probe = "none"
+remedy = "give the parent's id instead; the child's changes are part of that run"
+
+[[code]]
 code = "E715"
 title = "debugging is allowed"
 meaning = "CIG_ALLOW_DEBUG is set, so cig does not stop a debugger or another process of the same user from reading the tin's key out of its memory. This is for contributors debugging cig; cig says so on every run while it is set."
