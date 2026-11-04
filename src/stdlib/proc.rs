@@ -82,6 +82,9 @@ struct Options {
     /// Run in the box: a copy-on-write layer over the pack, applied only
     /// when the hop succeeds.
     boxed: bool,
+    /// What the box is asked for beyond the layer (`box: {network, pidns,
+    /// allow_hosts, apply}`).
+    box_spec: crate::burn::overlay::BoxSpec,
 }
 
 impl Options {
@@ -106,6 +109,7 @@ impl Options {
             touches: Vec::new(),
             touches_sealed: Vec::new(),
             boxed: false,
+            box_spec: crate::burn::overlay::BoxSpec::default(),
         };
         let Some(opts) = opt_map(a, index, name, s)? else {
             return Ok(o);
@@ -131,6 +135,10 @@ impl Options {
                             }
                         }
                     }
+                }
+                ("box", Value::Map(m)) => {
+                    o.boxed = true;
+                    o.box_spec = parse_box_spec(m, name, s)?;
                 }
                 ("box", v) => o.boxed = v.truthy(),
                 ("touches_sealed", Value::Str(g)) => o.touches_sealed = vec![g.to_string()],
@@ -260,6 +268,8 @@ struct Raw {
     out: Vec<u8>,
     err: Vec<u8>,
     duration_ms: i64,
+    /// `<run>/<seq>` when the hop's layer was kept rather than applied.
+    layer: Option<String>,
 }
 
 fn quote(bytes: &[u8]) -> String {
@@ -721,12 +731,34 @@ fn command(
                 .or_else(|| std::env::current_dir().ok())
                 .map(|p| crate::burn::normalize_root(&p.to_string_lossy()))
                 .unwrap_or_else(|| std::path::PathBuf::from("/"));
-            match crate::burn::overlay::Setup::new(p, &here) {
+            match crate::burn::overlay::Setup::new(p, &here, &o.box_spec) {
                 Ok(setup) => {
                     if let Some(g) = &setup.guard {
                         c.env("CIGSCRIPT_HOME", g.inbox.join("home"));
                         c.env("CIG_KEYS_DIR", g.inbox.join("keys"));
                         c.env("CIG_PARENT_RUN", p.run_id());
+                    }
+                    if setup.forward.is_some() {
+                        // The one way out: every proxy-aware tool through
+                        // the forwarder. A tool that ignores proxies has no
+                        // network at all.
+                        let url = format!("http://127.0.0.1:{}", crate::burn::overlay::PROXY_PORT);
+                        for key in [
+                            "HTTP_PROXY",
+                            "HTTPS_PROXY",
+                            "ALL_PROXY",
+                            "http_proxy",
+                            "https_proxy",
+                            "all_proxy",
+                            "npm_config_proxy",
+                            "npm_config_https_proxy",
+                            "PIP_PROXY",
+                            "CARGO_HTTP_PROXY",
+                        ] {
+                            c.env(key, &url);
+                        }
+                        c.env("NO_PROXY", "");
+                        c.env("no_proxy", "");
                     }
                     Some(setup)
                 }
@@ -758,6 +790,110 @@ fn command(
         }
     }
     Some(c)
+}
+
+/// `apply: "ask"`: at a terminal, the layer's summary and one question;
+/// away from one, the layer is kept and that is said.
+fn ask_to_apply(i: &mut Interp, l: &crate::burn::overlay::Layers, label: &str) -> bool {
+    let (written, removed) = crate::burn::overlay::summarize(l).unwrap_or((0, 0));
+    if !stdin_is_tty() {
+        let _ = writeln!(
+            i.err,
+            "box: `{label}` asked whether to apply its layer, and there is no terminal to ask; kept"
+        );
+        return false;
+    }
+    let _ = writeln!(
+        i.err,
+        "box: `{label}` changed {written} path{} and removed {removed}; apply? [y/N] ",
+        if written == 1 { "" } else { "s" }
+    );
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    matches!(line.trim(), "y" | "Y" | "yes")
+}
+
+#[cfg(unix)]
+fn stdin_is_tty() -> bool {
+    // SAFETY: isatty on a descriptor number.
+    unsafe { libc::isatty(0) == 1 }
+}
+
+#[cfg(not(unix))]
+fn stdin_is_tty() -> bool {
+    false
+}
+
+/// No isolation for untrusted code: the box was asked for a network of its
+/// own and cannot be made here, so the hop is refused rather than run bare.
+fn e777(name: &str, why: &str) -> Diagnostic {
+    runtime(format!(
+        "{name}: the box was asked to isolate this hop (its own network) and cannot be made here: {why}; running it unprotected to check it defeats the point"
+    ))
+    .code("E777")
+    .with_hint("on Linux with user namespaces and overlayfs the box is made; `box: true` alone falls back to the tin with a warning")
+}
+
+/// `box: {network, allow_hosts, pidns, apply}`.
+fn parse_box_spec(
+    m: &std::rc::Rc<std::cell::RefCell<IndexMap<String, Value>>>,
+    name: &str,
+    s: Span,
+) -> Result<crate::burn::overlay::BoxSpec, Diagnostic> {
+    use crate::burn::overlay::{Apply, BoxSpec, Network};
+    let mut spec = BoxSpec::default();
+    for (k, v) in m.borrow().iter() {
+        match (k.as_str(), v) {
+            ("network", Value::Str(n)) => {
+                spec.network = match n.to_string().as_str() {
+                    "on" => Network::On,
+                    "off" => Network::Off,
+                    "registry" => Network::Registry,
+                    other => {
+                        return Err(type_error(format!(
+                            "{name}: box.network is `{other}`; want \"on\", \"off\" or \"registry\""
+                        ))
+                        .at(s))
+                    }
+                }
+            }
+            ("allow_hosts", Value::List(l)) => {
+                for item in l.borrow().iter() {
+                    match item {
+                        Value::Str(h) => spec.allow_hosts.push(h.to_string()),
+                        other => {
+                            return Err(type_error(format!(
+                                "{name}: box.allow_hosts holds a {}; want host names as strings",
+                                other.type_name()
+                            ))
+                            .at(s))
+                        }
+                    }
+                }
+            }
+            ("pidns", v) => spec.pidns = v.truthy(),
+            ("apply", Value::Str(a)) => {
+                spec.apply = match a.to_string().as_str() {
+                    "on_success" => Apply::OnSuccess,
+                    "ask" => Apply::Ask,
+                    "never" => Apply::Never,
+                    other => {
+                        return Err(type_error(format!(
+                        "{name}: box.apply is `{other}`; want \"on_success\", \"ask\" or \"never\""
+                    ))
+                        .at(s))
+                    }
+                }
+            }
+            (other, _) => {
+                return Err(type_error(format!(
+                    "{name}: box has no option `{other}` (network, allow_hosts, pidns, apply)"
+                ))
+                .at(s))
+            }
+        }
+    }
+    Ok(spec)
 }
 
 /// The guard's refusal: `tin_guard = on`, and the guard cannot be made.
@@ -1342,6 +1478,7 @@ fn run_child(
                     out,
                     err,
                     duration_ms,
+                    layer: None,
                 }),
                 None => {
                     #[cfg(unix)]
@@ -1660,10 +1797,16 @@ fn hop(
     let report = i.kernel.hop_journal();
     // The box: the hop writes into a layer over the pack. Where the box
     // cannot be made, the hop runs on the tin and says so.
+    // Isolation asked for (a network other than the machine's) is not a
+    // thing to fall back from: without the box it is refused (E777).
+    let isolation = o.boxed && o.box_spec.network != crate::burn::overlay::Network::On;
     let layers: Option<crate::burn::overlay::Layers> = if o.boxed {
         match i.kernel.box_prepare() {
             Some(Ok(l)) => Some(l),
             Some(Err(why)) => {
+                if isolation {
+                    return Err(e777(name, &why).at(s));
+                }
                 let _ = writeln!(
                     i.err,
                     "warning[E763 burn]: the box cannot be made here ({why}); `{}` runs on the tin instead",
@@ -1678,7 +1821,36 @@ fn hop(
     };
     if let Some(l) = layers.as_ref() {
         let plan = crate::burn::overlay::Plan::Boxed(l);
+        // The registry network: the parent's proxy, up before the hop.
+        let run_dir = plan.run_dir();
+        let seq = crate::burn::overlay::seq_of(l);
+        let events = crate::burn::overlay::events_path(&run_dir, seq);
+        let proxy = if o.box_spec.network == crate::burn::overlay::Network::Registry {
+            match crate::burn::proxy::start(
+                &crate::burn::overlay::proxy_sock_path(&run_dir, seq),
+                o.box_spec.allow_hosts.clone(),
+                &events,
+            ) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    crate::burn::overlay::discard(l);
+                    return Err(e777(name, &format!("the proxy could not be started: {e}")).at(s));
+                }
+            }
+        } else {
+            None
+        };
         let ran = run_child(name, cmd, args, o, s, report.as_deref(), Some(&plan));
+        if let Some(p) = proxy {
+            p.stop();
+            for what in crate::burn::proxy::refused(&events) {
+                let _ = writeln!(
+                    i.err,
+                    "note[E771 burn]: `{}` tried {what}, which is not in allow_hosts; refused",
+                    hop_label(cmd, args)
+                );
+            }
+        }
         take_in_children(i, &plan);
         // The guard: asked for and not available is a refusal (E712); not
         // available under `auto` is one note, and the hop ran boxed without it.
@@ -1697,6 +1869,10 @@ fn hop(
             _ => None,
         };
         if let Some(why) = fell_back {
+            if isolation {
+                crate::burn::overlay::discard(l);
+                return Err(e777(name, &why).at(s));
+            }
             if crate::burn::overlay::guard_setting() == "on" {
                 crate::burn::overlay::discard(l);
                 return Err(e712(name, &why).at(s));
@@ -1749,6 +1925,41 @@ fn hop(
                     hop_label(cmd, args)
                 );
                 return Err(d);
+            }
+            // The layer's fate: applied (the default), kept (`apply: never`,
+            // or `ask` away from a terminal), or asked about.
+            let keep = match o.box_spec.apply {
+                crate::burn::overlay::Apply::OnSuccess => false,
+                crate::burn::overlay::Apply::Never => true,
+                crate::burn::overlay::Apply::Ask => !ask_to_apply(i, l, &hop_label(cmd, args)),
+            };
+            if keep {
+                let kept = crate::burn::overlay::keep(
+                    l,
+                    &hop_label(cmd, args),
+                    o.cwd.as_deref(),
+                    &o.touches_sealed,
+                )
+                .map_err(|e| {
+                    cigscript_burn(format!("{name}: the layer could not be kept: {e}"))
+                        .code("E763")
+                        .at(s)
+                })?;
+                let _ = writeln!(
+                    i.err,
+                    "note[E780 burn]: held back: `{}` changed {} path{} and removed {} in the box, not in the pack; cig box apply {} {} keeps them, cig box discard {} {} drops them",
+                    hop_label(cmd, args),
+                    kept.written,
+                    if kept.written == 1 { "" } else { "s" },
+                    kept.removed,
+                    kept.run,
+                    kept.seq,
+                    kept.run,
+                    kept.seq
+                );
+                let mut raw = raw;
+                raw.layer = Some(format!("{}/{}", kept.run, kept.seq));
+                return Ok(Some((raw, out, err)));
             }
             let applied = i.kernel.box_apply(l, &o.touches_sealed).map_err(|e| {
                 cigscript_burn(format!("{name}: {e}"))
@@ -1832,7 +2043,14 @@ fn run(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let o = Options::parse(a, 2, "proc.run", s, None)?;
     match hop(i, "proc.run", &cmd, &args, &o, s)? {
         None => Ok(result_map(0, "", "", 0, true)),
-        Some((raw, out, err)) => Ok(result_map(raw.code, &out, &err, raw.duration_ms, false)),
+        Some((raw, out, err)) => {
+            let value = result_map(raw.code, &out, &err, raw.duration_ms, false);
+            if let (Some(layer), Value::Map(m)) = (&raw.layer, &value) {
+                m.borrow_mut()
+                    .insert("layer".to_string(), Value::str(layer));
+            }
+            Ok(value)
+        }
     }
 }
 

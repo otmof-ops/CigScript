@@ -509,6 +509,47 @@ makes the work directory unreadable); the next `cig run` sweeps them for
 any run that is not alive, `cig unburn` removes them with the rollback, and
 a rollback removes any tree a hop made whatever the modes inside it.
 
+### Untrusted code: the box's network, PID namespace and kept layers
+
+From 1.11.0 `box` also takes a map, for a hop whose code you did not write:
+
+```cig
+proc.run("npm", ["ci"], {box: {
+  network: "registry",                 # "on" (the default), "off", "registry"
+  allow_hosts: ["registry.npmjs.org"], # a name, "*.suffix", or "host:port"
+  pidns: true,                         # its own PID namespace (the default with the box)
+  apply: "on_success",                 # "on_success" (the default), "ask", "never"
+}})
+```
+
+- **The PID namespace.** The hop is pid 2 under an init of cig's (pid 1
+  inside), with the namespace's processes alone in `/proc`: it cannot see,
+  signal, trace or read cig. Each process dies with its parent, so a cig
+  that dies takes the whole namespace with it, and a layer is applied only
+  by a live cig after the hop. The layer a dead cig left is dropped by the
+  next `cig runs`, which says so; the run's earlier burns unburn as ever.
+- **The network.** `off` is a namespace with `lo` alone and an empty
+  `/etc/resolv.conf`: a connection anywhere fails at once, a lookup has no
+  one to ask. `registry` is the same namespace with one way out: a
+  forwarder inside on `127.0.0.1:38080` (`HTTP_PROXY`, `HTTPS_PROXY`,
+  `npm_config_proxy`, `PIP_PROXY`, `CARGO_HTTP_PROXY` and friends point at
+  it) relays to cig's CONNECT proxy outside, which allows `allow_hosts`,
+  resolves them itself, counts the bytes, and refuses and records the rest
+  (`E771`, one note per host; the events in `runs/<id>/events/<hop>.jsonl`).
+  A tool that ignores proxies has no network at all. A network of its own
+  asked for where the box cannot be made is a refusal (`E777`), not a
+  fallback: running code you do not trust unprotected to check it defeats
+  the point.
+- **Kept layers.** `apply: "never"` runs the hop and holds its layer back:
+  nothing reaches the pack, the hop's result carries `layer: "<run>/<hop>"`,
+  and the run says so (`E780`). `apply: "ask"` shows what the layer would
+  change and asks at the terminal; away from one it keeps. `cig box list`
+  names kept layers; `cig box apply <run> <hop>` puts one in as a run of its
+  own, journaled with its before-images, so `cig unburn <that run>` takes
+  it out again; `cig box discard <run> <hop>` drops one. An unburn of the
+  run a kept layer belongs to drops it too: the base it was made against is
+  gone.
+
 ## The parcel
 
 A run's undo lives on the machine that ran it: the record under

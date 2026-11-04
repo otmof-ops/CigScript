@@ -111,6 +111,11 @@ E750-E769  folds and packs: refusals when automation is composed
   E762  a parcel could not be written or imported burn
   E763  the box could not be made, or its layer not applied burn
 
+E770-E799  the box for untrusted code: its network, the watch, kept layers, the kill switch
+  E771  a host outside the allow list      burn
+  E777  no isolation for untrusted code    burn
+  E780  a layer was kept, not applied      burn
+
 E800-E849  the command line and the environment
   E800  usage error                        usage
   E801  cannot read script                 usage
@@ -1462,6 +1467,54 @@ E714 a child run is unburned through its parent  (burn, kernel family, since 1.1
      remedy: give the parent's id instead; the child's changes are part of that run
 
   arises in: unburn  ·  related: E713, E700  ·  tags: kernel
+
+======== E771 ========
+E771 a host outside the allow list  (burn, guard family, since 1.11.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A boxed hop with network: registry tried to connect somewhere its allow_hosts does not name. The box's only way out is cig's proxy, which refused the connection and recorded it; the hop saw the refusal and nothing left the machine.
+
+  what to type next: if the host is legitimate, add it to box.allow_hosts (a name, *.suffix, or host:port); if not, that is the finding
+
+  known causes, ranked; doctor checks them in this order
+  1. the tool reached for a host the toolchain's footprint does not name (a mirror, a telemetry endpoint, or an exfiltration attempt)
+     probe: none; a suggestion, not a finding
+     remedy: read the events in cig runs <id>; allow the host only if you meant it
+
+  arises in: run  ·  related: E777, E763  ·  tags: kernel
+
+======== E777 ========
+E777 no isolation for untrusted code  (burn, guard family, since 1.11.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The hop asked the box to isolate it (a network of its own: off or registry) and the box cannot be made on this machine, so the hop was refused. Running code you do not trust unprotected to check it defeats the point; box: true alone still falls back to the tin with a warning (E763).
+
+  what to type next: on Linux, allow unprivileged user namespaces and have overlayfs; otherwise run it on a machine that has the box, or drop the isolation knowing what that means
+
+  known causes, ranked; doctor checks them in this order
+  1. unprivileged user namespaces are disabled, the kernel has no overlayfs, or the state directory sits on an overlay (a container's layer)
+     probe: none; a suggestion, not a finding
+     remedy: cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user namespaces enabled let the box be made
+
+  arises in: run  ·  related: E763, E771  ·  tags: kernel, ci-likely
+
+======== E780 ========
+E780 a layer was kept, not applied  (burn, guard family, since 1.11.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  The hop ran in the box and its layer was held back: apply: never asked for exactly that, or apply: ask found no terminal or a no. The changes are in the box under the run, not in the pack; cig box apply <run> <hop> puts them in as a run of their own, cig box discard drops them.
+
+  what to type next: cig box list, then cig box apply <run> <hop> or cig box discard <run> <hop>
+
+  known causes, ranked; doctor checks them in this order
+  1. the script asked for a rehearsal (apply: never), or asked and nobody was there to say yes
+     probe: none; a suggestion, not a finding
+     remedy: apply or discard the kept layer by hand
+
+  arises in: run  ·  related: E763  ·  tags: kernel
 
 ======== E715 ========
 E715 debugging is allowed  (burn, kernel family, since 1.8.0)

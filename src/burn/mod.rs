@@ -18,6 +18,7 @@ pub mod lock;
 pub mod overlay;
 pub mod parcel;
 pub mod protocol;
+pub mod proxy;
 pub mod runs;
 pub mod scan;
 pub mod seal;

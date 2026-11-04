@@ -49,6 +49,22 @@ pub fn runs(
                 return exit::OK;
             }
             note_missing_runs(ctx, &all);
+            // The layers an interrupted run never applied are no one's:
+            // cig was not there to apply them, so they go (the ones kept
+            // on purpose stay).
+            for r in all.iter().filter(|r| r.is_interrupted()) {
+                let n = cigscript::burn::overlay::drop_unapplied(&r.dir());
+                if n > 0 {
+                    eprintln!(
+                        "{} {} died in a boxed hop; the layer{} it never applied {} removed (cig unburn {} puts its earlier burns back)",
+                        ctx.yellow("note:"),
+                        r.id,
+                        if n == 1 { "" } else { "s" },
+                        if n == 1 { "was" } else { "were" },
+                        r.id
+                    );
+                }
+            }
             if all.is_empty() {
                 eprintln!(
                     "no runs recorded yet (state dir: {})",

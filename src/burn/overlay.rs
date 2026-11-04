@@ -176,6 +176,213 @@ fn overlay_mount_over(path: &Path) -> Option<PathBuf> {
 /// the reason is written to `why` and the exec is refused, so the parent
 /// runs the hop again without the box.
 #[cfg(target_os = "linux")]
+/// What a hop's `box` asks for beyond the overlay: its own PID namespace
+/// (on by default), and the network it gets.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoxSpec {
+    pub pidns: bool,
+    pub network: Network,
+    pub allow_hosts: Vec<String>,
+    pub apply: Apply,
+}
+
+impl Default for BoxSpec {
+    fn default() -> Self {
+        BoxSpec {
+            pidns: true,
+            network: Network::On,
+            allow_hosts: Vec::new(),
+            apply: Apply::OnSuccess,
+        }
+    }
+}
+
+/// The network a boxed hop gets: the machine's (`on`), none (`off`: a
+/// namespace with only `lo`), or the registry alone (`registry`: the same
+/// namespace, with one way out through cig's CONNECT proxy, which allows
+/// `allow_hosts` and refuses and records the rest).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Network {
+    On,
+    Off,
+    Registry,
+}
+
+/// What becomes of a boxed hop's layer: applied when the hop succeeds (the
+/// default), applied after a yes at the terminal, or kept and not applied
+/// (`cig box apply` does it later).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Apply {
+    OnSuccess,
+    Ask,
+    Never,
+}
+
+/// The port inside a boxed hop's network namespace where the forwarder
+/// listens (the namespace is the hop's own, so nothing else can hold it).
+pub const PROXY_PORT: u16 = 38080;
+
+/// Where the proxy's Unix socket for a hop lives: under the run's `hops`
+/// (which the guard leaves writable and the hop can reach), or, when that
+/// path is too long for a socket address, under a private folder in the
+/// temporary directory.
+pub fn proxy_sock_path(run_dir: &Path, seq: u64) -> PathBuf {
+    let under_hops = run_dir.join("hops").join(format!("{seq}.sock"));
+    if under_hops.as_os_str().len() < 100 {
+        return under_hops;
+    }
+    let dir =
+        std::env::temp_dir().join(format!("cig-{}-{}", dir_name(run_dir), std::process::id()));
+    let _ = fs::create_dir_all(&dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+    }
+    dir.join(format!("{seq}.sock"))
+}
+
+/// Where a hop's events go (what it connected to, what was refused):
+/// under the run, outside the folders the guard leaves writable.
+pub fn events_path(run_dir: &Path, seq: u64) -> PathBuf {
+    run_dir.join("events").join(format!("{seq}.jsonl"))
+}
+
+/// The hop's sequence number from its layers directory (`box/<seq>`).
+pub fn seq_of(layers: &Layers) -> u64 {
+    dir_name(&layers.dir).parse().unwrap_or(0)
+}
+
+/// A layer kept rather than applied (`apply: never`, or `ask` declined or
+/// unattended): where it is and what it holds.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Kept {
+    pub run: String,
+    pub seq: u64,
+    pub label: String,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+    pub roots: Vec<PathBuf>,
+    #[serde(default)]
+    pub touches_sealed: Vec<String>,
+    pub written: usize,
+    pub removed: usize,
+    pub at: String,
+    #[serde(skip)]
+    pub dir: PathBuf,
+}
+
+const KEPT: &str = "kept.json";
+
+/// Count what a layer would change: paths written (made or replaced) and
+/// removed.
+pub fn summarize(layers: &Layers) -> io::Result<(usize, usize)> {
+    let (mut written, mut removed) = (0, 0);
+    for (root, upper, _) in &layers.roots {
+        for c in changes(root, upper)? {
+            match c {
+                Change::Removed { .. } => removed += 1,
+                Change::Dir { .. } => {}
+                _ => written += 1,
+            }
+        }
+    }
+    Ok((written, removed))
+}
+
+/// Keep a layer: write its record beside it, so `cig box apply` can apply
+/// it later and `cig box list` can name it.
+pub fn keep(
+    layers: &Layers,
+    label: &str,
+    cwd: Option<&Path>,
+    touches_sealed: &[String],
+) -> io::Result<Kept> {
+    let (written, removed) = summarize(layers)?;
+    let kept = Kept {
+        run: dir_name(&Plan::Boxed(layers).run_dir()),
+        seq: seq_of(layers),
+        label: label.to_string(),
+        cwd: cwd.map(Path::to_path_buf),
+        roots: layers.roots.iter().map(|(r, _, _)| r.clone()).collect(),
+        touches_sealed: touches_sealed.to_vec(),
+        written,
+        removed,
+        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        dir: layers.dir.clone(),
+    };
+    let text = serde_json::to_string_pretty(&kept).map_err(io::Error::other)?;
+    fs::write(layers.dir.join(KEPT), text)?;
+    Ok(kept)
+}
+
+/// Is this layers directory a kept layer?
+pub fn is_kept(dir: &Path) -> bool {
+    dir.join(KEPT).is_file()
+}
+
+/// Every kept layer under every run, oldest first.
+pub fn kept_layers() -> Vec<Kept> {
+    let mut out = Vec::new();
+    let Ok(runs) = fs::read_dir(super::runs::runs_dir()) else {
+        return out;
+    };
+    let mut run_dirs: Vec<PathBuf> = runs.flatten().map(|e| e.path()).collect();
+    run_dirs.sort();
+    for run in run_dirs {
+        let Ok(seqs) = fs::read_dir(run.join("box")) else {
+            continue;
+        };
+        let mut dirs: Vec<PathBuf> = seqs.flatten().map(|e| e.path()).collect();
+        dirs.sort_by_key(|d| dir_name(d).parse::<u64>().unwrap_or(0));
+        for dir in dirs {
+            if let Ok(text) = fs::read_to_string(dir.join(KEPT)) {
+                if let Ok(mut k) = serde_json::from_str::<Kept>(&text) {
+                    k.dir = dir.clone();
+                    out.push(k);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The layers of a kept layer, as `box_apply` wants them.
+pub fn layers_of(kept: &Kept) -> Layers {
+    Layers {
+        dir: kept.dir.clone(),
+        roots: kept
+            .roots
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    r.clone(),
+                    kept.dir.join(i.to_string()).join("upper"),
+                    kept.dir.join(i.to_string()).join("work"),
+                )
+            })
+            .collect(),
+    }
+}
+
+/// Remove the layers an interrupted run never got to apply, keeping the
+/// ones kept on purpose. Returns how many went.
+pub fn drop_unapplied(run_dir: &Path) -> usize {
+    let mut n = 0;
+    if let Ok(rd) = fs::read_dir(run_dir.join("box")) {
+        for e in rd.flatten() {
+            let dir = e.path();
+            if dir.is_dir() && !is_kept(&dir) {
+                let _ = remove_tree_force(&dir);
+                n += 1;
+            }
+        }
+    }
+    let _ = fs::remove_dir(run_dir.join("box"));
+    n
+}
+
 pub struct Setup {
     pub uid_map: Vec<u8>,
     pub gid_map: Vec<u8>,
@@ -191,6 +398,16 @@ pub struct Setup {
     pub why: std::ffi::CString,
     /// The tin guard, when the setting asks for it (`tin_guard` auto or on).
     pub guard: Option<Guard>,
+    /// The hop in a PID namespace of its own: a relay in the outer one, an
+    /// init of cig's as pid 1 inside, the hop under it.
+    pub pidns: bool,
+    /// A network namespace of its own, with `lo` alone.
+    pub netns: bool,
+    /// An empty file to bind over `/etc/resolv.conf` inside: no resolver.
+    pub resolv_empty: Option<std::ffi::CString>,
+    /// The forwarder to start inside the namespace (`cig internal-forward
+    /// <sock> <port>`), as the argv to exec.
+    pub forward: Option<[std::ffi::CString; 4]>,
 }
 
 /// The tin read-only to the hop, and the key out of its sight. The state
@@ -324,7 +541,7 @@ const MAX_BINDS: usize = 64;
 
 #[cfg(target_os = "linux")]
 impl Setup {
-    pub fn new(plan: &Plan, cwd: &Path) -> io::Result<Setup> {
+    pub fn new(plan: &Plan, cwd: &Path, spec: &BoxSpec) -> io::Result<Setup> {
         use std::os::unix::ffi::OsStrExt;
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
@@ -398,6 +615,26 @@ impl Setup {
                 pretend_unavailable: std::env::var_os("CIG_INTERNAL_NO_GUARD").is_some(),
             })
         };
+        // The namespaces beyond the mounts: only with the box itself.
+        let boxed = layers.is_some();
+        let netns = boxed && spec.network != Network::On;
+        let mut resolv_empty = None;
+        let mut forward = None;
+        if netns {
+            let seq = layers.map(seq_of).unwrap_or(0);
+            let empty = run_dir.join("hops").join(format!("{seq}.resolv"));
+            fs::write(&empty, b"")?;
+            resolv_empty = Some(cstr(&empty)?);
+            if spec.network == Network::Registry {
+                let exe = std::env::current_exe()?;
+                forward = Some([
+                    cstr(&exe)?,
+                    std::ffi::CString::new("internal-forward").expect("plain"),
+                    cstr(&proxy_sock_path(&run_dir, seq))?,
+                    std::ffi::CString::new(PROXY_PORT.to_string()).expect("digits"),
+                ]);
+            }
+        }
         Ok(Setup {
             uid_map: format!("{uid} {uid} 1\n").into_bytes(),
             gid_map: format!("{gid} {gid} 1\n").into_bytes(),
@@ -406,6 +643,10 @@ impl Setup {
             cwd: cstr(cwd)?,
             why: cstr(&base.join("why"))?,
             guard,
+            pidns: boxed && spec.pidns,
+            netns,
+            resolv_empty,
+            forward,
         })
     }
 
@@ -418,7 +659,14 @@ impl Setup {
     /// binds name were opened there); the caller runs it in a `pre_exec`
     /// closure and nowhere else.
     pub unsafe fn apply(&self) -> io::Result<()> {
-        if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
+        let mut flags = libc::CLONE_NEWUSER | libc::CLONE_NEWNS;
+        if self.pidns {
+            flags |= libc::CLONE_NEWPID;
+        }
+        if self.netns {
+            flags |= libc::CLONE_NEWNET;
+        }
+        if libc::unshare(flags) != 0 {
             return self.fail(b"unshare(CLONE_NEWUSER|CLONE_NEWNS) refused");
         }
         // Once cig has loaded the tin's key it is non-dumpable
@@ -568,6 +816,97 @@ impl Setup {
         if libc::chdir(self.cwd.as_ptr()) != 0 {
             return self.fail(b"entering the working directory through the overlay refused");
         }
+        // The network namespace has `lo` down and no resolver: bring `lo`
+        // up (the forwarder listens on it), and bind an empty file over
+        // resolv.conf so a lookup has no one to ask.
+        if self.netns {
+            let s = libc::socket(libc::AF_INET, libc::SOCK_DGRAM | libc::SOCK_CLOEXEC, 0);
+            if s >= 0 {
+                let mut ifr: libc::ifreq = std::mem::zeroed();
+                ifr.ifr_name[0] = b'l' as libc::c_char;
+                ifr.ifr_name[1] = b'o' as libc::c_char;
+                ifr.ifr_ifru.ifru_flags = (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
+                libc::ioctl(s, libc::SIOCSIFFLAGS, &ifr);
+                libc::close(s);
+            }
+            if let Some(empty) = &self.resolv_empty {
+                libc::mount(
+                    empty.as_ptr(),
+                    c"/etc/resolv.conf".as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                );
+            }
+        }
+        // The PID namespace: unshare(CLONE_NEWPID) puts only children in
+        // it, so this process (R) stays outside as a relay, forks the
+        // namespace's init (A, pid 1 inside), which forks the hop (B) and
+        // reaps for it. Each dies with its parent (PR_SET_PDEATHSIG), so a
+        // cig that dies takes the whole namespace with it, and the layer is
+        // applied only by a live cig after the hop. R and A ignore the
+        // termination signals cig sends the group, so the hop gets its
+        // grace; the SIGKILL after it reaches everyone.
+        if self.pidns {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
+            libc::signal(libc::SIGTERM, libc::SIG_IGN);
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            let a = libc::fork();
+            if a < 0 {
+                return self.fail(b"forking the box's init refused");
+            }
+            if a > 0 {
+                libc::_exit(wait_for(a));
+            }
+            // A: pid 1 inside. Its own /proc, best effort (a container may
+            // refuse it; the namespace still hides the pids from signals).
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
+            libc::mount(
+                c"proc".as_ptr(),
+                c"/proc".as_ptr(),
+                c"proc".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                std::ptr::null(),
+            );
+            if let Some(f) = &self.forward {
+                let p = libc::fork();
+                if p == 0 {
+                    let argv = [
+                        f[0].as_ptr(),
+                        f[1].as_ptr(),
+                        f[2].as_ptr(),
+                        f[3].as_ptr(),
+                        std::ptr::null(),
+                    ];
+                    libc::execv(f[0].as_ptr(), argv.as_ptr());
+                    libc::_exit(127);
+                }
+            }
+            let b = libc::fork();
+            if b < 0 {
+                libc::_exit(127);
+            }
+            if b > 0 {
+                // The init loop: reap everything; the hop's exit is ours.
+                let mut status: libc::c_int = 0;
+                loop {
+                    let r = libc::waitpid(-1, &mut status, 0);
+                    if r == b {
+                        libc::_exit(exit_code(status));
+                    }
+                    if r < 0 {
+                        let e = *libc::__errno_location();
+                        if e == libc::EINTR {
+                            continue;
+                        }
+                        libc::_exit(127);
+                    }
+                }
+            }
+            // B: the hop. Signals as the hop expects them.
+            libc::signal(libc::SIGTERM, libc::SIG_DFL);
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
         Ok(())
     }
 
@@ -608,6 +947,33 @@ impl Setup {
             libc::close(fd);
         }
         Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+    }
+}
+
+/// Wait for one child (through EINTR) and give its exit code.
+#[cfg(target_os = "linux")]
+unsafe fn wait_for(pid: libc::pid_t) -> libc::c_int {
+    let mut status: libc::c_int = 0;
+    loop {
+        let r = libc::waitpid(pid, &mut status, 0);
+        if r == pid {
+            return exit_code(status);
+        }
+        if r < 0 && *libc::__errno_location() != libc::EINTR {
+            return 127;
+        }
+    }
+}
+
+/// A wait status as an exit code: the code, or 128 plus the signal.
+#[cfg(target_os = "linux")]
+fn exit_code(status: libc::c_int) -> libc::c_int {
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else if libc::WIFSIGNALED(status) {
+        128 + libc::WTERMSIG(status)
+    } else {
+        127
     }
 }
 
