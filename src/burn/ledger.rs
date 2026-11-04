@@ -7,7 +7,9 @@
 //! before it and its own text, so a line edited, removed or reordered no
 //! longer verifies, and a journal cut short or swapped for an older copy
 //! is caught against the head the ledger recorded for it. It lives in the
-//! keys directory, apart from the tin, owner-only, append-only.
+//! keys directory, apart from the tin, owner-only, append-only. Each line
+//! names the tin it witnesses (a hash of the state directory's path), so
+//! two state directories beside one key keep separate accounts.
 
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
@@ -38,9 +40,27 @@ pub struct Line {
     pub head: String,
     pub status: String,
     pub lines: u64,
+    /// The tin this line witnesses: `tin_id()` of the state directory
+    /// whose run it records.
+    #[serde(default)]
+    pub tin: String,
     pub t: String,
     #[serde(default)]
     pub mac: String,
+}
+
+/// What names a tin in the ledger: the first sixteen hex digits of the
+/// SHA-256 of its state directory's canonical path. Derived from where the
+/// tin is, not from anything kept inside it, so nothing written into the
+/// tin can detach it from its own account.
+pub fn tin_id() -> String {
+    use sha2::Digest;
+    let home = super::runs::home_dir();
+    let home = fs::canonicalize(&home)
+        .or_else(|_| std::path::absolute(&home))
+        .unwrap_or(home);
+    let digest = Sha256::digest(home.to_string_lossy().as_bytes());
+    hex::encode(&digest[..8])
 }
 
 /// The ledger as read: every line, and where its chain first failed.
@@ -51,6 +71,18 @@ pub struct Loaded {
     pub broken_at: Option<usize>,
     /// The MAC of the last line (the seed when there is none).
     pub head: String,
+}
+
+impl Loaded {
+    /// The lines that witness this tin. A line with no tin named is from
+    /// a ledger written before lines were stamped, and counts as this
+    /// tin's.
+    pub fn of_this_tin(&self) -> impl DoubleEndedIterator<Item = &Line> {
+        let me = tin_id();
+        self.lines
+            .iter()
+            .filter(move |l| l.tin.is_empty() || l.tin == me)
+    }
 }
 
 fn key() -> Result<[u8; 32], String> {
@@ -122,7 +154,8 @@ pub fn append(kind: &str, run: &str, head: &str, status: &str, lines: u64) -> Re
     let t = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     // The body, with `mac` written last so `body_of` finds it again.
     let mut v = serde_json::json!({
-        "seq": seq, "kind": kind, "run": run, "head": head, "status": status, "lines": lines, "t": t,
+        "seq": seq, "kind": kind, "run": run, "head": head, "status": status, "lines": lines,
+        "tin": tin_id(), "t": t,
     });
     let body = serde_json::to_string(&v).map_err(|e| e.to_string())?;
     let mac = mac_hex(&key, &loaded.head, body.as_bytes());
