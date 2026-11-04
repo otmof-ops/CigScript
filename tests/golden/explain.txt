@@ -1342,7 +1342,7 @@ E707 the tin is open to others  (burn, kernel family, since 1.8.0)
      probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
      remedy: chmod 700 ~/.cigscript (cig config tin_perms warn makes it a warning; off stops the check)
 
-  arises in: run  ·  related: E703  ·  tags: kernel, ci-likely
+  arises in: run, unburn  ·  related: E703  ·  tags: kernel, ci-likely
 
 ======== E715 ========
 E715 debugging is allowed  (burn, kernel family, since 1.8.0)

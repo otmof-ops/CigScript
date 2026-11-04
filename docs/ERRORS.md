@@ -1274,7 +1274,7 @@ Related: `E703`.
 
 ### E707 the tin is open to others
 
-*burn · since 1.8.0 · arises in run*
+*burn · since 1.8.0 · arises in run, unburn*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 

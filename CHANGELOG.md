@@ -5,14 +5,13 @@ project follows semantic versioning.
 
 ## 1.8.0 — 2026-11-05
 
-The first of the tin's protections (otmof-ops/cig-orchestrator#105): the record
-that lets you undo a run is kept private, and the key that seals it is moved
-out of reach. Nothing to set up; the only thing you may see is one note the
-first time cig tightens the folder.
+The first of the tin's protections (#105): the record that lets you undo a
+run is kept private, and the key that seals it is moved out of reach. Nothing
+to set up, and nothing to notice on a normal machine.
 
 - **The state directory is owner-only.** `~/.cigscript` is created `0700`, set
   explicitly rather than from the umask, and an older one readable by other
-  users is tightened once with a note. A state directory other users can
+  users is tightened to owner-only. A state directory other users can
   write, or one owned by someone else, is refused on a terminal (`E707`) with
   the one command that fixes it; unattended (CI, a container) it warns once
   and carries on, so a build is never broken by a surprise. `cig config
@@ -33,8 +32,12 @@ first time cig tightens the folder.
 - **The key cannot be read out of cig's memory.** Once a key is loaded, cig
   sets `PR_SET_DUMPABLE` to 0 on Linux (and `PT_DENY_ATTACH` on macOS), which
   blocks same-user `ptrace`, `/proc/<pid>/mem` and core dumps. It resets for
-  every program cig starts, so hops are unaffected. `CIG_ALLOW_DEBUG=1` skips
-  it for contributors debugging cig, with a note on every run (`E715`).
+  every program cig starts, so hops are unaffected, and the box still works
+  after a seal: its child makes itself dumpable again inside its own user
+  namespace before writing its maps (a non-dumpable process cannot open its
+  own `/proc/self/uid_map`), which the exec would do anyway. `CIG_ALLOW_DEBUG=1`
+  skips the protection for contributors debugging cig, with a note on every
+  run (`E715`).
 - **`cig doctor` shows the tin's protection** in one block: whether the state
   directory is private, where the key is and that it is out of the tin,
   whether a hop could read it from memory, and a one-time reminder to back the

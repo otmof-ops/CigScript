@@ -545,6 +545,14 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
 }
 
 pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
+    // A rollback writes run state: the state directory must be ours alone.
+    if !dry_run {
+        if let Err(e) = cigscript::burn::ensure_private() {
+            eprintln!("{} {e}", ctx.red("error[E707 burn]:"));
+            eprintln!("  = explain: cig explain E707");
+            return exit::SCRIPT_ERROR;
+        }
+    }
     let mut rec = match runs::find(id) {
         Ok(Some(r)) => r,
         Ok(None) => {

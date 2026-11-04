@@ -216,13 +216,17 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
             yes_no(ctx, home_is_private(&home)),
             ctx.dim(&cigscript::crash::tilde(&home))
         );
-        let (keeper, where_) = match seal::key() {
-            Ok((_, seal::Keeper::Keyring)) => ("the OS keyring".to_string(), String::new()),
-            Ok((_, seal::Keeper::File)) => (
+        // Looked at, never made: doctor must not create a key by looking.
+        let (keeper, where_) = match seal::peek_keeper() {
+            Some(seal::Keeper::Keyring) => ("the OS keyring".to_string(), String::new()),
+            Some(seal::Keeper::File) => (
                 "a key file".to_string(),
                 cigscript::crash::tilde(&seal::key_path()),
             ),
-            Err(_) => ("not available".to_string(), String::new()),
+            None => (
+                "not made yet".to_string(),
+                "made on the first sealed object".to_string(),
+            ),
         };
         outln!("    key           {keeper}  {}", ctx.dim(&where_));
         outln!(

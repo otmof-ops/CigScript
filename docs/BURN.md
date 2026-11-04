@@ -413,7 +413,7 @@ out of reach of what cig runs.
 
 - **Owner-only.** The state directory is created `0700`, its files `0600` and
   its objects `0400`, set explicitly. An older directory readable by other
-  users is tightened once, with a note. One that other users can *write*, or
+  users is tightened to owner-only. One that other users can *write*, or
   that another user owns, means your undo is not safe there: on a terminal cig
   refuses (`E707`) and names the fix (`chmod 700 ~/.cigscript`); unattended it
   warns once and carries on, so CI and containers are never broken by a

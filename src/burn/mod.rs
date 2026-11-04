@@ -628,6 +628,8 @@ fn make_private(dir: &Path) {
 
 /// Is a person at the keyboard? A terminal on stderr, no CI marker, no
 /// container marker. Unattended work gets a warning, never a refusal.
+/// Only the Unix guard asks (Windows has no mode bits to judge by).
+#[cfg(unix)]
 fn attended() -> bool {
     use std::io::IsTerminal;
     if std::env::var_os("CIG_INTERNAL_ATTENDED").is_some() {
@@ -642,6 +644,7 @@ fn attended() -> bool {
     std::io::stderr().is_terminal()
 }
 
+#[cfg(unix)]
 fn warn_once(msg: &str) {
     use std::sync::OnceLock;
     static SAID: OnceLock<()> = OnceLock::new();

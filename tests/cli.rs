@@ -4230,6 +4230,60 @@ fn a_loose_state_directory_warns_unattended_and_refuses_on_a_terminal() {
     assert!(err.contains("E707") && err.contains("chmod 700"), "{err}");
 }
 
+/// Doctor looks at the tin's protection; looking must not make a key.
+#[cfg(unix)]
+#[test]
+fn doctor_reports_the_tin_without_making_a_key() {
+    let sb = Sandbox::new();
+    let out = sb.run_ok(&["doctor"]);
+    assert!(out.contains("  tin"), "{out}");
+    assert!(out.contains("not made yet"), "{out}");
+    assert!(
+        !sb.path().join(".cigscript-keys").exists(),
+        "cig doctor created a key"
+    );
+}
+
+/// Loading a key makes cig non-dumpable; a box forked afterwards still
+/// writes its own uid_map and binds through /proc/self/fd. A control run
+/// without a seal says whether this machine has the box at all, so a box
+/// lost to the hardening cannot hide behind the ordinary fallback.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_run_that_seals_then_boxes_a_hop_still_makes_the_box() {
+    let sb = Sandbox::new();
+    sb.write("p/data.txt", "old\n");
+    sb.write(
+        "control.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo ctl > data.txt\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let control = sb.cig(&["run", "control.cig"]);
+    let cerr = String::from_utf8_lossy(&control.stderr).to_string();
+    assert!(control.status.success(), "{cerr}");
+    if fell_back(&cerr) {
+        allow_fallback(&cerr);
+        return;
+    }
+    // This machine makes the box. Now the same hop after a seal.
+    sb.write("p/.env", "SECRET=one\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/.env\", \"SECRET=two\")\n  proc.run(\"sh\", [\"-c\", \"echo new > data.txt\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    assert!(
+        !fell_back(&err),
+        "the box fell back after a key was loaded (non-dumpable parent): {err}"
+    );
+    assert_eq!(sb.read("p/data.txt"), "new\n");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(sb.read("p/.env"), "SECRET=one\n");
+    assert_eq!(sb.read("p/data.txt"), "ctl\n");
+}
+
 #[cfg(windows)]
 #[test]
 fn a_timeout_kills_the_grandchild_on_windows() {

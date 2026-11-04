@@ -266,6 +266,7 @@ pub fn keys_dir() -> PathBuf {
     }
     if std::env::var_os("CIGSCRIPT_HOME").is_some() {
         let home = super::runs::home_dir();
+        let home = std::path::absolute(&home).unwrap_or(home);
         let parent = home
             .parent()
             .map(Path::to_path_buf)
@@ -518,18 +519,18 @@ pub fn harden_process_memory() {
     DONE.get_or_init(|| {
         if std::env::var_os("CIG_ALLOW_DEBUG").is_some() {
             eprintln!("note: CIG_ALLOW_DEBUG=1: a debugger can read cig's keys; turn it off when you are done (E715)");
-            return;
-        }
-        #[cfg(target_os = "linux")]
-        unsafe {
-            // PR_SET_DUMPABLE 0: blocks same-user ptrace and /proc/<pid>/mem,
-            // and turns off core dumps (cig has its own crash reports).
-            libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
-        }
-        #[cfg(target_os = "macos")]
-        unsafe {
-            // PT_DENY_ATTACH (31): refuse a debugger and core dumps.
-            libc::ptrace(31, 0, std::ptr::null_mut(), 0);
+        } else {
+            #[cfg(target_os = "linux")]
+            unsafe {
+                // PR_SET_DUMPABLE 0: blocks same-user ptrace and /proc/<pid>/mem,
+                // and turns off core dumps (cig has its own crash reports).
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+            }
+            #[cfg(target_os = "macos")]
+            unsafe {
+                // PT_DENY_ATTACH (31): refuse a debugger and core dumps.
+                libc::ptrace(31, 0, std::ptr::null_mut(), 0);
+            }
         }
     });
 }
@@ -625,6 +626,19 @@ pub fn import_key(src: &Path, passphrase: &str) -> Result<(), String> {
         .try_into()
         .map_err(|_| "the export does not hold a 32-byte key".to_string())?;
     let path = key_path();
+    // A different key already in place, with sealed objects that only it
+    // opens: importing over it would lock them out. Refused, with the way
+    // round it.
+    if let Ok(existing) = fs::read_to_string(&path) {
+        if let Ok(current) = decode_key(existing.trim()) {
+            if current != master && sealed_in_use() {
+                return Err(format!(
+                    "the tin already has a key ({}) that sealed objects depend on, and this export holds a different one; importing it would lock them out. Export the current key first (cig tin key export), move it aside, then import",
+                    crate::crash::tilde(&path)
+                ));
+            }
+        }
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         own_only_dir(parent);
@@ -640,7 +654,54 @@ pub fn import_key(src: &Path, passphrase: &str) -> Result<(), String> {
     f.write_all(hex::encode(master).as_bytes())
         .and_then(|()| f.write_all(b"\n"))
         .and_then(|()| f.sync_all())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Where the keyring is the keeper, the imported key goes there as well,
+    // so the next run finds it there and never makes a fresh one instead.
+    store_in_keyring(&master);
+    Ok(())
+}
+
+/// Put a key into the OS keyring, best effort, on a thread with a deadline
+/// (a hanging D-Bus activation must not hang the command). Skipped when
+/// the setting says the key lives in a file.
+fn store_in_keyring(k: &Key) {
+    if crate::config::Config::load().get("seal_key") == "file" {
+        return;
+    }
+    let k = *k;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let ok = keyring::Entry::new(SERVICE, USER)
+            .and_then(|e| e.set_password(&hex::encode(k)))
+            .is_ok();
+        let _ = tx.send(ok);
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+}
+
+/// Where the key is kept, without making one: the keyring when it holds an
+/// entry, else the key file when it exists, else nowhere yet. For doctor,
+/// which must not create a key as a side effect of looking.
+pub fn peek_keeper() -> Option<Keeper> {
+    if crate::config::Config::load().get("seal_key") != "file" && keyring_has_entry() {
+        return Some(Keeper::Keyring);
+    }
+    if key_path().exists() {
+        return Some(Keeper::File);
+    }
+    None
+}
+
+fn keyring_has_entry() -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let ok = keyring::Entry::new(SERVICE, USER)
+            .and_then(|e| e.get_password())
+            .is_ok();
+        let _ = tx.send(ok);
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or(false)
 }
 
 fn decode_key(text: &str) -> Result<Key, String> {
