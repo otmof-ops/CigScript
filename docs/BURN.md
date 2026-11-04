@@ -427,6 +427,16 @@ out of reach of what cig runs.
   with a passphrase to carry to another machine, and `cig tin key import` puts
   it back. `cig doctor` reminds you once to back it up when sealed objects
   exist and it was never exported.
+- **A record scripts cannot rewrite.** From 1.9.0 the journal is signed:
+  each line's `prev` is an HMAC under a subkey of the tin's key, so a
+  recomputed chain does not verify (`E760`); a journal under another
+  machine's key is not tampering but *signed by another key* (`E708`,
+  `--accept-unsigned`). The ledger, one MACed line per run beside the key,
+  records where each journal ended, so a journal cut short or swapped for an
+  older copy is caught (`E709`); pruning is recorded, a run removed by hand
+  is a note (`E710`, `cig runs --forget`). `cig tin head` prints the
+  ledger's head to keep elsewhere; `cig tin verify --head` checks it.
+  `journal_sign off` writes the unsigned format 2.
 - **Out of cig's memory.** Once a key is loaded cig blocks a debugger and
   `/proc/<pid>/mem` of the same user (Linux `PR_SET_DUMPABLE`, macOS
   `PT_DENY_ATTACH`), so a hop cannot read the key out of cig. It resets for

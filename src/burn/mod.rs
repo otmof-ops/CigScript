@@ -12,6 +12,7 @@
 pub mod ghost;
 pub mod git;
 pub mod journal;
+pub mod ledger;
 pub mod lock;
 pub mod overlay;
 pub mod parcel;
@@ -576,7 +577,11 @@ fn guard_existing(home: &Path, mode: &str) -> Result<(), String> {
     };
     let perms = meta.permissions().mode() & 0o777;
     let mine = meta.uid() == unsafe { libc::geteuid() };
-    let writable_by_others = perms & 0o022 != 0;
+    // World-writable is the danger. Group-writable is the ordinary state
+    // of a directory made under umask 002 (a user's private group on
+    // Ubuntu, Fedora and the rest), and is tightened below like the read
+    // bits, not refused.
+    let writable_by_others = perms & 0o002 != 0;
     if !mine || writable_by_others {
         // Dangerous: another user could tamper with your undo.
         let reason = if !mine {

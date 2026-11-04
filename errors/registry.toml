@@ -1431,6 +1431,66 @@ probe = "path-permissions"
 remedy = "chmod 700 ~/.cigscript (cig config tin_perms warn makes it a warning; off stops the check)"
 
 [[code]]
+code = "E708"
+title = "signed by another key"
+meaning = "This run's journal is signed (format 3) under a key that is not this machine's: it came from another machine, or the key was replaced since. Its objects still match their hashes, so it can be restored on purpose with --accept-unsigned; sealed objects still need the key that sealed them."
+fix = "cig unburn <id> --accept-unsigned, after reading that; cig tin key import for the sealed objects"
+no = "depends"
+arises = ["unburn"]
+tags = ["kernel"]
+since = "1.9.0"
+related = ["E760", "E709"]
+[[code.cause]]
+why = "the run was made on another machine (a parcel), or this machine's tin key was replaced"
+probe = "none"
+remedy = "restore with --accept-unsigned; import the original key (cig tin key import) if sealed objects are involved"
+
+[[code]]
+code = "E709"
+title = "the record was cut short or swapped"
+meaning = "The ledger recorded where this run's journal ended, and the journal on disk does not match it: it ends earlier (lines cut off) or it is an older copy with the same length and another head. Restoring from it is refused; --force restores from it as it is."
+fix = "look at what changed the record; cig unburn <id> --force if you mean to restore from it anyway"
+no = "these-are-mine"
+arises = ["unburn", "runs"]
+tags = ["kernel"]
+since = "1.9.0"
+related = ["E760", "E708"]
+[[code.cause]]
+why = "the journal file was truncated, or replaced with an earlier copy, after the run ended"
+probe = "none"
+remedy = "cig runs <id> --verify shows the chain; --force to restore from the journal as it is"
+
+[[code]]
+code = "E710"
+title = "a run went missing"
+meaning = "The ledger lists a run that is no longer in runs/. A run removed by cig runs --prune is recorded and never noted; one removed by hand gets this one calm note, which cig runs --forget <id> stops."
+fix = "cig runs --forget <id> if you removed it on purpose"
+no = "dont-have-any"
+arises = ["runs"]
+tags = ["kernel"]
+since = "1.9.0"
+related = ["E709"]
+[[code.cause]]
+why = "the run's directory was deleted by hand (not by cig runs --prune)"
+probe = "none"
+remedy = "cig runs --forget <id> records that it is gone on purpose"
+
+[[code]]
+code = "E711"
+title = "a newer journal format"
+meaning = "This run's journal was written in a format newer than this cig reads (format 3 is signed, from 1.9.0). An older cig refuses it by its number rather than misreading it."
+fix = "cig update, or run the cig that wrote it (cig use <version>)"
+no = "cant-see-any"
+arises = ["unburn", "runs"]
+tags = ["kernel"]
+since = "1.9.0"
+related = ["E808"]
+[[code.cause]]
+why = "the run was made by a newer cig than this one"
+probe = "none"
+remedy = "cig update; or cig use <version> to run the cig that wrote it"
+
+[[code]]
 code = "E715"
 title = "debugging is allowed"
 meaning = "CIG_ALLOW_DEBUG is set, so cig does not stop a debugger or another process of the same user from reading the tin's key out of its memory. This is for contributors debugging cig; cig says so on every run while it is set."

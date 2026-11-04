@@ -629,6 +629,22 @@ fn import_inner(file: &Path, mapping: &Mapping, scratch: &Path) -> Result<Import
     fs::rename(&staged_run, &local_run)
         .map_err(|e| format!("cannot place the run at {}: {e}", local_run.display()))?;
     let _ = super::journal::sync_dir_pub(&super::runs::runs_dir());
+    // The journal came signed under the other machine's key (or unsigned,
+    // from an older cig). Signed again under this machine's key, with the
+    // record's head following it, so from here on it verifies like any run
+    // made here; its origin goes in the ledger.
+    if let Ok(Some(head)) = super::journal::resign_in_place(&local_run) {
+        let mut rec = rec;
+        rec["journal_head"] = serde_json::Value::String(head.clone());
+        if let Ok(text) = serde_json::to_string_pretty(&rec) {
+            let _ = fs::write(local_run.join("run.json"), text);
+        }
+        let lines = super::journal::Journal::load(&local_run)
+            .map(|j| j.chain().lines as u64)
+            .unwrap_or(0);
+        let status = rec["status"].as_str().unwrap_or("").to_string();
+        let _ = super::ledger::append("origin", &manifest.run, &head, &status, lines);
+    }
     Ok(Imported {
         id: manifest.run.clone(),
         origin,

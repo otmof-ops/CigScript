@@ -3,6 +3,30 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.9.0 — 2026-11-05
+
+The second of the tin's protections (#105): a record scripts cannot rewrite.
+
+- **The journal is signed.** Format 3 links each line to the one before it
+  with an HMAC-SHA256 under a subkey of the tin's key (`journal-mac`) instead
+  of a plain hash, so a script that rewrites a journal and recomputes its
+  chain cannot make it verify (`E760`). A run under another machine's key
+  (a parcel, a key since replaced) reads as *signed by another key*, not as
+  tampering: `cig unburn --accept-unsigned` restores it, its objects still
+  checked by hash (`E708`). `cig config journal_sign off` keeps writing
+  format 2 for anyone who needs older cigs to read new runs; an older cig
+  that meets format 3 refuses it by its number (`E711`).
+- **The ledger.** One line per run in the keys directory, apart from the
+  tin, each MACed under its own subkey (`ledger-mac`) over the line before
+  it: where every run's journal ended, when it was unburned, pruned,
+  forgotten or brought in by a parcel. It catches what a per-journal chain
+  cannot: a journal cut short, or an older copy swapped in (`E709`). `cig
+  runs --prune` is recorded, so it stays quiet; a run removed by hand gets
+  one calm note (`E710`), and `cig runs --forget <id>` stops it. `cig tin
+  head` prints the ledger's head to keep anywhere else; `cig tin verify
+  --head <value>` checks against it, and `cig tin verify` walks the ledger's
+  own chain.
+
 ## 1.8.0 — 2026-11-05
 
 The first of the tin's protections (#105): the record that lets you undo a

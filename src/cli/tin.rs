@@ -17,7 +17,12 @@ pub enum TinCommand {
         /// Only look at each sealed object's shape instead of opening it.
         #[arg(long)]
         quick: bool,
+        /// Also check the ledger's head against a value `cig tin head` printed earlier (kept elsewhere).
+        #[arg(long, value_name = "HEAD")]
+        head: Option<String>,
     },
+    /// The ledger's head: one line to keep anywhere else, for `cig tin verify --head`.
+    Head,
     /// Remove every object no run in the history still refers to.
     Gc {
         /// Also remove sealed objects the tin's key cannot open (sealed under a key that is gone).
@@ -151,8 +156,53 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
             }
             exit::OK
         }
-        TinCommand::Verify { quick } => {
-            let problems = tin::verify(quick);
+        TinCommand::Head => match cigscript::burn::ledger::load() {
+            Ok(l) => {
+                let seq = l.lines.last().map(|x| x.seq).unwrap_or(0);
+                if ctx.json {
+                    outln!(
+                        "{}",
+                        serde_json::json!({"seq": seq, "head": l.head, "broken_at": l.broken_at})
+                    );
+                } else {
+                    outln!("{seq} {}", l.head);
+                }
+                if l.broken_at.is_some() {
+                    exit::SCRIPT_ERROR
+                } else {
+                    exit::OK
+                }
+            }
+            Err(e) => {
+                eprintln!("{} {e}", ctx.red("error[E703 burn]:"));
+                exit::SCRIPT_ERROR
+            }
+        },
+        TinCommand::Verify { quick, head } => {
+            let mut problems = tin::verify(quick);
+            match cigscript::burn::ledger::load() {
+                Ok(l) => {
+                    if let Some(at) = l.broken_at {
+                        problems.push(format!(
+                            "the ledger's line {at} does not carry cig's signature (E709): it was edited, removed or reordered"
+                        ));
+                    }
+                    if let Some(want) = head.as_deref() {
+                        let want = want.split_whitespace().last().unwrap_or(want);
+                        if want != l.head {
+                            problems.push(format!(
+                                "the ledger's head is {} but the value kept elsewhere says {want}: the ledger was cut short or swapped",
+                                l.head
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    if head.is_some() {
+                        problems.push(format!("the ledger could not be read: {e}"));
+                    }
+                }
+            }
             let objects = tin::du().objects;
             if ctx.json {
                 outln!(
