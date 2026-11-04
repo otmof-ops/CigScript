@@ -27,6 +27,13 @@ PID namespace, the network, kept layers.
   away from one. `cig box list`, `cig box apply <run> <hop>` (a run of its
   own, unburnable), `cig box discard <run> <hop>`; an unburn of the run
   drops its kept layers.
+- **`cig tin mac <file> --label <l> [--check <hex>]`.** A keyed MAC under a
+  subkey of the tin's key derived for the caller's label: what another tool
+  (cig-orchestrator's trust store) signs its records with. A hop in the box
+  cannot make one under the tin's key, since the key folder is empty there.
+- **The `finding` family, `E870`–`E899`.** The codes cig-orchestrator's
+  guard raises for what it finds in someone else's code, registered here so
+  `cig explain` and doctor know them.
 
 ## 1.10.0 — 2026-11-05
 

@@ -5031,6 +5031,85 @@ fn a_kept_layer_is_discarded_by_hand_or_with_its_run() {
     assert!(!sb.exists("p/made.txt"));
 }
 
+/// `cig tin mac`: a keyed MAC under a label of the caller's, the same for
+/// the same bytes and label, different under another label, checkable; and
+/// not makeable under the tin's key from inside a boxed hop, whose key
+/// folder is empty (it gets a key of its own in the inbox, which verifies
+/// nowhere else).
+#[cfg(unix)]
+#[test]
+fn tin_mac_signs_under_the_tins_key_and_a_hop_cannot() {
+    let sb = Sandbox::new();
+    sb.write("p/rec.json", "{\"task\":\"setup\"}\n");
+    let a = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "cigo-trust"]);
+    assert_eq!(a.trim().len(), 64, "{a}");
+    let b = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "cigo-trust"]);
+    assert_eq!(a, b);
+    let c = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "other"]);
+    assert_ne!(a, c);
+    let ok = sb.run_ok(&[
+        "tin",
+        "mac",
+        "p/rec.json",
+        "--label",
+        "cigo-trust",
+        "--check",
+        a.trim(),
+    ]);
+    assert!(ok.contains("matches"), "{ok}");
+    sb.write("p/rec.json", "{\"task\":\"setup\",\"approved\":true}\n");
+    let err = sb.run_err(
+        &[
+            "tin",
+            "mac",
+            "p/rec.json",
+            "--label",
+            "cigo-trust",
+            "--check",
+            a.trim(),
+        ],
+        1,
+    );
+    assert!(err.contains("does not match"), "{err}");
+    let err = sb.run_err(&["tin", "mac", "p/rec.json", "--label", "Bad Label"], 3);
+    assert!(err.contains("E803"), "{err}");
+    #[cfg(target_os = "linux")]
+    {
+        let script = format!(
+            "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"sh\", [\"-c\", \"{} tin mac rec.json --label cigo-trust > inside.txt 2>/dev/null; echo rc=$? >> inside.txt\"], {{cwd: \"p\", box: true}})\n}}\n",
+            env!("CARGO_BIN_EXE_cig")
+        );
+        sb.write("s.cig", &script);
+        let out = sb.cig(&["run", "s.cig"]);
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{err}");
+        if !fell_back(&err) {
+            let inside = sb.read("p/inside.txt");
+            let mac = inside.lines().next().unwrap_or("").trim().to_string();
+            let outside = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "cigo-trust"]);
+            assert_ne!(
+                mac,
+                outside.trim(),
+                "a hop made the tin's own MAC: {inside}"
+            );
+            if mac.len() == 64 {
+                sb.run_err(
+                    &[
+                        "tin",
+                        "mac",
+                        "p/rec.json",
+                        "--label",
+                        "cigo-trust",
+                        "--check",
+                        &mac,
+                    ],
+                    1,
+                );
+            }
+        }
+    }
+}
+
 /// Doctor looks at the tin's protection; looking must not make a key.
 #[cfg(unix)]
 #[test]

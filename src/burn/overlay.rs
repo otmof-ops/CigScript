@@ -175,7 +175,6 @@ fn overlay_mount_over(path: &Path) -> Option<PathBuf> {
 /// signal-safe calls, since this runs between fork and exec. On any failure
 /// the reason is written to `why` and the exec is refused, so the parent
 /// runs the hop again without the box.
-#[cfg(target_os = "linux")]
 /// What a hop's `box` asks for beyond the overlay: its own PID namespace
 /// (on by default), and the network it gets.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -383,6 +382,7 @@ pub fn drop_unapplied(run_dir: &Path) -> usize {
     n
 }
 
+#[cfg(target_os = "linux")]
 pub struct Setup {
     pub uid_map: Vec<u8>,
     pub gid_map: Vec<u8>,

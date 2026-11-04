@@ -549,6 +549,12 @@ proc.run("npm", ["ci"], {box: {
   it out again; `cig box discard <run> <hop>` drops one. An unburn of the
   run a kept layer belongs to drops it too: the base it was made against is
   gone.
+- **A key for another tool's records.** `cig tin mac <file> --label <l>`
+  prints a MAC over the file under a subkey of the tin's key derived for
+  that label; `--check <hex>` verifies one. cig-orchestrator signs its trust
+  store with it: a hop in the box cannot make such a MAC under the tin's
+  key, because the key folder is empty there, so an approval a script
+  writes for itself verifies nowhere.
 
 ## The parcel
 

@@ -113,6 +113,13 @@ kind = "usage"
 meaning = "the updater and doctor"
 
 [[range]]
+from = "E870"
+to = "E899"
+family = "finding"
+kind = "burn"
+meaning = "what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read"
+
+[[range]]
 from = "E900"
 to = "E999"
 family = "internal"
@@ -1999,6 +2006,336 @@ probe = "none"
 remedy = "cig update, or cig versions add <version> so unburn can hand the run to it"
 
 # --- internal (E9xx) ---
+
+[[code]]
+code = "E870"
+title = "a known malicious package"
+meaning = "A package in the lockfile is a known malicious package (an OSV MAL- advisory). The guard refuses the task before anything runs. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "remove the package; cigo audit <name> shows the advisory"
+no = "these-are-mine"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E885", "E881"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E871"
+title = "reads credentials"
+meaning = "In the rehearsal the code read a credential file (an SSH key, a cloud or registry token, a browser profile, a .env); in the box it got a decoy, outside it the real thing. Risk: critical with E872, else high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "if a tool needs that file, name it in the toolchain's footprint reads; otherwise that is the finding"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E872", "E880"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E872"
+title = "tries to send data out"
+meaning = "The code tried to connect somewhere that is not a registry or a host the footprint names, or to send data there. In the box the connection was refused and recorded. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "allow the host in the footprint only if you meant it; with E871 beside it, treat the package as stealing credentials"
+no = "these-are-mine"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E871", "E771"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E873"
+title = "persistence"
+meaning = "The code wrote somewhere that runs again later: a shell rc file, a cron or systemd user unit, a launch agent, a Run key, a .git hook, an editor's config. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "read what it wrote; a toolchain that legitimately installs a hook names it in its footprint"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E880"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E874"
+title = "fetch and run"
+meaning = "The script downloads something and runs it as it arrives (curl | sh, wget -O- | bash, iwr | iex, python -c with a fetched body): it runs whatever that server sends today. Risk: medium, high outside the footprint. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "pin and verify what is fetched, or vendor it; a build tool's own installer step can be named in the footprint"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E875"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E875"
+title = "obfuscation"
+meaning = "Code is decoded or assembled before it runs: base64 or hex into eval or exec, long high-entropy strings, character-code chains, packed scripts. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "read the decoded form; legitimate build artefacts are packed too, so the other findings beside this one decide"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E874"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E876"
+title = "ransomware shape"
+meaning = "In the rehearsal many files were rewritten with high-entropy content, renamed to one new extension, or deleted after a write of the same size. In the box, so not yours. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "do not run it; cigo quarantine show <run> holds what it wrote"
+no = "these-are-mine"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E877"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E877"
+title = "wiper shape"
+meaning = "In the rehearsal the code deleted files outside the toolchain's footprint. In the box, so nothing was lost. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "do not run it; the quarantine holds the evidence"
+no = "these-are-mine"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E876", "E880"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E878"
+title = "asks for privilege"
+meaning = "The script calls sudo, doas, setuid or chmod +s, or raises a UAC prompt: an install step has no business becoming root. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "run the privileged part yourself, knowing what it does"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = []
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E879"
+title = "eyes cigo or the tin"
+meaning = "The script names cig's or cigo's own files (the state directory, the key folder, orchestrate.cig, cig-tasks.json, the trust store) or kills cig or cigo by name. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "do not run it; nothing legitimate needs to touch those"
+no = "these-are-mine"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E889", "E890"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E880"
+title = "outside the footprint"
+meaning = "In the rehearsal the code wrote, read or connected outside what the toolchain's stage is known to do. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "if the path or host is legitimate for this project, add it to the project's footprint; cigo check validates it"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E873", "E872"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E881"
+title = "typosquat"
+meaning = "The package's name is within a letter or two of a popular package in its ecosystem. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "check you meant this name; the popular one is named in the finding"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E870"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E882"
+title = "brand new, or a new publisher"
+meaning = "The version was published in the last few days, or by a maintainer added just before it. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "wait, read the diff, or pin the previous version"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E883"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E883"
+title = "a new install script"
+meaning = "The previous version ran nothing at install; this one runs a script. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "read the script; most real supply-chain attacks are a bad update to a good package"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E882"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E884"
+title = "no label on the pack"
+meaning = "No source repository is linked, or the linked one has no tag for this version. Risk: low. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "build from source you can see, or accept the risk knowingly"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = []
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E885"
+title = "a known vulnerability"
+meaning = "A package in the lockfile has a known vulnerability (a GHSA or CVE advisory); the fixed version is named when there is one. Risk: per advisory. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "update to the fixed version"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E870"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E886"
+title = "prompt injection"
+meaning = "Text in the package (a README, a comment, install output) is addressed to AI agents: it tells any assistant reading it to do something. The guard fences such output before it is printed. Risk: high, critical with E871 or E872. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "keep your agents off it; treat the text as data"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E887"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E887"
+title = "invisible instructions"
+meaning = "Invisible Unicode (tag characters, zero-width characters inside words, bidirectional overrides) spells out text a reader cannot see. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "strip it and read what it said; nothing honest needs invisible text"
+no = "none"
+arises = ["run", "check"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E886"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E888"
+title = "probes for a sandbox"
+meaning = "The code looked for signs it was being watched (reading /proc/1/cgroup, checking for decoy markers, waiting a long time before acting). Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "treat it as hostile until shown otherwise; a delayed payload is still contained in the real run's box"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = []
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E889"
+title = "a forged approval"
+meaning = "An entry in cigo's trust store does not verify under this machine's key: something wrote an approval it had no right to. It is ignored. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "cigo trust list; remove the entry; the task is checked as if never approved"
+no = "these-are-mine"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E879"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E890"
+title = "cigo was changed"
+meaning = "orchestrate.cig or a launcher differs from what cigo's verified install recorded; cigo refuses to run until it is repaired. Risk: critical, refuses to run. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "cigo update --repair"
+no = "these-are-mine"
+arises = ["run", "any"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E879"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
+
+[[code]]
+code = "E891"
+title = "decoys changed the output"
+meaning = "The rehearsal read a decoy and wrote something after, so its result cannot be kept; after a yes the task runs for real. Risk: info. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF."
+fix = "nothing: the real run follows your yes"
+no = "none"
+arises = ["run"]
+tags = ["ci-likely", "planned"]
+since = "1.11.0"
+related = ["E871"]
+[[code.cause]]
+why = "the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)"
+probe = "none"
+remedy = "cigo audit <task> re-shows the last verdict with its evidence"
 
 [[code]]
 code = "E900"
