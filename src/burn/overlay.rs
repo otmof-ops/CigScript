@@ -856,10 +856,23 @@ impl Setup {
                 return self.fail(b"forking the box's init refused");
             }
             if a > 0 {
+                // The relay is a forked copy of cig: the parent's signal
+                // handlers came with it (the child-exit handler of the
+                // waiting crate writes to a pipe of the parent's), and so
+                // did every descriptor, among them the standard library's
+                // exec-status pipe, which the parent reads to the end
+                // before `spawn` returns. The handler goes back to the
+                // default and every descriptor above stderr is closed, so
+                // nothing here holds `spawn`, or the hop's timeout, until
+                // the hop ends.
+                libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+                close_from_3();
                 libc::_exit(wait_for(a));
             }
-            // A: pid 1 inside. Its own /proc, best effort (a container may
-            // refuse it; the namespace still hides the pids from signals).
+            // A: pid 1 inside, the same forked copy; the same resets.
+            libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+            // Its own /proc, best effort (a container may refuse it; the
+            // namespace still hides the pids from signals).
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
             libc::mount(
                 c"proc".as_ptr(),
@@ -871,6 +884,14 @@ impl Setup {
             if let Some(f) = &self.forward {
                 let p = libc::fork();
                 if p == 0 {
+                    // The forwarder's own stdio to /dev/null: it must not
+                    // hold the hop's pipes open after the hop has ended.
+                    let null = libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC);
+                    if null >= 0 {
+                        libc::dup2(null, 0);
+                        libc::dup2(null, 1);
+                        libc::dup2(null, 2);
+                    }
                     let argv = [
                         f[0].as_ptr(),
                         f[1].as_ptr(),
@@ -887,6 +908,8 @@ impl Setup {
                 libc::_exit(127);
             }
             if b > 0 {
+                // The init needs no descriptor either (see the relay).
+                close_from_3();
                 // The init loop: reap everything; the hop's exit is ours.
                 let mut status: libc::c_int = 0;
                 loop {
@@ -947,6 +970,23 @@ impl Setup {
             libc::close(fd);
         }
         Err(io::Error::from_raw_os_error(libc::ENOTSUP))
+    }
+}
+
+/// Close every descriptor from 3 up: `close_range` where the kernel has
+/// it (5.9), one by one where it does not. Async-signal-safe.
+#[cfg(target_os = "linux")]
+unsafe fn close_from_3() {
+    if libc::syscall(
+        libc::SYS_close_range,
+        3 as libc::c_long,
+        libc::c_uint::MAX as libc::c_long,
+        0 as libc::c_long,
+    ) < 0
+    {
+        for fd in 3..4096 {
+            libc::close(fd);
+        }
     }
 }
 

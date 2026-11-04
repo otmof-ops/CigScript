@@ -4796,6 +4796,29 @@ fn two_tins_beside_one_key_keep_separate_accounts() {
 
 // ----- the box for untrusted code (#106: the PID namespace, the network, kept layers) -----
 
+/// A boxed hop's timeout fires: the box's relay and init hold no pipe of
+/// the parent's, so `spawn` returns when the hop starts, not when it ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hops_timeout_fires() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sleep\", [\"5\"], {cwd: \"p\", box: true, timeout_ms: 300})\n}\n",
+    );
+    let started = std::time::Instant::now();
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("E554") && err.contains("300 ms"), "{err}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(4),
+        "the timeout did not fire: {:?}\n{err}",
+        started.elapsed()
+    );
+}
+
 /// Inside the box a hop is pid 2 under an init of cig's, with the
 /// namespace's processes alone in `/proc`; `pidns: false` keeps the
 /// machine's view.
