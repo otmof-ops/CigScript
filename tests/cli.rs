@@ -4430,6 +4430,7 @@ fn tin_head_matches_the_ledger_and_an_edited_ledger_is_caught() {
 /// witnesses, so a run in one is not a missing run in the other. The
 /// portability probe keeps every case's home under one parent and found
 /// the note firing across them.
+#[cfg(unix)]
 #[test]
 fn two_tins_beside_one_key_keep_separate_accounts() {
     let sb = Sandbox::new();
