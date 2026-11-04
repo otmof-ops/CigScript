@@ -116,7 +116,7 @@ meaning = "the updater and doctor"
 from = "E870"
 to = "E899"
 family = "finding"
-kind = "burn"
+kind = "usage"
 meaning = "what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read"
 
 [[range]]

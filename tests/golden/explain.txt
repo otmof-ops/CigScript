@@ -131,28 +131,28 @@ E850-E869  the updater and doctor
   reserved; nothing emitted yet
 
 E870-E899  what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read
-  E870  a known malicious package          burn  (planned)
-  E871  reads credentials                  burn  (planned)
-  E872  tries to send data out             burn  (planned)
-  E873  persistence                        burn  (planned)
-  E874  fetch and run                      burn  (planned)
-  E875  obfuscation                        burn  (planned)
-  E876  ransomware shape                   burn  (planned)
-  E877  wiper shape                        burn  (planned)
-  E878  asks for privilege                 burn  (planned)
-  E879  eyes cigo or the tin               burn  (planned)
-  E880  outside the footprint              burn  (planned)
-  E881  typosquat                          burn  (planned)
-  E882  brand new, or a new publisher      burn  (planned)
-  E883  a new install script               burn  (planned)
-  E884  no label on the pack               burn  (planned)
-  E885  a known vulnerability              burn  (planned)
-  E886  prompt injection                   burn  (planned)
-  E887  invisible instructions             burn  (planned)
-  E888  probes for a sandbox               burn  (planned)
-  E889  a forged approval                  burn  (planned)
-  E890  cigo was changed                   burn  (planned)
-  E891  decoys changed the output          burn  (planned)
+  E870  a known malicious package          usage  (planned)
+  E871  reads credentials                  usage  (planned)
+  E872  tries to send data out             usage  (planned)
+  E873  persistence                        usage  (planned)
+  E874  fetch and run                      usage  (planned)
+  E875  obfuscation                        usage  (planned)
+  E876  ransomware shape                   usage  (planned)
+  E877  wiper shape                        usage  (planned)
+  E878  asks for privilege                 usage  (planned)
+  E879  eyes cigo or the tin               usage  (planned)
+  E880  outside the footprint              usage  (planned)
+  E881  typosquat                          usage  (planned)
+  E882  brand new, or a new publisher      usage  (planned)
+  E883  a new install script               usage  (planned)
+  E884  no label on the pack               usage  (planned)
+  E885  a known vulnerability              usage  (planned)
+  E886  prompt injection                   usage  (planned)
+  E887  invisible instructions             usage  (planned)
+  E888  probes for a sandbox               usage  (planned)
+  E889  a forged approval                  usage  (planned)
+  E890  cigo was changed                   usage  (planned)
+  E891  decoys changed the output          usage  (planned)
 
 E900-E999  internal: a bug in CigScript itself
   E900  internal error                     internal
@@ -1977,7 +1977,7 @@ E808 record from a newer cig  (usage, usage family, since 1.2.0)
   arises in: unburn, runs  ·  related: E807
 
 ======== E870 ========
-E870 a known malicious package  (burn, finding family, since 1.11.0)
+E870 a known malicious package  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -1994,7 +1994,7 @@ E870 a known malicious package  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E885, E881  ·  tags: ci-likely
 
 ======== E871 ========
-E871 reads credentials  (burn, finding family, since 1.11.0)
+E871 reads credentials  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2011,7 +2011,7 @@ E871 reads credentials  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E872, E880  ·  tags: ci-likely
 
 ======== E872 ========
-E872 tries to send data out  (burn, finding family, since 1.11.0)
+E872 tries to send data out  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -2028,7 +2028,7 @@ E872 tries to send data out  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E871, E771  ·  tags: ci-likely
 
 ======== E873 ========
-E873 persistence  (burn, finding family, since 1.11.0)
+E873 persistence  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2045,7 +2045,7 @@ E873 persistence  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E880  ·  tags: ci-likely
 
 ======== E874 ========
-E874 fetch and run  (burn, finding family, since 1.11.0)
+E874 fetch and run  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2062,7 +2062,7 @@ E874 fetch and run  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E875  ·  tags: ci-likely
 
 ======== E875 ========
-E875 obfuscation  (burn, finding family, since 1.11.0)
+E875 obfuscation  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2079,7 +2079,7 @@ E875 obfuscation  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E874  ·  tags: ci-likely
 
 ======== E876 ========
-E876 ransomware shape  (burn, finding family, since 1.11.0)
+E876 ransomware shape  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -2096,7 +2096,7 @@ E876 ransomware shape  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E877  ·  tags: ci-likely
 
 ======== E877 ========
-E877 wiper shape  (burn, finding family, since 1.11.0)
+E877 wiper shape  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -2113,7 +2113,7 @@ E877 wiper shape  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E876, E880  ·  tags: ci-likely
 
 ======== E878 ========
-E878 asks for privilege  (burn, finding family, since 1.11.0)
+E878 asks for privilege  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2130,7 +2130,7 @@ E878 asks for privilege  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  tags: ci-likely
 
 ======== E879 ========
-E879 eyes cigo or the tin  (burn, finding family, since 1.11.0)
+E879 eyes cigo or the tin  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -2147,7 +2147,7 @@ E879 eyes cigo or the tin  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E889, E890  ·  tags: ci-likely
 
 ======== E880 ========
-E880 outside the footprint  (burn, finding family, since 1.11.0)
+E880 outside the footprint  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2164,7 +2164,7 @@ E880 outside the footprint  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E873, E872  ·  tags: ci-likely
 
 ======== E881 ========
-E881 typosquat  (burn, finding family, since 1.11.0)
+E881 typosquat  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2181,7 +2181,7 @@ E881 typosquat  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E870  ·  tags: ci-likely
 
 ======== E882 ========
-E882 brand new, or a new publisher  (burn, finding family, since 1.11.0)
+E882 brand new, or a new publisher  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2198,7 +2198,7 @@ E882 brand new, or a new publisher  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E883  ·  tags: ci-likely
 
 ======== E883 ========
-E883 a new install script  (burn, finding family, since 1.11.0)
+E883 a new install script  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2215,7 +2215,7 @@ E883 a new install script  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E882  ·  tags: ci-likely
 
 ======== E884 ========
-E884 no label on the pack  (burn, finding family, since 1.11.0)
+E884 no label on the pack  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2232,7 +2232,7 @@ E884 no label on the pack  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  tags: ci-likely
 
 ======== E885 ========
-E885 a known vulnerability  (burn, finding family, since 1.11.0)
+E885 a known vulnerability  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2249,7 +2249,7 @@ E885 a known vulnerability  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E870  ·  tags: ci-likely
 
 ======== E886 ========
-E886 prompt injection  (burn, finding family, since 1.11.0)
+E886 prompt injection  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2266,7 +2266,7 @@ E886 prompt injection  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E887  ·  tags: ci-likely
 
 ======== E887 ========
-E887 invisible instructions  (burn, finding family, since 1.11.0)
+E887 invisible instructions  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2283,7 +2283,7 @@ E887 invisible instructions  (burn, finding family, since 1.11.0)
   arises in: run, check  ·  related: E886  ·  tags: ci-likely
 
 ======== E888 ========
-E888 probes for a sandbox  (burn, finding family, since 1.11.0)
+E888 probes for a sandbox  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -2300,7 +2300,7 @@ E888 probes for a sandbox  (burn, finding family, since 1.11.0)
   arises in: run  ·  tags: ci-likely
 
 ======== E889 ========
-E889 a forged approval  (burn, finding family, since 1.11.0)
+E889 a forged approval  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -2317,7 +2317,7 @@ E889 a forged approval  (burn, finding family, since 1.11.0)
   arises in: run  ·  related: E879  ·  tags: ci-likely
 
 ======== E890 ========
-E890 cigo was changed  (burn, finding family, since 1.11.0)
+E890 cigo was changed  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -2334,7 +2334,7 @@ E890 cigo was changed  (burn, finding family, since 1.11.0)
   arises in: run, any  ·  related: E879  ·  tags: ci-likely
 
 ======== E891 ========
-E891 decoys changed the output  (burn, finding family, since 1.11.0)
+E891 decoys changed the output  (usage, finding family, since 1.11.0)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)

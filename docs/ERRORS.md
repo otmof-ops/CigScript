@@ -21,7 +21,7 @@ A code never changes meaning. A retired code is never reused. A code marked *pla
 | `E770`–`E799` | guard | `burn` | the box for untrusted code: its network, the watch, kept layers, the kill switch |
 | `E800`–`E849` | usage | `usage` | the command line and the environment |
 | `E850`–`E869` | update | `usage` | the updater and doctor |
-| `E870`–`E899` | finding | `burn` | what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read |
+| `E870`–`E899` | finding | `usage` | what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read |
 | `E900`–`E999` | internal | `internal` | internal: a bug in CigScript itself |
 
 ## The four kinds of no
@@ -1961,7 +1961,7 @@ what cig-orchestrator's guard found in someone else's code: a rehearsal's eviden
 
 ### E870 a known malicious package
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -1978,7 +1978,7 @@ Related: `E885`, `E881`.
 
 ### E871 reads credentials
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -1995,7 +1995,7 @@ Related: `E872`, `E880`.
 
 ### E872 tries to send data out
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -2012,7 +2012,7 @@ Related: `E871`, `E771`.
 
 ### E873 persistence
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2029,7 +2029,7 @@ Related: `E880`.
 
 ### E874 fetch and run
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2046,7 +2046,7 @@ Related: `E875`.
 
 ### E875 obfuscation
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2063,7 +2063,7 @@ Related: `E874`.
 
 ### E876 ransomware shape
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -2080,7 +2080,7 @@ Related: `E877`.
 
 ### E877 wiper shape
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -2097,7 +2097,7 @@ Related: `E876`, `E880`.
 
 ### E878 asks for privilege
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2112,7 +2112,7 @@ The script calls sudo, doas, setuid or chmod +s, or raises a UAC prompt: an inst
 
 ### E879 eyes cigo or the tin
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -2129,7 +2129,7 @@ Related: `E889`, `E890`.
 
 ### E880 outside the footprint
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2146,7 +2146,7 @@ Related: `E873`, `E872`.
 
 ### E881 typosquat
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2163,7 +2163,7 @@ Related: `E870`.
 
 ### E882 brand new, or a new publisher
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2180,7 +2180,7 @@ Related: `E883`.
 
 ### E883 a new install script
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2197,7 +2197,7 @@ Related: `E882`.
 
 ### E884 no label on the pack
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2212,7 +2212,7 @@ No source repository is linked, or the linked one has no tag for this version. R
 
 ### E885 a known vulnerability
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2229,7 +2229,7 @@ Related: `E870`.
 
 ### E886 prompt injection
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2246,7 +2246,7 @@ Related: `E887`.
 
 ### E887 invisible instructions
 
-*burn · since 1.11.0 · arises in run, check · planned*
+*usage · since 1.11.0 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2263,7 +2263,7 @@ Related: `E886`.
 
 ### E888 probes for a sandbox
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -2278,7 +2278,7 @@ The code looked for signs it was being watched (reading /proc/1/cgroup, checking
 
 ### E889 a forged approval
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -2295,7 +2295,7 @@ Related: `E879`.
 
 ### E890 cigo was changed
 
-*burn · since 1.11.0 · arises in run, any · planned*
+*usage · since 1.11.0 · arises in run, any · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -2312,7 +2312,7 @@ Related: `E879`.
 
 ### E891 decoys changed the output
 
-*burn · since 1.11.0 · arises in run · planned*
+*usage · since 1.11.0 · arises in run · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
