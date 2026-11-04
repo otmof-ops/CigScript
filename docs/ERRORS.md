@@ -1146,6 +1146,8 @@ the burn kernel and its journal (write-ahead log).
 | [`E704`](#e704-file-changed-since-the-run) | file changed since the run | these are MY ciggies | look at the file, then pass --force if the old content is what you want |
 | [`E705`](#e705-already-rolled-back) | already rolled back | these are MY ciggies | nothing, the world is already back; pass --force only if you mean to restore the old snapshots again |
 | [`E706`](#e706-interrupted-run) | interrupted run | not one of the four | `cig unburn <id>` restores what the run had burned; `cig runs <id>` shows the journal |
+| [`E707`](#e707-the-tin-is-open-to-others) | the tin is open to others | these are MY ciggies | chmod 700 ~/.cigscript |
+| [`E715`](#e715-debugging-is-allowed) | debugging is allowed | not one of the four | unset CIG_ALLOW_DEBUG |
 
 ### E700 burn refused
 
@@ -1268,6 +1270,40 @@ A run's process died mid-burn. The journal is intact and nothing has been restor
 1. the process was killed, or the machine went down, mid-burn; the journal (write-ahead log) is intact (probe `pid-alive`). **Remedy:** `cig unburn <id>` puts back what it burned; `cig runs <id>` shows the journal first *(doctor can apply it with a y; not reversible)*
 
 Related: `E703`.
+
+
+### E707 the tin is open to others
+
+*burn · since 1.8.0 · arises in run, unburn*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+The state directory can be written by other users, or is owned by someone else, so the run records that let you undo are not kept private. On a terminal cig refuses to write there; unattended (CI, a container) it warns once and carries on.
+
+**What to type next:** chmod 700 ~/.cigscript
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the state directory is group- or world-writable, or owned by another user (probe `path-permissions`). **Remedy:** chmod 700 ~/.cigscript (cig config tin_perms warn makes it a warning; off stops the check)
+
+Related: `E703`.
+
+
+### E715 debugging is allowed
+
+*burn · since 1.8.0 · arises in run, any*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+CIG_ALLOW_DEBUG is set, so cig does not stop a debugger or another process of the same user from reading the tin's key out of its memory. This is for contributors debugging cig; cig says so on every run while it is set.
+
+**What to type next:** unset CIG_ALLOW_DEBUG
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. CIG_ALLOW_DEBUG is set in the environment (no probe; a suggestion, not a finding). **Remedy:** unset CIG_ALLOW_DEBUG when you are done debugging cig
+
+Related: `E707`.
 
 
 ## fold (`E750`–`E769`)

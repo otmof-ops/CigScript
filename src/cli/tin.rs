@@ -5,7 +5,8 @@
 //! no run still needs.
 
 use super::{exit, Ctx};
-use cigscript::burn::tin;
+use cigscript::burn::{seal, tin};
+use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
 pub enum TinCommand {
@@ -23,10 +24,103 @@ pub enum TinCommand {
         #[arg(long)]
         sealed_orphans: bool,
     },
+    /// Back the tin's key up, or put a backed-up key in place.
+    Key {
+        #[command(subcommand)]
+        cmd: KeyCommand,
+    },
+}
+
+#[derive(clap::Subcommand)]
+pub enum KeyCommand {
+    /// Write the key, wrapped with a passphrase, so a backup can carry it.
+    Export {
+        /// Where to write it (default: cig-tin-key.export).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Put a passphrase-wrapped key back as the fallback key file.
+    Import {
+        /// The file a previous `cig tin key export` wrote.
+        file: PathBuf,
+    },
+}
+
+/// The passphrase: `CIG_KEY_PASSPHRASE` when set (CI, scripts), else typed.
+fn passphrase() -> Result<String, String> {
+    if let Ok(p) = std::env::var("CIG_KEY_PASSPHRASE") {
+        return Ok(p);
+    }
+    use std::io::Write;
+    eprint!("passphrase (CIG_KEY_PASSPHRASE avoids the echo): ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    let p = line.trim_end_matches(['\n', '\r']).to_string();
+    if p.is_empty() {
+        return Err("an empty passphrase protects nothing".to_string());
+    }
+    Ok(p)
+}
+
+fn key_cmd(ctx: &Ctx, cmd: KeyCommand) -> i32 {
+    match cmd {
+        KeyCommand::Export { out } => {
+            let dest = out.unwrap_or_else(|| PathBuf::from("cig-tin-key.export"));
+            let pass = match passphrase() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{} {e}", ctx.red("error[E801 usage]:"));
+                    return exit::USAGE;
+                }
+            };
+            match seal::export_key(&dest, &pass) {
+                Ok(()) => {
+                    seal::mark_exported();
+                    eprintln!(
+                        "{} the tin's key is wrapped in {} (keep it somewhere safe; it opens your sealed objects on a restored backup)",
+                        ctx.green("ok:"),
+                        dest.display()
+                    );
+                    exit::OK
+                }
+                Err(e) => {
+                    eprintln!("{} {e}", ctx.red("error[E703 burn]:"));
+                    exit::SCRIPT_ERROR
+                }
+            }
+        }
+        KeyCommand::Import { file } => {
+            let pass = match passphrase() {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("{} {e}", ctx.red("error[E801 usage]:"));
+                    return exit::USAGE;
+                }
+            };
+            match seal::import_key(&file, &pass) {
+                Ok(()) => {
+                    eprintln!(
+                        "{} the key from {} is in place; your sealed objects open again",
+                        ctx.green("ok:"),
+                        file.display()
+                    );
+                    exit::OK
+                }
+                Err(e) => {
+                    eprintln!("{} {e}", ctx.red("error[E703 burn]:"));
+                    exit::SCRIPT_ERROR
+                }
+            }
+        }
+    }
 }
 
 pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
     match cmd.unwrap_or(TinCommand::Du) {
+        TinCommand::Key { cmd } => key_cmd(ctx, cmd),
         TinCommand::Du => {
             let u = tin::du();
             let referenced = tin::referenced().len();

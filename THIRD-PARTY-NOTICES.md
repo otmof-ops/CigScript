@@ -20,6 +20,7 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | anstyle-parse | 1.0.0 | unrecorded | https://github.com/rust-cli/anstyle.git |
 | anstyle-query | 1.1.5 | unrecorded | https://github.com/rust-cli/anstyle.git |
 | anstyle-wincon | 3.0.11 | unrecorded | https://github.com/rust-cli/anstyle.git |
+| argon2 | 0.5.3 | RustCrypto Developers | https://github.com/RustCrypto/password-hashes/tree/master/argon2 |
 | async-broadcast | 0.7.2 | Stjepan Glavina <stjepang@gmail.com>, Yoshua Wuyts <yoshuawuyts@gmail.com>, Zeeshan Ali Khan <zeeshanak@gnome.org> | https://github.com/smol-rs/async-broadcast |
 | async-channel | 2.5.0 | Stjepan Glavina <stjepang@gmail.com> | https://github.com/smol-rs/async-channel |
 | async-executor | 1.14.0 | Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net> | https://github.com/smol-rs/async-executor |
@@ -33,7 +34,9 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | async-trait | 0.1.92 | David Tolnay <dtolnay@gmail.com> | https://github.com/dtolnay/async-trait |
 | atomic-waker | 1.1.2 | Stjepan Glavina <stjepang@gmail.com>, Contributors to futures-rs | https://github.com/smol-rs/atomic-waker |
 | autocfg | 1.5.1 | Josh Stone <cuviper@gmail.com> | https://github.com/cuviper/autocfg |
+| base64ct | 1.8.3 | RustCrypto Developers | https://github.com/RustCrypto/formats |
 | bitflags | 2.13.2 | The Rust Project Developers | https://github.com/bitflags/bitflags |
+| blake2 | 0.10.6 | RustCrypto Developers | https://github.com/RustCrypto/hashes |
 | block-buffer | 0.10.4 | RustCrypto Developers | https://github.com/RustCrypto/utils |
 | block-padding | 0.3.3 | RustCrypto Developers | https://github.com/RustCrypto/utils |
 | blocking | 1.7.0 | unrecorded | https://github.com/smol-rs/blocking |
@@ -110,6 +113,7 @@ CigScript's binary links the Rust crates below, pulled from crates.io as package
 | opaque-debug | 0.3.1 | RustCrypto Developers | https://github.com/RustCrypto/utils |
 | ordered-stream | 0.2.0 | Daniel De Graaf <code@danieldg.net>, Zeeshan Ali Khan <zeeshanak@gnome.org> | https://github.com/danieldg/ordered-stream |
 | parking | 2.2.1 | Stjepan Glavina <stjepang@gmail.com>, The Rust Project Developers | https://github.com/smol-rs/parking |
+| password-hash | 0.5.0 | RustCrypto Developers | https://github.com/RustCrypto/traits/tree/master/password-hash |
 | pin-project-lite | 0.2.17 | unrecorded | https://github.com/taiki-e/pin-project-lite |
 | piper | 0.2.5 | Stjepan Glavina <stjepang@gmail.com>, John Nunley <dev@notgull.net> | https://github.com/smol-rs/piper |
 | pkg-config | 0.3.34 | Alex Crichton <alex@alexcrichton.com> | https://github.com/rust-lang/pkg-config-rs |

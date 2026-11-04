@@ -3,6 +3,46 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.8.0 — 2026-11-05
+
+The first of the tin's protections (#105): the record that lets you undo a
+run is kept private, and the key that seals it is moved out of reach. Nothing
+to set up, and nothing to notice on a normal machine.
+
+- **The state directory is owner-only.** `~/.cigscript` is created `0700`, set
+  explicitly rather than from the umask, and an older one readable by other
+  users is tightened to owner-only. A state directory other users can
+  write, or one owned by someone else, is refused on a terminal (`E707`) with
+  the one command that fixes it; unattended (CI, a container) it warns once
+  and carries on, so a build is never broken by a surprise. `cig config
+  tin_perms warn` makes it always a warning, `off` stops the check.
+- **The key lives apart from what it opens.** The fallback key file moves out
+  of the tin into the OS config directory (beside the state root when
+  `CIGSCRIPT_HOME` is set), so a copy of the tin no longer takes the key with
+  it; an existing `tin/seal.key` is migrated once. `CIG_SEAL_KEY_FILE` names
+  it outright for CI and headless use.
+- **One key never does two jobs.** The stored secret is a master key, and each
+  use derives its own subkey from it with HKDF-SHA256 under a label
+  (`tin-seal` for sealing; the MAC labels are reserved for the signed journal
+  and ledger). Objects sealed before this (`CIGSEAL1`) still open; new ones are
+  `CIGSEAL2`, sealed with the derived subkey.
+- **Carry the key between machines.** `cig tin key export` writes it wrapped
+  with a passphrase (Argon2id, then XChaCha20-Poly1305), and `cig tin key
+  import` puts it back, so a restored backup can open your sealed objects.
+- **The key cannot be read out of cig's memory.** Once a key is loaded, cig
+  sets `PR_SET_DUMPABLE` to 0 on Linux (and `PT_DENY_ATTACH` on macOS), which
+  blocks same-user `ptrace`, `/proc/<pid>/mem` and core dumps. It resets for
+  every program cig starts, so hops are unaffected, and the box still works
+  after a seal: its child makes itself dumpable again inside its own user
+  namespace before writing its maps (a non-dumpable process cannot open its
+  own `/proc/self/uid_map`), which the exec would do anyway. `CIG_ALLOW_DEBUG=1`
+  skips the protection for contributors debugging cig, with a note on every
+  run (`E715`).
+- **`cig doctor` shows the tin's protection** in one block: whether the state
+  directory is private, where the key is and that it is out of the tin,
+  whether a hop could read it from memory, and a one-time reminder to back the
+  key up when sealed objects exist and it was never exported (`key_reminder`).
+
 ## 1.7.1 — 2026-10-29
 
 **Nothing of yours in a report** (#103), and the reporter debugged against

@@ -16,14 +16,37 @@ use chacha20poly1305::aead::stream::{DecryptorBE32, EncryptorBE32};
 use chacha20poly1305::aead::{KeyInit, Payload};
 use chacha20poly1305::XChaCha20Poly1305;
 use globset::{Glob, GlobSet, GlobSetBuilder};
+use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// The first bytes of every sealed file.
-pub const MAGIC: &[u8; 8] = b"CIGSEAL1";
+/// The first bytes of a sealed file this cig writes: version 2, sealed with
+/// the seal subkey derived from the master key. Version 1 (`CIGSEAL1`) was
+/// sealed with the master key itself and is still read, so objects sealed
+/// before the key was split still open.
+pub const MAGIC: &[u8; 8] = b"CIGSEAL2";
+/// Version 1: the master key used directly, before per-use key separation.
+pub const MAGIC_V1: &[u8; 8] = b"CIGSEAL1";
+
+/// HKDF labels: one key never does two jobs. The stored secret is a master
+/// key, and each use derives its own 32-byte subkey from it under its label.
+/// `tin-seal` seals objects and snapshots; the MAC labels are reserved for
+/// the signed journal and ledger (a later step).
+pub const LABEL_SEAL: &[u8] = b"tin-seal";
+pub const LABEL_JOURNAL_MAC: &[u8] = b"journal-mac";
+pub const LABEL_LEDGER_MAC: &[u8] = b"ledger-mac";
+
+/// A 32-byte subkey of the master, for one purpose, by HKDF-SHA256.
+pub fn derive(master: &Key, label: &[u8]) -> Key {
+    let hk = Hkdf::<Sha256>::new(None, master);
+    let mut out = [0u8; 32];
+    hk.expand(label, &mut out)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    out
+}
 /// Plaintext bytes per segment.
 const SEGMENT: usize = 1 << 20;
 /// Poly1305's tag.
@@ -222,9 +245,70 @@ pub fn is_sealed_path(path: &Path) -> bool {
 
 pub type Key = [u8; 32];
 
-/// Where the key is kept when the keyring has none: beside the tin, read
-/// only by its owner.
+/// Where the master key is kept when the keyring has none: apart from the
+/// tin it seals, so a copy of the tin never takes the key with it.
+/// `CIG_SEAL_KEY_FILE` names it outright (CI, headless); otherwise it is
+/// `seal.key` under the keys directory.
 pub fn key_path() -> PathBuf {
+    if let Some(f) = std::env::var_os("CIG_SEAL_KEY_FILE") {
+        return PathBuf::from(f);
+    }
+    keys_dir().join("seal.key")
+}
+
+/// The directory the fallback key lives in, outside the tin. With
+/// `CIGSCRIPT_HOME` set (tests, a custom state root) it sits beside that
+/// home, never inside it; otherwise it is the OS config directory, so that
+/// copying `~/.cigscript` leaves the key behind. `CIG_KEYS_DIR` overrides.
+pub fn keys_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("CIG_KEYS_DIR") {
+        return PathBuf::from(d);
+    }
+    if std::env::var_os("CIGSCRIPT_HOME").is_some() {
+        let home = super::runs::home_dir();
+        let home = std::path::absolute(&home).unwrap_or(home);
+        let parent = home
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.clone());
+        return parent.join(".cigscript-keys");
+    }
+    os_config_dir().join("cigscript").join("keys")
+}
+
+/// The OS configuration directory for a user-level tool.
+fn os_config_dir() -> PathBuf {
+    let home = || {
+        std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("."))
+    };
+    #[cfg(target_os = "macos")]
+    {
+        home()
+            .join("Library")
+            .join("Application Support")
+            .join("CigScript")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home().join("AppData").join("Roaming"))
+            .join("CigScript")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home().join(".config"))
+    }
+}
+
+/// The key's old home, inside the tin, before it was moved out (1.8.0).
+fn legacy_key_path() -> PathBuf {
     super::tin::dir().join("seal.key")
 }
 
@@ -244,6 +328,7 @@ pub fn key() -> Result<(Key, Keeper), String> {
 }
 
 fn key_uncached() -> Result<(Key, Keeper), String> {
+    harden_process_memory();
     let cfg = crate::config::Config::load();
     if cfg.get("seal_key") != "file" {
         match keyring_key() {
@@ -332,6 +417,7 @@ fn sealed_in_use() -> bool {
 
 fn file_key() -> Result<Key, String> {
     let path = key_path();
+    migrate_legacy_key(&path);
     match fs::read_to_string(&path) {
         Ok(text) => decode_key(text.trim()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -346,6 +432,7 @@ fn file_key() -> Result<Key, String> {
             let k = random_key()?;
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+                own_only_dir(parent);
             }
             let mut opts = fs::OpenOptions::new();
             opts.write(true).create_new(true);
@@ -365,6 +452,256 @@ fn file_key() -> Result<Key, String> {
         }
         Err(e) => Err(format!("cannot read the key file {}: {e}", path.display())),
     }
+}
+
+/// Move a pre-1.8 key out of the tin into the keys directory, once, with a
+/// note. The old file is removed only after the new one is in place.
+fn migrate_legacy_key(new_path: &Path) {
+    if new_path.exists() {
+        return;
+    }
+    let legacy = legacy_key_path();
+    if legacy == *new_path || fs::metadata(&legacy).is_err() {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(&legacy) else {
+        return;
+    };
+    if let Some(parent) = new_path.parent() {
+        if fs::create_dir_all(parent).is_err() {
+            return;
+        }
+        own_only_dir(parent);
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(new_path) {
+        if f.write_all(text.as_bytes())
+            .and_then(|()| f.sync_all())
+            .is_ok()
+        {
+            let _ = fs::remove_file(&legacy);
+            eprintln!(
+                "note: the tin's key moved out of the tin to {}, so a copy of the tin no longer takes it (cig tin key export backs it up)",
+                crate::crash::tilde(new_path)
+            );
+        } else {
+            let _ = fs::remove_file(new_path);
+        }
+    }
+}
+
+/// A directory only its owner may enter (0700 on Unix; the default ACL on
+/// Windows already grants the user alone under the profile).
+fn own_only_dir(dir: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+}
+
+/// Stop a debugger or another process of the same user from reading the
+/// key out of cig's memory, once a key has been loaded. Reset for every
+/// program cig starts, so hops are unaffected. `CIG_ALLOW_DEBUG=1` skips
+/// it, with a note on every run so it is not left on by accident.
+pub fn harden_process_memory() {
+    static DONE: OnceLock<()> = OnceLock::new();
+    DONE.get_or_init(|| {
+        if std::env::var_os("CIG_ALLOW_DEBUG").is_some() {
+            eprintln!("note: CIG_ALLOW_DEBUG=1: a debugger can read cig's keys; turn it off when you are done (E715)");
+        } else {
+            #[cfg(target_os = "linux")]
+            unsafe {
+                // PR_SET_DUMPABLE 0: blocks same-user ptrace and /proc/<pid>/mem,
+                // and turns off core dumps (cig has its own crash reports).
+                libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+            }
+            #[cfg(target_os = "macos")]
+            unsafe {
+                // PT_DENY_ATTACH (31): refuse a debugger and core dumps.
+                libc::ptrace(31, 0, std::ptr::null_mut(), 0);
+            }
+        }
+    });
+}
+
+// ----- carrying the key between machines ----------------------------------------
+
+const KEY_EXPORT_MAGIC: &[u8; 8] = b"CIGKEYX1";
+
+/// Where the "key was exported" marker lives: beside the key, so a restored
+/// backup carries the knowledge that the key is kept elsewhere too.
+pub fn export_marker() -> PathBuf {
+    keys_dir().join(".exported")
+}
+
+/// Record that the key has been exported at least once.
+pub fn mark_exported() {
+    if let Some(parent) = export_marker().parent() {
+        let _ = fs::create_dir_all(parent);
+        own_only_dir(parent);
+    }
+    let _ = fs::write(export_marker(), b"");
+}
+
+/// Has the key ever been exported from this machine?
+pub fn was_exported() -> bool {
+    export_marker().exists()
+}
+
+/// Does the tin hold anything only the current key opens? (public wrapper)
+pub fn has_sealed() -> bool {
+    sealed_in_use()
+}
+
+/// Write the master key wrapped with a passphrase (Argon2id, then
+/// XChaCha20-Poly1305), so a backup can carry it. The file is useless
+/// without the passphrase.
+pub fn export_key(dest: &Path, passphrase: &str) -> Result<(), String> {
+    use argon2::Argon2;
+    use chacha20poly1305::aead::Aead;
+    let (master, _) = key()?;
+    let mut salt = [0u8; 16];
+    let mut nonce = [0u8; 24];
+    getrandom::getrandom(&mut salt).map_err(|e| e.to_string())?;
+    getrandom::getrandom(&mut nonce).map_err(|e| e.to_string())?;
+    let mut wrap = [0u8; 32];
+    Argon2::default()
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut wrap)
+        .map_err(|e| format!("deriving the wrapping key failed: {e}"))?;
+    let cipher = XChaCha20Poly1305::new((&wrap).into());
+    let ct = cipher
+        .encrypt((&nonce).into(), master.as_slice())
+        .map_err(|_| "wrapping the key failed".to_string())?;
+    let mut out = Vec::with_capacity(8 + 16 + 24 + ct.len());
+    out.extend_from_slice(KEY_EXPORT_MAGIC);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ct);
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(dest).map_err(|e| e.to_string())?;
+    f.write_all(&out)
+        .and_then(|()| f.sync_all())
+        .map_err(|e| e.to_string())
+}
+
+/// Put a wrapped key back as the fallback key file. Refuses when the tin
+/// already holds a different key and sealed objects that only it opens.
+pub fn import_key(src: &Path, passphrase: &str) -> Result<(), String> {
+    use argon2::Argon2;
+    use chacha20poly1305::aead::Aead;
+    let raw = fs::read(src).map_err(|e| e.to_string())?;
+    if raw.len() < 8 + 16 + 24 + 16 || &raw[..8] != KEY_EXPORT_MAGIC {
+        return Err(format!("{} is not a cig key export", src.display()));
+    }
+    let salt = &raw[8..24];
+    let nonce = &raw[24..48];
+    let ct = &raw[48..];
+    let mut wrap = [0u8; 32];
+    Argon2::default()
+        .hash_password_into(passphrase.as_bytes(), salt, &mut wrap)
+        .map_err(|e| format!("deriving the wrapping key failed: {e}"))?;
+    let cipher = XChaCha20Poly1305::new((&wrap).into());
+    let pt = cipher
+        .decrypt(nonce.into(), ct)
+        .map_err(|_| "wrong passphrase, or the export was changed".to_string())?;
+    let master: Key = pt
+        .as_slice()
+        .try_into()
+        .map_err(|_| "the export does not hold a 32-byte key".to_string())?;
+    let path = key_path();
+    // A different key already in place, with sealed objects that only it
+    // opens: importing over it would lock them out. Refused, with the way
+    // round it.
+    if let Ok(existing) = fs::read_to_string(&path) {
+        if let Ok(current) = decode_key(existing.trim()) {
+            if current != master && sealed_in_use() {
+                return Err(format!(
+                    "the tin already has a key ({}) that sealed objects depend on, and this export holds a different one; importing it would lock them out. Export the current key first (cig tin key export), move it aside, then import",
+                    crate::crash::tilde(&path)
+                ));
+            }
+        }
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        own_only_dir(parent);
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&path).map_err(|e| e.to_string())?;
+    f.write_all(hex::encode(master).as_bytes())
+        .and_then(|()| f.write_all(b"\n"))
+        .and_then(|()| f.sync_all())
+        .map_err(|e| e.to_string())?;
+    // Where the keyring is the keeper, the imported key goes there as well,
+    // so the next run finds it there and never makes a fresh one instead.
+    store_in_keyring(&master);
+    Ok(())
+}
+
+/// Put a key into the OS keyring, best effort, on a thread with a deadline
+/// (a hanging D-Bus activation must not hang the command). Skipped when
+/// the setting says the key lives in a file.
+fn store_in_keyring(k: &Key) {
+    if crate::config::Config::load().get("seal_key") == "file" {
+        return;
+    }
+    let k = *k;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let ok = keyring::Entry::new(SERVICE, USER)
+            .and_then(|e| e.set_password(&hex::encode(k)))
+            .is_ok();
+        let _ = tx.send(ok);
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(5));
+}
+
+/// Where the key is kept, without making one: the keyring when it holds an
+/// entry, else the key file when it exists, else nowhere yet. For doctor,
+/// which must not create a key as a side effect of looking.
+pub fn peek_keeper() -> Option<Keeper> {
+    if crate::config::Config::load().get("seal_key") != "file" && keyring_has_entry() {
+        return Some(Keeper::Keyring);
+    }
+    if key_path().exists() {
+        return Some(Keeper::File);
+    }
+    None
+}
+
+fn keyring_has_entry() -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let ok = keyring::Entry::new(SERVICE, USER)
+            .and_then(|e| e.get_password())
+            .is_ok();
+        let _ = tx.send(ok);
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or(false)
 }
 
 fn decode_key(text: &str) -> Result<Key, String> {
@@ -426,7 +763,7 @@ pub fn seal_file(src: &Path, dest: &Path, aad: &[u8]) -> io::Result<(String, u64
 }
 
 fn seal_inner(src: &Path, dest: &Path, aad: &[u8]) -> io::Result<(String, u64)> {
-    let key = key_or_refuse()?;
+    let key = derive(&key_or_refuse()?, LABEL_SEAL);
     let mut nonce = [0u8; NONCE];
     getrandom::getrandom(&mut nonce).map_err(|e| io::Error::other(e.to_string()))?;
     let cipher = XChaCha20Poly1305::new((&key).into());
@@ -473,14 +810,26 @@ pub fn unseal_to(
     expect_sha256: &str,
     dst: &mut dyn Write,
 ) -> io::Result<u64> {
-    let key = key().map(|(k, _)| k).map_err(|e| {
+    let master = key().map(|(k, _)| k).map_err(|e| {
         io::Error::other(format!(
             "the key that sealed it is not available ({e}); nothing was written"
         ))
     })?;
     let mut input = io::BufReader::new(fs::File::open(src)?);
     let mut head = [0u8; MAGIC.len() + NONCE];
-    if read_full(&mut input, &mut head)? != head.len() || &head[..MAGIC.len()] != MAGIC {
+    let n = read_full(&mut input, &mut head)?;
+    let magic = &head[..MAGIC.len()];
+    let key = if magic == MAGIC {
+        derive(&master, LABEL_SEAL)
+    } else if magic == MAGIC_V1 {
+        master
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{} is not a sealed object", src.display()),
+        ));
+    };
+    if n != head.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{} is not a sealed object", src.display()),

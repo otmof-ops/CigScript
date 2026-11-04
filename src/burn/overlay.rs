@@ -252,6 +252,14 @@ impl Setup {
         if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
             return self.fail(b"unshare(CLONE_NEWUSER|CLONE_NEWNS) refused");
         }
+        // Once cig has loaded the tin's key it is non-dumpable
+        // (seal::harden_process_memory), and the fork inherits that. A
+        // non-dumpable process's /proc/self files are owned by root, so this
+        // child could not open its own uid_map to write it. The child is
+        // about to exec, which makes it dumpable again regardless, so it is
+        // made dumpable now, inside its own user namespace; the parent cig
+        // holding the key stays protected.
+        libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0);
         if !write_file(c"/proc/self/uid_map", &self.uid_map) {
             return self.fail(b"writing /proc/self/uid_map refused");
         }

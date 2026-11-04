@@ -205,6 +205,58 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
             ctx.dim(t.enables)
         );
     }
+    // The tin's protection, in one block: who can read it, where the key
+    // is, and whether a hop can read it out of cig's memory.
+    outln!("  tin");
+    {
+        use cigscript::burn::{seal, tin};
+        let home = cigscript::burn::runs::home_dir();
+        outln!(
+            "    private       {}  {}",
+            yes_no(ctx, home_is_private(&home)),
+            ctx.dim(&cigscript::crash::tilde(&home))
+        );
+        // Looked at, never made: doctor must not create a key by looking.
+        let (keeper, where_) = match seal::peek_keeper() {
+            Some(seal::Keeper::Keyring) => ("the OS keyring".to_string(), String::new()),
+            Some(seal::Keeper::File) => (
+                "a key file".to_string(),
+                cigscript::crash::tilde(&seal::key_path()),
+            ),
+            None => (
+                "not made yet".to_string(),
+                "made on the first sealed object".to_string(),
+            ),
+        };
+        outln!("    key           {keeper}  {}", ctx.dim(&where_));
+        outln!(
+            "    key out of tin {}  {}",
+            yes_no(ctx, !seal::key_path().starts_with(tin::dir())),
+            ctx.dim("a copy of the tin does not take the key")
+        );
+        let debug_allowed = std::env::var_os("CIG_ALLOW_DEBUG").is_some();
+        outln!(
+            "    key in memory {}  {}",
+            yes_no(
+                ctx,
+                !debug_allowed && cfg!(any(target_os = "linux", target_os = "macos"))
+            ),
+            ctx.dim(if debug_allowed {
+                "CIG_ALLOW_DEBUG=1: a debugger can read the key (E715)"
+            } else {
+                "a hop cannot read the key out of cig"
+            })
+        );
+        if seal::has_sealed()
+            && !seal::was_exported()
+            && cigscript::config::Config::load().get("key_reminder") != "off"
+        {
+            outln!(
+                "    {}",
+                ctx.yellow("tip: back up the tin key so a restored backup can open your secrets: cig tin key export")
+            );
+        }
+    }
     if problems.is_empty() {
         outln!("{}", ctx.green("no problems found"));
         return exit::OK;
@@ -389,6 +441,25 @@ fn yes_no(ctx: &Ctx, v: bool) -> String {
         ctx.green("yes")
     } else {
         ctx.yellow("no")
+    }
+}
+
+/// Is the state directory owner-only (0700, owned by this user) on Unix?
+/// Elsewhere the user's profile already restricts it.
+fn home_is_private(home: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(home) {
+            Ok(m) => m.uid() == unsafe { libc::geteuid() } && m.permissions().mode() & 0o077 == 0,
+            Err(_) => true,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = home;
+        true
     }
 }
 
