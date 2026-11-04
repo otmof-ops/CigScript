@@ -815,6 +815,52 @@ pub fn unseal_to(
             "the key that sealed it is not available ({e}); nothing was written"
         ))
     })?;
+    unseal_to_with(&master, src, aad, expect_sha256, dst)
+}
+
+/// The key kept in a file (hex), when it reads as one.
+pub fn key_in_file(path: &Path) -> Option<Key> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|t| decode_key(t.trim()).ok())
+}
+
+/// Re-seal `src`, sealed under `from`, into `dest` under this machine's
+/// key, bound to the same name. `dest` may be `src`: the plaintext passes
+/// through a private file beside it and is removed.
+pub fn reseal(src: &Path, dest: &Path, aad: &[u8], from: &Key) -> io::Result<()> {
+    let plain = dest.with_extension("reseal-plain");
+    let sealed = dest.with_extension("reseal-sealed");
+    let result = (|| -> io::Result<()> {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut out = io::BufWriter::new(opts.open(&plain)?);
+        unseal_to_with(from, src, aad, "", &mut out)?;
+        out.flush()?;
+        drop(out);
+        seal_file(&plain, &sealed, aad)?;
+        fs::rename(&sealed, dest)
+    })();
+    let _ = fs::remove_file(&plain);
+    let _ = fs::remove_file(&sealed);
+    result
+}
+
+/// `unseal_to` under the master key given: this machine's, or another's
+/// whose objects are being taken in.
+pub fn unseal_to_with(
+    master: &Key,
+    src: &Path,
+    aad: &[u8],
+    expect_sha256: &str,
+    dst: &mut dyn Write,
+) -> io::Result<u64> {
+    let master = *master;
     let mut input = io::BufReader::new(fs::File::open(src)?);
     let mut head = [0u8; MAGIC.len() + NONCE];
     let n = read_full(&mut input, &mut head)?;

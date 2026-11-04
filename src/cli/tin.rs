@@ -23,6 +23,17 @@ pub enum TinCommand {
     },
     /// The ledger's head: one line to keep anywhere else, for `cig tin verify --head`.
     Head,
+    /// A keyed MAC over a file, under a label of the caller's (a subkey of the tin's key): what another tool signs its own records with, and what a hop in the box cannot make.
+    Mac {
+        /// The file to MAC (`-` reads stdin).
+        file: std::path::PathBuf,
+        /// The label the subkey is derived under: lower-case letters, digits and dashes, up to 32.
+        #[arg(long)]
+        label: String,
+        /// Check against a MAC printed earlier (exit 0 when it matches) instead of printing one.
+        #[arg(long, value_name = "HEX")]
+        check: Option<String>,
+    },
     /// Remove every object no run in the history still refers to.
     Gc {
         /// Also remove sealed objects the tin's key cannot open (sealed under a key that is gone).
@@ -155,6 +166,76 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
                 );
             }
             exit::OK
+        }
+        TinCommand::Mac { file, label, check } => {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+            let good_label = !label.is_empty()
+                && label.len() <= 32
+                && label
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+            if !good_label {
+                eprintln!(
+                    "{} the label is lower-case letters, digits and dashes, up to 32 (got `{label}`)",
+                    ctx.red("error[E803 usage]:")
+                );
+                return exit::USAGE;
+            }
+            let bytes = if file.as_os_str() == "-" {
+                let mut v = Vec::new();
+                if let Err(e) = std::io::Read::read_to_end(&mut std::io::stdin().lock(), &mut v) {
+                    eprintln!("{} cannot read stdin: {e}", ctx.red("error[E803 usage]:"));
+                    return exit::USAGE;
+                }
+                v
+            } else {
+                match std::fs::read(&file) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!(
+                            "{} cannot read {}: {e}",
+                            ctx.red("error[E803 usage]:"),
+                            file.display()
+                        );
+                        return exit::USAGE;
+                    }
+                }
+            };
+            let master = match seal::key() {
+                Ok((k, _)) => k,
+                Err(e) => {
+                    eprintln!(
+                        "{} the tin's key is not available ({e}); nothing can be signed",
+                        ctx.red("error:")
+                    );
+                    return exit::SCRIPT_ERROR;
+                }
+            };
+            let sub = seal::derive(&master, format!("app:{label}").as_bytes());
+            let mut m = Hmac::<Sha256>::new_from_slice(&sub).expect("HMAC takes any key length");
+            m.update(&bytes);
+            match check {
+                None => {
+                    outln!("{}", hex::encode(m.finalize().into_bytes()));
+                    exit::OK
+                }
+                Some(want) => {
+                    let ok = hex::decode(want.trim())
+                        .map(|w| m.verify_slice(&w).is_ok())
+                        .unwrap_or(false);
+                    if ok {
+                        outln!("matches");
+                        exit::OK
+                    } else {
+                        eprintln!(
+                            "{} the MAC does not match: the file or the MAC changed, or it was made under another key or label",
+                            ctx.red("error:")
+                        );
+                        exit::SCRIPT_ERROR
+                    }
+                }
+            }
         }
         TinCommand::Head => match cigscript::burn::ledger::load() {
             Ok(l) => {

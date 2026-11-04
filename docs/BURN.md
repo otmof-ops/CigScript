@@ -438,12 +438,13 @@ out of reach of what cig runs.
   the hop has it as its own state root (`CIGSCRIPT_HOME`, `CIG_KEYS_DIR`,
   a key file of its own, the parent's settings copied in), runs as it would
   anywhere, and when the hop ends its runs are taken in as **children** of
-  the run (`cig runs <id>` names them; `parent` on the child's record). A
-  child's changes reached the pack through the hop's layer and are in the
-  parent's journal with their before-images, so a child keeps its record
-  and journal for the reading, not its objects, and is unburned through its
-  parent (`E714`). Anything else in the inbox is dropped with a note
-  (`E713`). `tin_guard` is `auto` (boxed hops, wherever the kernel allows;
+  the run (`cig runs <id>` names them; `parent` on the child's record),
+  whole: its objects move into this tin, checked against their names on
+  the way (a mismatch drops the run, `E713`), its sealed objects are
+  re-sealed under this machine's key, its journal's paths relocated and
+  the journal re-signed. A child unburns like any run, and the parent's
+  rollback undoes it through the burn protocol, as a nested run always
+  was. Anything else in the inbox is dropped with a note (`E713`). `tin_guard` is `auto` (boxed hops, wherever the kernel allows;
   one note, `E712`, where it does not), `on` (every hop, boxed or not, and
   a refusal where the guard cannot be made) or `off`; `CIG_TIN_GUARD=0` is
   off for one run. Outside Linux, and where user namespaces are not
@@ -508,6 +509,53 @@ that dies in a boxed hop leaves the layers under its record (overlayfs
 makes the work directory unreadable); the next `cig run` sweeps them for
 any run that is not alive, `cig unburn` removes them with the rollback, and
 a rollback removes any tree a hop made whatever the modes inside it.
+
+### Untrusted code: the box's network, PID namespace and kept layers
+
+From 1.11.0 `box` also takes a map, for a hop whose code you did not write:
+
+```cig
+proc.run("npm", ["ci"], {box: {
+  network: "registry",                 # "on" (the default), "off", "registry"
+  allow_hosts: ["registry.npmjs.org"], # a name, "*.suffix", or "host:port"
+  pidns: true,                         # its own PID namespace (the default with the box)
+  apply: "on_success",                 # "on_success" (the default), "ask", "never"
+}})
+```
+
+- **The PID namespace.** The hop is pid 2 under an init of cig's (pid 1
+  inside), with the namespace's processes alone in `/proc`: it cannot see,
+  signal, trace or read cig. Each process dies with its parent, so a cig
+  that dies takes the whole namespace with it, and a layer is applied only
+  by a live cig after the hop. The layer a dead cig left is dropped by the
+  next `cig runs`, which says so; the run's earlier burns unburn as ever.
+- **The network.** `off` is a namespace with `lo` alone and an empty
+  `/etc/resolv.conf`: a connection anywhere fails at once, a lookup has no
+  one to ask. `registry` is the same namespace with one way out: a
+  forwarder inside on `127.0.0.1:38080` (`HTTP_PROXY`, `HTTPS_PROXY`,
+  `npm_config_proxy`, `PIP_PROXY`, `CARGO_HTTP_PROXY` and friends point at
+  it) relays to cig's CONNECT proxy outside, which allows `allow_hosts`,
+  resolves them itself, counts the bytes, and refuses and records the rest
+  (`E771`, one note per host; the events in `runs/<id>/events/<hop>.jsonl`).
+  A tool that ignores proxies has no network at all. A network of its own
+  asked for where the box cannot be made is a refusal (`E777`), not a
+  fallback: running code you do not trust unprotected to check it defeats
+  the point.
+- **Kept layers.** `apply: "never"` runs the hop and holds its layer back:
+  nothing reaches the pack, the hop's result carries `layer: "<run>/<hop>"`,
+  and the run says so (`E780`). `apply: "ask"` shows what the layer would
+  change and asks at the terminal; away from one it keeps. `cig box list`
+  names kept layers; `cig box apply <run> <hop>` puts one in as a run of its
+  own, journaled with its before-images, so `cig unburn <that run>` takes
+  it out again; `cig box discard <run> <hop>` drops one. An unburn of the
+  run a kept layer belongs to drops it too: the base it was made against is
+  gone.
+- **A key for another tool's records.** `cig tin mac <file> --label <l>`
+  prints a MAC over the file under a subkey of the tin's key derived for
+  that label; `--check <hex>` verifies one. cig-orchestrator signs its trust
+  store with it: a hop in the box cannot make such a MAC under the tin's
+  key, because the key folder is empty there, so an approval a script
+  writes for itself verifies nowhere.
 
 ## The parcel
 

@@ -92,7 +92,7 @@ E700-E749  the burn kernel and its journal (write-ahead log)
   E711  a newer journal format             burn
   E712  the guard is not available here    burn
   E713  the inbox held something that is not a run burn
-  E714  a child run is unburned through its parent burn
+  E714  a child run is unburned through its parent (retired) burn
   E715  debugging is allowed               burn
 
 E750-E769  folds and packs: refusals when automation is composed
@@ -111,6 +111,11 @@ E750-E769  folds and packs: refusals when automation is composed
   E762  a parcel could not be written or imported burn
   E763  the box could not be made, or its layer not applied burn
 
+E770-E799  the box for untrusted code: its network, the watch, kept layers, the kill switch
+  E771  a host outside the allow list      burn
+  E777  no isolation for untrusted code    burn
+  E780  a layer was kept, not applied      burn
+
 E800-E849  the command line and the environment
   E800  usage error                        usage
   E801  cannot read script                 usage
@@ -124,6 +129,30 @@ E800-E849  the command line and the environment
 
 E850-E869  the updater and doctor
   reserved; nothing emitted yet
+
+E870-E899  what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read
+  E870  a known malicious package          usage  (planned)
+  E871  reads credentials                  usage  (planned)
+  E872  tries to send data out             usage  (planned)
+  E873  persistence                        usage  (planned)
+  E874  fetch and run                      usage  (planned)
+  E875  obfuscation                        usage  (planned)
+  E876  ransomware shape                   usage  (planned)
+  E877  wiper shape                        usage  (planned)
+  E878  asks for privilege                 usage  (planned)
+  E879  eyes cigo or the tin               usage  (planned)
+  E880  outside the footprint              usage  (planned)
+  E881  typosquat                          usage  (planned)
+  E882  brand new, or a new publisher      usage  (planned)
+  E883  a new install script               usage  (planned)
+  E884  no label on the pack               usage  (planned)
+  E885  a known vulnerability              usage  (planned)
+  E886  prompt injection                   usage  (planned)
+  E887  invisible instructions             usage  (planned)
+  E888  probes for a sandbox               usage  (planned)
+  E889  a forged approval                  usage  (planned)
+  E890  cigo was changed                   usage  (planned)
+  E891  decoys changed the output          usage  (planned)
 
 E900-E999  internal: a bug in CigScript itself
   E900  internal error                     internal
@@ -1448,13 +1477,14 @@ E713 the inbox held something that is not a run  (burn, kernel family, since 1.1
   arises in: run  ·  related: E712, E714  ·  tags: kernel
 
 ======== E714 ========
-E714 a child run is unburned through its parent  (burn, kernel family, since 1.10.0)
+E714 a child run is unburned through its parent (retired)  (burn, kernel family, since 1.10.0)
+  retired: kept so old run records still decode; never emitted again
 
   kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
 
-  This run was a cig started inside another run's hop. Its changes reached the pack through that hop's layer, so they are in the parent's journal with their before-images, and the child keeps its record and journal for the reading, not its objects. Unburning the parent puts them back with the rest of that run.
+  Retired in 1.11.0: in 1.10.0 a child run (a cig inside another run's hop) kept no objects of its own and could only be unburned through its parent. From 1.11.0 a child is taken in whole, its objects in the tin and its sealed objects re-sealed under this machine's key, so it unburns like any run, and the parent's rollback undoes it through the burn protocol. Kept so 1.10.0's records still decode.
 
-  what to type next: cig unburn <parent>; cig runs <child> names the parent
+  what to type next: cig unburn <child> works from 1.11.0; before it, cig unburn <parent>
 
   known causes, ranked; doctor checks them in this order
   1. cig unburn was given a child run's id
@@ -1462,6 +1492,54 @@ E714 a child run is unburned through its parent  (burn, kernel family, since 1.1
      remedy: give the parent's id instead; the child's changes are part of that run
 
   arises in: unburn  ·  related: E713, E700  ·  tags: kernel
+
+======== E771 ========
+E771 a host outside the allow list  (burn, guard family, since 1.11.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A boxed hop with network: registry tried to connect somewhere its allow_hosts does not name. The box's only way out is cig's proxy, which refused the connection and recorded it; the hop saw the refusal and nothing left the machine.
+
+  what to type next: if the host is legitimate, add it to box.allow_hosts (a name, *.suffix, or host:port); if not, that is the finding
+
+  known causes, ranked; doctor checks them in this order
+  1. the tool reached for a host the toolchain's footprint does not name (a mirror, a telemetry endpoint, or an exfiltration attempt)
+     probe: none; a suggestion, not a finding
+     remedy: read the events in cig runs <id>; allow the host only if you meant it
+
+  arises in: run  ·  related: E777, E763  ·  tags: kernel
+
+======== E777 ========
+E777 no isolation for untrusted code  (burn, guard family, since 1.11.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The hop asked the box to isolate it (a network of its own: off or registry) and the box cannot be made on this machine, so the hop was refused. Running code you do not trust unprotected to check it defeats the point; box: true alone still falls back to the tin with a warning (E763).
+
+  what to type next: on Linux, allow unprivileged user namespaces and have overlayfs; otherwise run it on a machine that has the box, or drop the isolation knowing what that means
+
+  known causes, ranked; doctor checks them in this order
+  1. unprivileged user namespaces are disabled, the kernel has no overlayfs, or the state directory sits on an overlay (a container's layer)
+     probe: none; a suggestion, not a finding
+     remedy: cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user namespaces enabled let the box be made
+
+  arises in: run  ·  related: E763, E771  ·  tags: kernel, ci-likely
+
+======== E780 ========
+E780 a layer was kept, not applied  (burn, guard family, since 1.11.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  The hop ran in the box and its layer was held back: apply: never asked for exactly that, or apply: ask found no terminal or a no. The changes are in the box under the run, not in the pack; cig box apply <run> <hop> puts them in as a run of their own, cig box discard drops them.
+
+  what to type next: cig box list, then cig box apply <run> <hop> or cig box discard <run> <hop>
+
+  known causes, ranked; doctor checks them in this order
+  1. the script asked for a rehearsal (apply: never), or asked and nobody was there to say yes
+     probe: none; a suggestion, not a finding
+     remedy: apply or discard the kept layer by hand
+
+  arises in: run  ·  related: E763  ·  tags: kernel
 
 ======== E715 ========
 E715 debugging is allowed  (burn, kernel family, since 1.8.0)
@@ -1898,6 +1976,380 @@ E808 record from a newer cig  (usage, usage family, since 1.2.0)
      remedy: cig update, or cig versions add <version> so unburn can hand the run to it
 
   arises in: unburn, runs  ·  related: E807
+
+======== E870 ========
+E870 a known malicious package  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A package in the lockfile is a known malicious package (an OSV MAL- advisory). The guard refuses the task before anything runs. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: remove the package; cigo audit <name> shows the advisory
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E885, E881  ·  tags: ci-likely
+
+======== E871 ========
+E871 reads credentials  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  In the rehearsal the code read a credential file (an SSH key, a cloud or registry token, a browser profile, a .env); in the box it got a decoy, outside it the real thing. Risk: critical with E872, else high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: if a tool needs that file, name it in the toolchain's footprint reads; otherwise that is the finding
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E872, E880  ·  tags: ci-likely
+
+======== E872 ========
+E872 tries to send data out  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The code tried to connect somewhere that is not a registry or a host the footprint names, or to send data there. In the box the connection was refused and recorded. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: allow the host in the footprint only if you meant it; with E871 beside it, treat the package as stealing credentials
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E871, E771  ·  tags: ci-likely
+
+======== E873 ========
+E873 persistence  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The code wrote somewhere that runs again later: a shell rc file, a cron or systemd user unit, a launch agent, a Run key, a .git hook, an editor's config. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: read what it wrote; a toolchain that legitimately installs a hook names it in its footprint
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E880  ·  tags: ci-likely
+
+======== E874 ========
+E874 fetch and run  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The script downloads something and runs it as it arrives (curl | sh, wget -O- | bash, iwr | iex, python -c with a fetched body): it runs whatever that server sends today. Risk: medium, high outside the footprint. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: pin and verify what is fetched, or vendor it; a build tool's own installer step can be named in the footprint
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E875  ·  tags: ci-likely
+
+======== E875 ========
+E875 obfuscation  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Code is decoded or assembled before it runs: base64 or hex into eval or exec, long high-entropy strings, character-code chains, packed scripts. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: read the decoded form; legitimate build artefacts are packed too, so the other findings beside this one decide
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E874  ·  tags: ci-likely
+
+======== E876 ========
+E876 ransomware shape  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  In the rehearsal many files were rewritten with high-entropy content, renamed to one new extension, or deleted after a write of the same size. In the box, so not yours. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: do not run it; cigo quarantine show <run> holds what it wrote
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E877  ·  tags: ci-likely
+
+======== E877 ========
+E877 wiper shape  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  In the rehearsal the code deleted files outside the toolchain's footprint. In the box, so nothing was lost. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: do not run it; the quarantine holds the evidence
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E876, E880  ·  tags: ci-likely
+
+======== E878 ========
+E878 asks for privilege  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The script calls sudo, doas, setuid or chmod +s, or raises a UAC prompt: an install step has no business becoming root. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: run the privileged part yourself, knowing what it does
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  tags: ci-likely
+
+======== E879 ========
+E879 eyes cigo or the tin  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The script names cig's or cigo's own files (the state directory, the key folder, orchestrate.cig, cig-tasks.json, the trust store) or kills cig or cigo by name. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: do not run it; nothing legitimate needs to touch those
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E889, E890  ·  tags: ci-likely
+
+======== E880 ========
+E880 outside the footprint  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  In the rehearsal the code wrote, read or connected outside what the toolchain's stage is known to do. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: if the path or host is legitimate for this project, add it to the project's footprint; cigo check validates it
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E873, E872  ·  tags: ci-likely
+
+======== E881 ========
+E881 typosquat  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The package's name is within a letter or two of a popular package in its ecosystem. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: check you meant this name; the popular one is named in the finding
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E870  ·  tags: ci-likely
+
+======== E882 ========
+E882 brand new, or a new publisher  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The version was published in the last few days, or by a maintainer added just before it. Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: wait, read the diff, or pin the previous version
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E883  ·  tags: ci-likely
+
+======== E883 ========
+E883 a new install script  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The previous version ran nothing at install; this one runs a script. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: read the script; most real supply-chain attacks are a bad update to a good package
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E882  ·  tags: ci-likely
+
+======== E884 ========
+E884 no label on the pack  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  No source repository is linked, or the linked one has no tag for this version. Risk: low. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: build from source you can see, or accept the risk knowingly
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  tags: ci-likely
+
+======== E885 ========
+E885 a known vulnerability  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A package in the lockfile has a known vulnerability (a GHSA or CVE advisory); the fixed version is named when there is one. Risk: per advisory. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: update to the fixed version
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E870  ·  tags: ci-likely
+
+======== E886 ========
+E886 prompt injection  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Text in the package (a README, a comment, install output) is addressed to AI agents: it tells any assistant reading it to do something. The guard fences such output before it is printed. Risk: high, critical with E871 or E872. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: keep your agents off it; treat the text as data
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E887  ·  tags: ci-likely
+
+======== E887 ========
+E887 invisible instructions  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Invisible Unicode (tag characters, zero-width characters inside words, bidirectional overrides) spells out text a reader cannot see. Risk: high. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: strip it and read what it said; nothing honest needs invisible text
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, check  ·  related: E886  ·  tags: ci-likely
+
+======== E888 ========
+E888 probes for a sandbox  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The code looked for signs it was being watched (reading /proc/1/cgroup, checking for decoy markers, waiting a long time before acting). Risk: medium. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: treat it as hostile until shown otherwise; a delayed payload is still contained in the real run's box
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  tags: ci-likely
+
+======== E889 ========
+E889 a forged approval  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  An entry in cigo's trust store does not verify under this machine's key: something wrote an approval it had no right to. It is ignored. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: cigo trust list; remove the entry; the task is checked as if never approved
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E879  ·  tags: ci-likely
+
+======== E890 ========
+E890 cigo was changed  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  orchestrate.cig or a launcher differs from what cigo's verified install recorded; cigo refuses to run until it is repaired. Risk: critical, refuses to run. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: cigo update --repair
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run, any  ·  related: E879  ·  tags: ci-likely
+
+======== E891 ========
+E891 decoys changed the output  (usage, finding family, since 1.11.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The rehearsal read a decoy and wrote something after, so its result cannot be kept; after a yes the task runs for real. Risk: info. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain, --json and SARIF.
+
+  what to type next: nothing: the real run follows your yes
+
+  known causes, ranked; doctor checks them in this order
+  1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55)
+     probe: none; a suggestion, not a finding
+     remedy: cigo audit <task> re-shows the last verdict with its evidence
+
+  arises in: run  ·  related: E871  ·  tags: ci-likely
 
 ======== E900 ========
 E900 internal error  (internal, internal family, since 1.0.0)

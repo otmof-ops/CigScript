@@ -11,11 +11,13 @@ macro_rules! outln {
     }};
 }
 
+mod boxcmd;
 mod chains;
 mod config;
 mod crash;
 mod doctor;
 mod explain;
+mod forward;
 mod language;
 mod parcel;
 mod pin;
@@ -202,6 +204,14 @@ pub enum Command {
         #[arg(long)]
         show: bool,
     },
+    /// The layers hops kept rather than applied: list, apply (as a new run), discard.
+    Box {
+        #[command(subcommand)]
+        command: Option<boxcmd::BoxCommand>,
+    },
+    /// The forwarder inside a boxed hop's network namespace (started by cig itself).
+    #[command(hide = true, name = "internal-forward")]
+    InternalForward { sock: std::path::PathBuf, port: u16 },
     /// The tin: the before-bytes of files hops may change; du, verify, gc.
     Tin {
         #[command(subcommand)]
@@ -416,6 +426,8 @@ fn dispatch(ctx: Ctx, command: Command) -> i32 {
         } => update::update(&ctx, check, allow_downgrade, to),
         Command::Versions { command } => versions::versions(&ctx, command),
         Command::Pin { file, to } => pin::pin_cmd(&ctx, &file, to),
+        Command::Box { command } => boxcmd::box_cmd(&ctx, command),
+        Command::InternalForward { sock, port } => forward::forward(&sock, port),
         Command::Tin { command } => tin::tin_cmd(&ctx, command),
         Command::Parcel { id, out } => parcel::parcel(&ctx, &id, out),
         Command::Unparcel {

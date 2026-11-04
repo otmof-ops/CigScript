@@ -41,6 +41,16 @@ pub fn sealed_dir() -> PathBuf {
     dir().join("sealed")
 }
 
+/// The objects' and recipes' roots, for a take-in that moves another
+/// tin's into this one.
+pub fn objects_root() -> PathBuf {
+    objects_dir()
+}
+
+pub fn recipes_root() -> PathBuf {
+    recipes_dir()
+}
+
 /// Is this snapshot path a sealed object in the tin?
 pub fn is_sealed(path: &Path) -> bool {
     path.starts_with(sealed_dir())

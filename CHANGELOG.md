@@ -3,6 +3,47 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.11.0 — 2026-11-05
+
+The first half of the box for untrusted code (#106, steps 1, 2 and 6): the
+PID namespace, the network, kept layers.
+
+- **`box` takes a map.** `{network, allow_hosts, pidns, apply}`; `box: true`
+  is as it was.
+- **The PID namespace** (on by default with the box). The hop is pid 2 under
+  an init of cig's, the namespace's processes alone in `/proc`; it cannot
+  see, signal, trace or read cig. Each process dies with its parent, so a
+  cig that dies takes the namespace with it, and a layer is applied only by
+  a live cig after the hop; the layer a dead cig left is dropped by the next
+  `cig runs`, which says so. `pidns: false` keeps the machine's view.
+- **The network.** `off`: a namespace with `lo` alone and an empty
+  resolver. `registry`: the same, with one way out through a forwarder on
+  `127.0.0.1:38080` to cig's CONNECT proxy, which allows `allow_hosts` (a
+  name, `*.suffix`, `host:port`), counts the bytes, and refuses and records
+  the rest (`E771`; events under the run). Isolation asked for where the
+  box cannot be made is refused (`E777`), not fallen back from.
+- **Kept layers.** `apply: "never"` holds the layer back (`E780`; the hop's
+  result carries `layer`); `apply: "ask"` asks at the terminal and keeps
+  away from one. `cig box list`, `cig box apply <run> <hop>` (a run of its
+  own, unburnable), `cig box discard <run> <hop>`; an unburn of the run
+  drops its kept layers.
+- **Fixed: a child run comes in whole.** 1.10.0 kept a child's record and
+  journal but not its objects, and refused `cig unburn <child>` (`E714`),
+  so a cig inside a hop that wrote outside the parent's pack was no longer
+  undone by the parent's rollback. From 1.11.0 the take-in moves the
+  child's objects into the tin (checked against their names), re-seals its
+  sealed objects under this machine's key, relocates and re-signs its
+  journal and records it in the ledger; a child unburns on its own, the
+  compensation through the burn protocol is claimed again, and `E714` is
+  retired.
+- **`cig tin mac <file> --label <l> [--check <hex>]`.** A keyed MAC under a
+  subkey of the tin's key derived for the caller's label: what another tool
+  (cig-orchestrator's trust store) signs its records with. A hop in the box
+  cannot make one under the tin's key, since the key folder is empty there.
+- **The `finding` family, `E870`–`E899`.** The codes cig-orchestrator's
+  guard raises for what it finds in someone else's code, registered here so
+  `cig explain` and doctor know them.
+
 ## 1.10.0 — 2026-11-05
 
 The headline of the tin's protections (#105, L1): the tin read-only to the

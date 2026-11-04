@@ -123,6 +123,24 @@ impl Sandbox {
         let out = self.run_ok(&["--json", "runs"]);
         serde_json::from_str(&out).expect("runs json")
     }
+
+    /// `cig`, started and left running (for a test that kills it).
+    #[cfg(target_os = "linux")]
+    fn cig_spawn(&self, args: &[&str]) -> std::process::Child {
+        Command::new(env!("CARGO_BIN_EXE_cig"))
+            .args(args)
+            .current_dir(self.path())
+            .env("CIGSCRIPT_HOME", self.home())
+            .env("NO_COLOR", "1")
+            .env("CIG_SEAL_KEY", "file")
+            .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
+            .env_remove("CI")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn cig")
+    }
 }
 
 // ----- golden scripts --------------------------------------------------------
@@ -4527,18 +4545,99 @@ fn a_cig_inside_a_boxed_hop_is_a_child_run_unburned_with_its_parent() {
         shown.contains("children") && shown.contains(&child_id),
         "{shown}"
     );
-    // The child's journal reads under this machine's key.
+    // The child came in whole: its journal reads under this machine's key
+    // and its objects are here.
     let shown = sb.run_ok(&["runs", &child_id, "--verify"]);
-    assert!(shown.contains("through its parent"), "{shown}");
-    // A child is unburned through its parent, not on its own.
-    let err = sb.run_err(&["unburn", &child_id], 1);
-    assert!(err.contains("E714") && err.contains(&outer_id), "{err}");
+    assert!(shown.contains("intact"), "{shown}");
+    // The parent's rollback undoes the child through the burn protocol.
     sb.run_ok(&["unburn", &outer_id]);
     assert!(
         !sb.exists("p/inner.txt"),
         "the child's change stayed after the parent's unburn"
     );
     assert_eq!(sb.read("p/keep.txt"), "v1\n");
+    let runs = sb.runs();
+    let child = runs.iter().find(|r| r["id"] == child_id.as_str()).unwrap();
+    assert_eq!(child["status"], "unburned", "{child:?}");
+}
+
+/// A cig inside a boxed hop that writes outside the parent's pack: the
+/// box's layer does not see it, and the child's own journal does; the
+/// parent's rollback undoes it through the burn protocol, as before the
+/// guard.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cig_inside_a_hop_writing_outside_the_pack_is_undone_by_the_parents_rollback() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    fs::create_dir_all(sb.path().join("outside")).unwrap();
+    sb.write(
+        "p/inner.cig",
+        "burn {\n  fs.write_text(\"../outside/flag.txt\", \"set\")\n}\n",
+    );
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"{}\", [\"run\", \"inner.cig\"], {{cwd: \"p\", box: true}})\n  cough \"boom\"\n}}\n",
+        env!("CARGO_BIN_EXE_cig")
+    );
+    sb.write("outer.cig", &script);
+    let out = sb.cig(&["run", "outer.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(err.contains("child run "), "{err}");
+    assert!(
+        !sb.exists("outside/flag.txt"),
+        "the child's write outside the pack survived the parent's rollback: {err}"
+    );
+}
+
+/// A cig inside a boxed hop that rewrites a secret: its sealed before-image
+/// is re-sealed under this machine's key on the way in, so the child
+/// unburns on its own.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cig_inside_a_hop_that_seals_a_secret_unburns_on_its_own() {
+    let sb = Sandbox::new();
+    sb.write("p/.env", "SECRET=1\n");
+    sb.write(
+        "p/inner.cig",
+        "burn {\n  fs.write_text(\".env\", \"SECRET=2\\n\")\n}\n",
+    );
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"{}\", [\"run\", \"inner.cig\"], {{cwd: \"p\", box: true}})\n}}\n",
+        env!("CARGO_BIN_EXE_cig")
+    );
+    sb.write("outer.cig", &script);
+    let out = sb.cig(&["run", "outer.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert_eq!(sb.read("p/.env"), "SECRET=2\n");
+    let runs = sb.runs();
+    let child = runs
+        .iter()
+        .find(|r| r["parent"].is_string())
+        .unwrap_or_else(|| panic!("no child run: {runs:?}"));
+    let child_id = child["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &child_id, "--verify"]);
+    assert!(
+        shown.contains("intact") && !shown.contains("BROKEN"),
+        "{shown}"
+    );
+    // From the child's own directory, as any run with relative paths.
+    let out = sb.cig_in("p", &["unburn", &child_id], &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(sb.read("p/.env"), "SECRET=1\n", "{err}");
 }
 
 /// Whatever a hop leaves in the inbox that is not a run is dropped, and
@@ -4693,6 +4792,403 @@ fn two_tins_beside_one_key_keep_separate_accounts() {
     let out = sb.cig_env(&["runs"], &[("CIGSCRIPT_HOME", &other)]);
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(!err.contains("E710"), "{err}");
+}
+
+// ----- the box for untrusted code (#106: the PID namespace, the network, kept layers) -----
+
+/// Inside the box a hop is pid 2 under an init of cig's, with the
+/// namespace's processes alone in `/proc`; `pidns: false` keeps the
+/// machine's view.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hop_cannot_see_cig() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let view = "echo pid=$$ init=$(cat /proc/1/comm) procs=$(ls /proc | grep -c '^[0-9]') ppid=$PPID > VIEW";
+    sb.write(
+        "s.cig",
+        &format!(
+            "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"sh\", [\"-c\", \"{}\"], {{cwd: \"p\", box: true}})\n  proc.run(\"sh\", [\"-c\", \"{}\"], {{cwd: \"p\", box: {{pidns: false}}}})\n}}\n",
+            view.replace("VIEW", "view.txt"),
+            view.replace("VIEW", "view2.txt")
+        ),
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    let view = sb.read("p/view.txt");
+    assert!(
+        view.contains("pid=2 ") && view.contains("init=cig") && view.contains("ppid=1"),
+        "{view}\n{err}"
+    );
+    let procs: usize = view
+        .split("procs=")
+        .nth(1)
+        .and_then(|s| s.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(999);
+    assert!(procs < 10, "{view}");
+    let view2 = sb.read("p/view2.txt");
+    assert!(!view2.contains("init=cig"), "{view2}");
+}
+
+/// A cig killed mid-hop takes the hop with it (the init dies with its
+/// parent) and applies nothing; the next command drops the layer it never
+/// applied, and the run's earlier burns are still unburnable.
+#[cfg(target_os = "linux")]
+#[test]
+fn cig_dying_applies_nothing() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/before.txt\", \"early\")\n  proc.run(\"sh\", [\"-c\", \"echo x > made.txt; exec sleep 31.7\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let sleeping = || {
+        Command::new("pgrep")
+            .args(["-f", "sleep 31.7"])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    let mut cig = sb.cig_spawn(&["run", "s.cig"]);
+    let mut up = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if sleeping() {
+            up = true;
+            break;
+        }
+    }
+    let _ = cig.kill();
+    let out = cig.wait_with_output().expect("wait");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(up, "the hop never started: {err}");
+    let boxed = !fell_back(&err);
+    if boxed {
+        let mut gone = false;
+        for _ in 0..30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            if !sleeping() {
+                gone = true;
+                break;
+            }
+        }
+        assert!(gone, "the hop outlived cig");
+    } else {
+        allow_fallback(&err);
+        let _ = Command::new("pkill").args(["-f", "sleep 31.7"]).status();
+    }
+    assert!(
+        !boxed || !sb.exists("p/made.txt"),
+        "the dead cig's layer reached the pack: {err}"
+    );
+    let out = sb.cig(&["runs"]);
+    let listed = String::from_utf8_lossy(&out.stdout).to_string();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(listed.contains("interrupted"), "{listed}\n{err}");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    if boxed {
+        assert!(err.contains("died in a boxed hop"), "{err}");
+        assert!(!sb.home().join("runs").join(&id).join("box").exists());
+    }
+    sb.run_ok(&["unburn", &id]);
+    assert!(!sb.exists("p/before.txt"));
+}
+
+/// `network: "off"`: a namespace with `lo` alone and no resolver.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hop_has_no_network_under_off() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("no python3 here; skipped");
+        return;
+    }
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    sb.write(
+        "p/probe.py",
+        &format!(
+            "import socket\ns = socket.socket()\ns.settimeout(3)\ns.connect(('127.0.0.1', {port}))\nprint('CONNECTED')\n"
+        ),
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"python3 probe.py > net.txt 2>&1; echo rc=$? >> net.txt; echo resolv=$(wc -c < /etc/resolv.conf) >> net.txt\"], {cwd: \"p\", box: {network: \"off\"}})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        // Isolation asked for and no box here: refused, as it must be.
+        assert!(err.contains("E777"), "{err}");
+        assert!(!box_expected_here(), "{err}");
+        return;
+    }
+    let net = sb.read("p/net.txt");
+    assert!(
+        !net.contains("CONNECTED") && net.contains("rc=1") && net.contains("resolv=0"),
+        "{net}\n{err}"
+    );
+    drop(listener);
+}
+
+/// `network: "registry"`: the proxy lets `allow_hosts` through and
+/// refuses the rest, each refusal recorded and said.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_registry_only_hop_reaches_the_registry_and_nothing_else() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("no python3 here; skipped");
+        return;
+    }
+    fn serve(name: &'static str) -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            for conn in listener.incoming() {
+                let Ok(mut c) = conn else { break };
+                let mut buf = [0u8; 4096];
+                let _ = c.read(&mut buf);
+                let body = format!("hello from {name}");
+                let _ = c.write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        port
+    }
+    let allowed = serve("the registry");
+    let refused = serve("elsewhere");
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "p/probe.py",
+        &format!(
+            "import http.client\nfor port in ({allowed}, {refused}):\n    try:\n        c = http.client.HTTPConnection('127.0.0.1', 38080, timeout=5)\n        c.set_tunnel('127.0.0.1', port)\n        c.request('GET', '/')\n        r = c.getresponse()\n        print(port, r.status, r.read().decode())\n    except Exception as e:\n        print(port, 'ERR', e)\n"
+        ),
+    );
+    sb.write(
+        "s.cig",
+        &format!(
+            "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"sh\", [\"-c\", \"python3 probe.py > reg.txt 2>&1\"], {{cwd: \"p\", box: {{network: \"registry\", allow_hosts: [\"127.0.0.1:{allowed}\"]}}}})\n}}\n"
+        ),
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        assert!(err.contains("E777"), "{err}");
+        assert!(!box_expected_here(), "{err}");
+        return;
+    }
+    let reg = sb.read("p/reg.txt");
+    assert!(
+        reg.contains(&format!("{allowed} 200 hello from the registry")),
+        "{reg}\n{err}"
+    );
+    assert!(
+        reg.contains(&format!("{refused} ERR")) && reg.contains("403"),
+        "{reg}"
+    );
+    assert!(
+        err.contains("note[E771 burn]") && err.contains(&format!("127.0.0.1:{refused}")),
+        "{err}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let events = sb.read(&format!("home/runs/{id}/events/1.jsonl"));
+    assert!(
+        events.contains("\"result\":\"refused\"") && events.contains("\"result\":\"allowed\""),
+        "{events}"
+    );
+}
+
+/// Isolation asked for where the box cannot be made is a refusal, not a
+/// fallback.
+#[cfg(target_os = "linux")]
+#[test]
+fn no_box_means_no_untrusted_run() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo x > made.txt\"], {cwd: \"p\", box: {network: \"off\"}})\n}\n",
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_NO_BOX", "1")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(err.contains("E777"), "{err}");
+    assert!(!sb.exists("p/made.txt"));
+    assert!(sb.cig(&["explain", "E777"]).status.success());
+    assert!(sb.cig(&["explain", "E771"]).status.success());
+    assert!(sb.cig(&["explain", "E780"]).status.success());
+}
+
+/// `apply: "never"` keeps the layer: the pack is untouched, the hop's
+/// result names the layer, `cig box apply` puts it in as a run of its own,
+/// and that run unburns.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_kept_layer_applies_later() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  stick r = proc.run(\"sh\", [\"-c\", \"echo new > made.txt; rm keep.txt\"], {cwd: \"p\", box: {apply: \"never\"}})\n  fs.write_text(\"p/layer.txt\", r.layer)\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    assert!(!sb.exists("p/made.txt") && sb.exists("p/keep.txt"), "{err}");
+    assert!(err.contains("note[E780 burn]"), "{err}");
+    let layer = sb.read("p/layer.txt");
+    let (run, seq) = layer.trim().split_once('/').expect("run/seq");
+    assert_eq!(run, sb.runs()[0]["id"].as_str().unwrap(), "{layer}");
+    let list = sb.run_ok(&["box", "list"]);
+    assert!(list.contains(run) && list.contains("rm keep.txt"), "{list}");
+    let out = sb.run_ok(&["box", "apply", &run[..12], seq]);
+    assert!(out.contains("applied the layer"), "{out}");
+    assert_eq!(sb.read("p/made.txt"), "new\n");
+    assert!(!sb.exists("p/keep.txt"));
+    let runs = sb.runs();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let applied = runs
+        .iter()
+        .find(|r| r["script"].as_str().unwrap_or("").starts_with("box apply"))
+        .expect("the apply run");
+    assert_eq!(applied["status"], "ok");
+    let err = String::from_utf8_lossy(&sb.cig(&["box", "list"]).stderr).to_string();
+    assert!(err.contains("no kept layers"), "{err}");
+    sb.run_ok(&["unburn", applied["id"].as_str().unwrap()]);
+    assert!(!sb.exists("p/made.txt") && sb.read("p/keep.txt") == "v1\n");
+}
+
+/// A kept layer goes with `cig box discard`, and with an unburn of the run
+/// it belongs to (the base it was made against is gone).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_kept_layer_is_discarded_by_hand_or_with_its_run() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/early.txt\", \"early\")\n  stick r = proc.run(\"sh\", [\"-c\", \"echo new > made.txt\"], {cwd: \"p\", box: {apply: \"never\"}})\n  fs.write_text(\"p/layer.txt\", r.layer)\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    let layer = sb.read("p/layer.txt");
+    let (run, seq) = layer.trim().split_once('/').expect("run/seq");
+    sb.run_ok(&["box", "discard", run, seq]);
+    let err = String::from_utf8_lossy(&sb.cig(&["box", "list"]).stderr).to_string();
+    assert!(err.contains("no kept layers"), "{err}");
+    // Again, and this time the unburn takes it.
+    let out = sb.cig(&["run", "s.cig"]);
+    assert!(out.status.success());
+    let layer = sb.read("p/layer.txt");
+    let run = layer.trim().split_once('/').unwrap().0.to_string();
+    assert!(sb.run_ok(&["box", "list"]).contains(&run));
+    sb.run_ok(&["unburn", &run]);
+    let err = String::from_utf8_lossy(&sb.cig(&["box", "list"]).stderr).to_string();
+    assert!(err.contains("no kept layers"), "{err}");
+    assert!(!sb.exists("p/made.txt"));
+}
+
+/// `cig tin mac`: a keyed MAC under a label of the caller's, the same for
+/// the same bytes and label, different under another label, checkable; and
+/// not makeable under the tin's key from inside a boxed hop, whose key
+/// folder is empty (it gets a key of its own in the inbox, which verifies
+/// nowhere else).
+#[cfg(unix)]
+#[test]
+fn tin_mac_signs_under_the_tins_key_and_a_hop_cannot() {
+    let sb = Sandbox::new();
+    sb.write("p/rec.json", "{\"task\":\"setup\"}\n");
+    let a = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "cigo-trust"]);
+    assert_eq!(a.trim().len(), 64, "{a}");
+    let b = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "cigo-trust"]);
+    assert_eq!(a, b);
+    let c = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "other"]);
+    assert_ne!(a, c);
+    let ok = sb.run_ok(&[
+        "tin",
+        "mac",
+        "p/rec.json",
+        "--label",
+        "cigo-trust",
+        "--check",
+        a.trim(),
+    ]);
+    assert!(ok.contains("matches"), "{ok}");
+    sb.write("p/rec.json", "{\"task\":\"setup\",\"approved\":true}\n");
+    let err = sb.run_err(
+        &[
+            "tin",
+            "mac",
+            "p/rec.json",
+            "--label",
+            "cigo-trust",
+            "--check",
+            a.trim(),
+        ],
+        1,
+    );
+    assert!(err.contains("does not match"), "{err}");
+    let err = sb.run_err(&["tin", "mac", "p/rec.json", "--label", "Bad Label"], 3);
+    assert!(err.contains("E803"), "{err}");
+    #[cfg(target_os = "linux")]
+    {
+        let script = format!(
+            "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"sh\", [\"-c\", \"{} tin mac rec.json --label cigo-trust > inside.txt 2>/dev/null; echo rc=$? >> inside.txt\"], {{cwd: \"p\", box: true}})\n}}\n",
+            env!("CARGO_BIN_EXE_cig")
+        );
+        sb.write("s.cig", &script);
+        let out = sb.cig(&["run", "s.cig"]);
+        let err = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(out.status.success(), "{err}");
+        if !fell_back(&err) {
+            let inside = sb.read("p/inside.txt");
+            let mac = inside.lines().next().unwrap_or("").trim().to_string();
+            let outside = sb.run_ok(&["tin", "mac", "p/rec.json", "--label", "cigo-trust"]);
+            assert_ne!(
+                mac,
+                outside.trim(),
+                "a hop made the tin's own MAC: {inside}"
+            );
+            if mac.len() == 64 {
+                sb.run_err(
+                    &[
+                        "tin",
+                        "mac",
+                        "p/rec.json",
+                        "--label",
+                        "cigo-trust",
+                        "--check",
+                        &mac,
+                    ],
+                    1,
+                );
+            }
+        }
+    }
 }
 
 /// Doctor looks at the tin's protection; looking must not make a key.

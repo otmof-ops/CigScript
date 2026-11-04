@@ -499,7 +499,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         // A run that a hop of another cig started reports to its parent
         // (the burn protocol): the parent's rollback puts this run back
         // through this run's own journal, which is exact.
-        if result.is_ok() && !interp.kernel.journal().is_empty() && !in_parents_inbox() {
+        if result.is_ok() && !interp.kernel.journal().is_empty() {
             if let Some(report) = std::env::var_os(cigscript::burn::protocol::ENV) {
                 let me = std::env::current_exe()
                     .map(|p| p.to_string_lossy().to_string())
@@ -1025,20 +1025,5 @@ fn trial_before_run(
             eprintln!("{} {e}", ctx.red("error[E807 usage]:"));
             (Some(exit::USAGE), None, None)
         }
-    }
-}
-
-/// Is this run a cig inside a guarded hop of the run it would report to
-/// (its state root is that run's inbox)? Then its changes reach that run
-/// through the hop's layer or watch and its record is taken in as a child:
-/// there is no compensation to claim, and `cig unburn` of a child is
-/// refused (E714).
-fn in_parents_inbox() -> bool {
-    match (
-        std::env::var_os("CIG_PARENT_RUN"),
-        std::env::var_os("CIG_RUN_ID"),
-    ) {
-        (Some(parent), Some(run)) => parent == run,
-        _ => false,
     }
 }
