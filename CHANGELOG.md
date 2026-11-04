@@ -27,6 +27,15 @@ PID namespace, the network, kept layers.
   away from one. `cig box list`, `cig box apply <run> <hop>` (a run of its
   own, unburnable), `cig box discard <run> <hop>`; an unburn of the run
   drops its kept layers.
+- **Fixed: a child run comes in whole.** 1.10.0 kept a child's record and
+  journal but not its objects, and refused `cig unburn <child>` (`E714`),
+  so a cig inside a hop that wrote outside the parent's pack was no longer
+  undone by the parent's rollback. From 1.11.0 the take-in moves the
+  child's objects into the tin (checked against their names), re-seals its
+  sealed objects under this machine's key, relocates and re-signs its
+  journal and records it in the ledger; a child unburns on its own, the
+  compensation through the burn protocol is claimed again, and `E714` is
+  retired.
 - **`cig tin mac <file> --label <l> [--check <hex>]`.** A keyed MAC under a
   subkey of the tin's key derived for the caller's label: what another tool
   (cig-orchestrator's trust store) signs its records with. A hop in the box

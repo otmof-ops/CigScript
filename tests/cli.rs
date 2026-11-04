@@ -125,7 +125,7 @@ impl Sandbox {
     }
 
     /// `cig`, started and left running (for a test that kills it).
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     fn cig_spawn(&self, args: &[&str]) -> std::process::Child {
         Command::new(env!("CARGO_BIN_EXE_cig"))
             .args(args)
@@ -4545,18 +4545,99 @@ fn a_cig_inside_a_boxed_hop_is_a_child_run_unburned_with_its_parent() {
         shown.contains("children") && shown.contains(&child_id),
         "{shown}"
     );
-    // The child's journal reads under this machine's key.
+    // The child came in whole: its journal reads under this machine's key
+    // and its objects are here.
     let shown = sb.run_ok(&["runs", &child_id, "--verify"]);
-    assert!(shown.contains("through its parent"), "{shown}");
-    // A child is unburned through its parent, not on its own.
-    let err = sb.run_err(&["unburn", &child_id], 1);
-    assert!(err.contains("E714") && err.contains(&outer_id), "{err}");
+    assert!(shown.contains("intact"), "{shown}");
+    // The parent's rollback undoes the child through the burn protocol.
     sb.run_ok(&["unburn", &outer_id]);
     assert!(
         !sb.exists("p/inner.txt"),
         "the child's change stayed after the parent's unburn"
     );
     assert_eq!(sb.read("p/keep.txt"), "v1\n");
+    let runs = sb.runs();
+    let child = runs.iter().find(|r| r["id"] == child_id.as_str()).unwrap();
+    assert_eq!(child["status"], "unburned", "{child:?}");
+}
+
+/// A cig inside a boxed hop that writes outside the parent's pack: the
+/// box's layer does not see it, and the child's own journal does; the
+/// parent's rollback undoes it through the burn protocol, as before the
+/// guard.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cig_inside_a_hop_writing_outside_the_pack_is_undone_by_the_parents_rollback() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    fs::create_dir_all(sb.path().join("outside")).unwrap();
+    sb.write(
+        "p/inner.cig",
+        "burn {\n  fs.write_text(\"../outside/flag.txt\", \"set\")\n}\n",
+    );
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"{}\", [\"run\", \"inner.cig\"], {{cwd: \"p\", box: true}})\n  cough \"boom\"\n}}\n",
+        env!("CARGO_BIN_EXE_cig")
+    );
+    sb.write("outer.cig", &script);
+    let out = sb.cig(&["run", "outer.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(err.contains("child run "), "{err}");
+    assert!(
+        !sb.exists("outside/flag.txt"),
+        "the child's write outside the pack survived the parent's rollback: {err}"
+    );
+}
+
+/// A cig inside a boxed hop that rewrites a secret: its sealed before-image
+/// is re-sealed under this machine's key on the way in, so the child
+/// unburns on its own.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cig_inside_a_hop_that_seals_a_secret_unburns_on_its_own() {
+    let sb = Sandbox::new();
+    sb.write("p/.env", "SECRET=1\n");
+    sb.write(
+        "p/inner.cig",
+        "burn {\n  fs.write_text(\".env\", \"SECRET=2\\n\")\n}\n",
+    );
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"{}\", [\"run\", \"inner.cig\"], {{cwd: \"p\", box: true}})\n}}\n",
+        env!("CARGO_BIN_EXE_cig")
+    );
+    sb.write("outer.cig", &script);
+    let out = sb.cig(&["run", "outer.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert_eq!(sb.read("p/.env"), "SECRET=2\n");
+    let runs = sb.runs();
+    let child = runs
+        .iter()
+        .find(|r| r["parent"].is_string())
+        .unwrap_or_else(|| panic!("no child run: {runs:?}"));
+    let child_id = child["id"].as_str().unwrap().to_string();
+    let shown = sb.run_ok(&["runs", &child_id, "--verify"]);
+    assert!(
+        shown.contains("intact") && !shown.contains("BROKEN"),
+        "{shown}"
+    );
+    // From the child's own directory, as any run with relative paths.
+    let out = sb.cig_in("p", &["unburn", &child_id], &[]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(sb.read("p/.env"), "SECRET=1\n", "{err}");
 }
 
 /// Whatever a hop leaves in the inbox that is not a run is dropped, and

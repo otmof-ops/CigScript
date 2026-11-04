@@ -1536,13 +1536,14 @@ remedy = "point the tool elsewhere; the inbox is for the cig inside the hop"
 
 [[code]]
 code = "E714"
-title = "a child run is unburned through its parent"
-meaning = "This run was a cig started inside another run's hop. Its changes reached the pack through that hop's layer, so they are in the parent's journal with their before-images, and the child keeps its record and journal for the reading, not its objects. Unburning the parent puts them back with the rest of that run."
-fix = "cig unburn <parent>; cig runs <child> names the parent"
+title = "a child run is unburned through its parent (retired)"
+meaning = "Retired in 1.11.0: in 1.10.0 a child run (a cig inside another run's hop) kept no objects of its own and could only be unburned through its parent. From 1.11.0 a child is taken in whole, its objects in the tin and its sealed objects re-sealed under this machine's key, so it unburns like any run, and the parent's rollback undoes it through the burn protocol. Kept so 1.10.0's records still decode."
+fix = "cig unburn <child> works from 1.11.0; before it, cig unburn <parent>"
 no = "cant-see-any"
 arises = ["unburn"]
 tags = ["kernel"]
 since = "1.10.0"
+retired = true
 related = ["E713", "E700"]
 [[code.cause]]
 why = "cig unburn was given a child run's id"

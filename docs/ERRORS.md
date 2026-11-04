@@ -1155,7 +1155,7 @@ the burn kernel and its journal (write-ahead log).
 | [`E711`](#e711-a-newer-journal-format) | a newer journal format | can't see any ciggies bro | cig update, or run the cig that wrote it (cig use <version>) |
 | [`E712`](#e712-the-guard-is-not-available-here) | the guard is not available here | one of the four; the message says which | cig config tin_guard auto runs hops without it; cig doctor says what the system lacks |
 | [`E713`](#e713-the-inbox-held-something-that-is-not-a-run) | the inbox held something that is not a run | don't have any over here | nothing to do for the run; if a tool of yours wrote there, it was writing where a cig's state root would be (CIGSCRIPT_HOME inside the hop) |
-| [`E714`](#e714-a-child-run-is-unburned-through-its-parent) | a child run is unburned through its parent | can't see any ciggies bro | cig unburn <parent>; cig runs <child> names the parent |
+| [`E714`](#e714-a-child-run-is-unburned-through-its-parent-(retired)) | a child run is unburned through its parent (retired) | can't see any ciggies bro | cig unburn <child> works from 1.11.0; before it, cig unburn <parent> |
 | [`E715`](#e715-debugging-is-allowed) | debugging is allowed | not one of the four | unset CIG_ALLOW_DEBUG |
 
 ### E700 burn refused
@@ -1400,15 +1400,15 @@ A guarded hop can write one place under the state directory, the inbox, where a 
 Related: `E712`, `E714`.
 
 
-### E714 a child run is unburned through its parent
+### E714 a child run is unburned through its parent (retired)
 
-*burn · since 1.10.0 · arises in unburn*
+*burn · since 1.10.0 · arises in unburn · retired*
 
 **Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
 
-This run was a cig started inside another run's hop. Its changes reached the pack through that hop's layer, so they are in the parent's journal with their before-images, and the child keeps its record and journal for the reading, not its objects. Unburning the parent puts them back with the rest of that run.
+Retired in 1.11.0: in 1.10.0 a child run (a cig inside another run's hop) kept no objects of its own and could only be unburned through its parent. From 1.11.0 a child is taken in whole, its objects in the tin and its sealed objects re-sealed under this machine's key, so it unburns like any run, and the parent's rollback undoes it through the burn protocol. Kept so 1.10.0's records still decode.
 
-**What to type next:** cig unburn <parent>; cig runs <child> names the parent
+**What to type next:** cig unburn <child> works from 1.11.0; before it, cig unburn <parent>
 
 **Known causes**, ranked; doctor checks them in this order:
 

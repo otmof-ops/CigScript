@@ -122,9 +122,7 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
         }
     };
     let journal = Journal::load(&rec.dir()).ok();
-    // A child keeps no objects of its own: its changes are verified through
-    // its parent, whose journal holds them with their before-images.
-    let checked = if verify && rec.parent.is_none() {
+    let checked = if verify {
         journal.as_ref().map(|j| verify_run(&rec, j))
     } else {
         None
@@ -153,13 +151,8 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
     outln!("  cwd       {}", rec.cwd);
     if let Some(parent) = &rec.parent {
         outln!(
-            "  parent    {parent}  (a cig inside a hop of that run; its changes are in that record, and unburned with it)"
+            "  parent    {parent}  (a cig inside a hop of that run, taken in when the hop ended; that run's rollback undoes this one through the burn protocol)"
         );
-        if verify {
-            outln!(
-                "  verify    a child keeps no objects of its own; its changes are checked through its parent: cig runs {parent} --verify"
-            );
-        }
     }
     let children: Vec<&str> = all
         .iter()
@@ -721,18 +714,6 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
             return exit::USAGE;
         }
     };
-    // A child ran inside another run's hop: its changes reached the pack
-    // through that hop's layer and are in the parent's journal.
-    if let Some(parent) = &rec.parent {
-        eprintln!(
-            "{} {} was a cig inside a hop of {parent}; its changes reached the pack through that hop and are in that run's record",
-            ctx.red("error[E714 burn]:"),
-            rec.id
-        );
-        eprintln!("  = hint: cig unburn {parent} puts them back, with the rest of that run");
-        eprintln!("  = explain: cig explain E714");
-        return exit::SCRIPT_ERROR;
-    }
     let mut journal = match Journal::load(&rec.dir()) {
         Ok(j) => j,
         Err(e) if e.kind() == std::io::ErrorKind::Unsupported || rec.status == "newer" => {

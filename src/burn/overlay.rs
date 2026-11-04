@@ -826,7 +826,7 @@ impl Setup {
                 ifr.ifr_name[0] = b'l' as libc::c_char;
                 ifr.ifr_name[1] = b'o' as libc::c_char;
                 ifr.ifr_ifru.ifru_flags = (libc::IFF_UP | libc::IFF_RUNNING) as libc::c_short;
-                libc::ioctl(s, libc::SIOCSIFFLAGS, &ifr);
+                libc::ioctl(s, libc::SIOCSIFFLAGS as _, &ifr);
                 libc::close(s);
             }
             if let Some(empty) = &self.resolv_empty {

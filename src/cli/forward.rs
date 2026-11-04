@@ -49,6 +49,7 @@ fn relay(conn: TcpStream, _sock: &Path) {
     let _ = conn.shutdown(Shutdown::Both);
 }
 
+#[cfg(unix)]
 fn copy(r: &mut dyn Read, w: &mut dyn Write) -> io::Result<u64> {
     io::copy(r, w)
 }

@@ -438,12 +438,13 @@ out of reach of what cig runs.
   the hop has it as its own state root (`CIGSCRIPT_HOME`, `CIG_KEYS_DIR`,
   a key file of its own, the parent's settings copied in), runs as it would
   anywhere, and when the hop ends its runs are taken in as **children** of
-  the run (`cig runs <id>` names them; `parent` on the child's record). A
-  child's changes reached the pack through the hop's layer and are in the
-  parent's journal with their before-images, so a child keeps its record
-  and journal for the reading, not its objects, and is unburned through its
-  parent (`E714`). Anything else in the inbox is dropped with a note
-  (`E713`). `tin_guard` is `auto` (boxed hops, wherever the kernel allows;
+  the run (`cig runs <id>` names them; `parent` on the child's record),
+  whole: its objects move into this tin, checked against their names on
+  the way (a mismatch drops the run, `E713`), its sealed objects are
+  re-sealed under this machine's key, its journal's paths relocated and
+  the journal re-signed. A child unburns like any run, and the parent's
+  rollback undoes it through the burn protocol, as a nested run always
+  was. Anything else in the inbox is dropped with a note (`E713`). `tin_guard` is `auto` (boxed hops, wherever the kernel allows;
   one note, `E712`, where it does not), `on` (every hop, boxed or not, and
   a refusal where the guard cannot be made) or `off`; `CIG_TIN_GUARD=0` is
   off for one run. Outside Linux, and where user namespaces are not
