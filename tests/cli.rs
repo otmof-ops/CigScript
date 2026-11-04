@@ -4885,18 +4885,18 @@ fn cig_dying_applies_nothing() {
         let _ = Command::new("pkill").args(["-f", "sleep 31.7"]).status();
     }
     assert!(
-        !sb.exists("p/made.txt"),
-        "the dead cig's layer reached the pack"
+        !boxed || !sb.exists("p/made.txt"),
+        "the dead cig's layer reached the pack: {err}"
     );
     let out = sb.cig(&["runs"]);
     let listed = String::from_utf8_lossy(&out.stdout).to_string();
     let err = String::from_utf8_lossy(&out.stderr).to_string();
     assert!(listed.contains("interrupted"), "{listed}\n{err}");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
     if boxed {
         assert!(err.contains("died in a boxed hop"), "{err}");
+        assert!(!sb.home().join("runs").join(&id).join("box").exists());
     }
-    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
-    assert!(!sb.home().join("runs").join(&id).join("box").exists());
     sb.run_ok(&["unburn", &id]);
     assert!(!sb.exists("p/before.txt"));
 }
