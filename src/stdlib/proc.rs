@@ -590,7 +590,7 @@ fn command(
     args: &[String],
     o: &Options,
     journal: Option<&std::path::Path>,
-    boxed: Option<&crate::burn::overlay::Layers>,
+    plan: Option<&crate::burn::overlay::Plan>,
 ) -> Option<Command> {
     let resolved = resolve_program_on(cmd, o.cwd.as_deref(), child_path(o));
     let is_path = cmd.contains('/') || cmd.contains(std::path::MAIN_SEPARATOR);
@@ -703,6 +703,43 @@ fn command(
             c.env_remove(crate::burn::protocol::ENV);
         }
     }
+    // The box, or the guard alone: between fork and exec the child enters
+    // its own user and mount namespaces, mounts each pack root as an
+    // overlay over itself (the box), and sees the state directory
+    // read-only with the key folder empty (the guard). A cig started in
+    // there has the inbox as its own state root; the hop's own `env`,
+    // applied after, still has the last word.
+    #[cfg(target_os = "linux")]
+    let setup = match plan {
+        Some(p) => {
+            // Absolute: the standard library has already entered the hop's
+            // working directory by the time the closure runs, so a relative
+            // one would be taken from there, not from here.
+            let here = o
+                .cwd
+                .clone()
+                .or_else(|| std::env::current_dir().ok())
+                .map(|p| crate::burn::normalize_root(&p.to_string_lossy()))
+                .unwrap_or_else(|| std::path::PathBuf::from("/"));
+            match crate::burn::overlay::Setup::new(p, &here) {
+                Ok(setup) => {
+                    if let Some(g) = &setup.guard {
+                        c.env("CIGSCRIPT_HOME", g.inbox.join("home"));
+                        c.env("CIG_KEYS_DIR", g.inbox.join("keys"));
+                        c.env("CIG_PARENT_RUN", p.run_id());
+                    }
+                    Some(setup)
+                }
+                Err(e) => {
+                    let _ = std::fs::write(p.base().join("why"), format!("{e}\n"));
+                    return None;
+                }
+            }
+        }
+        None => None,
+    };
+    #[cfg(not(target_os = "linux"))]
+    let _ = plan;
     for (k, v) in &o.env {
         c.env(k, v);
     }
@@ -711,38 +748,61 @@ fn command(
         use std::os::unix::process::CommandExt;
         c.process_group(0);
     }
-    // The box: between fork and exec the child enters its own user and
-    // mount namespaces and mounts each root as an overlay over itself.
     #[cfg(target_os = "linux")]
-    if let Some(layers) = boxed {
+    if let Some(setup) = setup {
         use std::os::unix::process::CommandExt;
-        // Absolute: the standard library has already entered the hop's
-        // working directory by the time the closure runs, so a relative one
-        // would be taken from there, not from here.
-        let here = o
-            .cwd
-            .clone()
-            .or_else(|| std::env::current_dir().ok())
-            .map(|p| crate::burn::normalize_root(&p.to_string_lossy()))
-            .unwrap_or_else(|| std::path::PathBuf::from("/"));
-        match crate::burn::overlay::Setup::new(layers, &here) {
-            Ok(setup) => {
-                // SAFETY: the closure makes only async-signal-safe calls
-                // (unshare, open, write, mount, chdir) on data prepared
-                // before the fork.
-                unsafe {
-                    c.pre_exec(move || setup.apply());
-                }
-            }
-            Err(e) => {
-                let _ = std::fs::write(layers.dir.join("why"), format!("{e}\n"));
-                return None;
-            }
+        // SAFETY: the closure makes only async-signal-safe calls (unshare,
+        // open, write, mount, chdir) on data prepared before the fork.
+        unsafe {
+            c.pre_exec(move || setup.apply());
         }
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = boxed;
     Some(c)
+}
+
+/// The guard's refusal: `tin_guard = on`, and the guard cannot be made.
+fn e712(name: &str, why: &str) -> Diagnostic {
+    runtime(format!(
+        "{name}: the tin guard is required (tin_guard = on) and cannot be made here: {why}"
+    ))
+    .code("E712")
+    .with_hint("cig config tin_guard auto runs the hop without it and says so once; cig doctor explains what this system lacks")
+}
+
+/// What the guard wrote when it could not be made for this hop.
+fn guard_why(plan: &crate::burn::overlay::Plan) -> Option<String> {
+    std::fs::read_to_string(crate::burn::overlay::guard_why_path(&plan.base()))
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Take in what a cig inside the hop left in the inbox: its runs, now
+/// children of this one; anything else is dropped with a note.
+fn take_in_children(i: &mut Interp, plan: &crate::burn::overlay::Plan) {
+    let taken = crate::burn::inbox::take_in(&plan.run_dir());
+    for id in &taken.children {
+        let _ = writeln!(
+            i.err,
+            "child run {id}: a cig inside the hop recorded it; it is listed under this run and unburned with it"
+        );
+    }
+    for note in &taken.notes {
+        let _ = writeln!(i.err, "note[E713 burn]: {note}");
+    }
+}
+
+/// One note per run when the tin guard could not be made under `auto`: the
+/// tin is checked (the ledger, the hashes) instead of protected.
+fn guard_note_once(i: &mut Interp, why: &str) {
+    use std::sync::OnceLock;
+    static SAID: OnceLock<()> = OnceLock::new();
+    if SAID.set(()).is_ok() {
+        let _ = writeln!(
+            i.err,
+            "note[E712 burn]: this system does not allow cig's tin guard ({why}); the tin is checked instead of protected (cig doctor)"
+        );
+    }
 }
 
 /// The PATH the child will search: the hop's own when its `env` sets one
@@ -1175,13 +1235,13 @@ fn run_child(
     o: &Options,
     s: Span,
     journal: Option<&std::path::Path>,
-    boxed: Option<&crate::burn::overlay::Layers>,
+    plan: Option<&crate::burn::overlay::Plan>,
 ) -> Result<Raw, Diagnostic> {
     let started = Instant::now();
     let deadline = started + Duration::from_millis(o.timeout_ms);
     check_cwd(name, o, s)?;
     install_signal_forwarding();
-    let mut c = command(cmd, args, o, journal, boxed).ok_or_else(|| {
+    let mut c = command(cmd, args, o, journal, plan).ok_or_else(|| {
         spawn_error(
             name,
             cmd,
@@ -1617,14 +1677,30 @@ fn hop(
         None
     };
     if let Some(l) = layers.as_ref() {
-        let ran = run_child(name, cmd, args, o, s, report.as_deref(), Some(l));
+        let plan = crate::burn::overlay::Plan::Boxed(l);
+        let ran = run_child(name, cmd, args, o, s, report.as_deref(), Some(&plan));
+        take_in_children(i, &plan);
+        // The guard: asked for and not available is a refusal (E712); not
+        // available under `auto` is one note, and the hop ran boxed without it.
+        if let Some(why) = guard_why(&plan) {
+            if crate::burn::overlay::guard_setting() == "on" {
+                crate::burn::overlay::discard(l);
+                return Err(e712(name, &why).at(s));
+            }
+            guard_note_once(i, &why);
+        }
         // The box could not be made after all (the kernel refused the
-        // namespaces or the mount): the hop runs again, on the tin.
+        // namespaces or the mount): the hop runs again, on the tin; under
+        // `tin_guard = on` it does not, since the guard went with the box.
         let fell_back = match &ran {
             Err(d) if d.code == "E550" || d.code == "E552" => crate::burn::overlay::why(l),
             _ => None,
         };
         if let Some(why) = fell_back {
+            if crate::burn::overlay::guard_setting() == "on" {
+                crate::burn::overlay::discard(l);
+                return Err(e712(name, &why).at(s));
+            }
             let _ = writeln!(
                 i.err,
                 "warning[E763 burn]: the box could not be made here ({why}); `{}` runs on the tin instead",
@@ -1698,10 +1774,30 @@ fn hop(
             return Ok(Some((raw, out, err)));
         }
     }
+    // `tin_guard = on` guards a hop outside the box too: the same
+    // namespaces without the overlay, and a refusal where they cannot be
+    // had.
+    let guard = if crate::burn::overlay::guard_setting() == "on" {
+        if !cfg!(target_os = "linux") {
+            return Err(e712(
+                name,
+                "the guard is made with user and mount namespaces, which only Linux has",
+            )
+            .at(s));
+        }
+        match i.kernel.guard_prepare() {
+            Some(p) => Some(p),
+            None => {
+                return Err(e712(name, "this run keeps no directory to guard from").at(s));
+            }
+        }
+    } else {
+        None
+    };
     let watch = i
         .kernel
         .pack_watch_begin(o.cwd.as_deref(), &o.touches, &o.touches_sealed);
-    let ran = run_child(name, cmd, args, o, s, report.as_deref(), None);
+    let ran = run_child(name, cmd, args, o, s, report.as_deref(), guard.as_ref());
     finish_watch(
         i,
         watch,
@@ -1710,6 +1806,12 @@ fn hop(
         mark,
         &hop_label(cmd, args),
     );
+    if let Some(p) = &guard {
+        take_in_children(i, p);
+        if let Some(why) = crate::burn::overlay::why_at(&p.base()).or_else(|| guard_why(p)) {
+            return Err(e712(name, &why).at(s));
+        }
+    }
     let raw = ran?;
     let out = decode(name, "stdout", &raw.out, o.encoding, s)?;
     let err = decode(name, "stderr", &raw.err, Encoding::Lossy, s)?;

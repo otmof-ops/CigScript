@@ -4425,6 +4425,240 @@ fn tin_head_matches_the_ledger_and_an_edited_ledger_is_caught() {
     assert!(err.contains("ledger") && err.contains("E709"), "{err}");
 }
 
+// ----- the tin guard (#105 L1) ---------------------------------------------
+
+/// A boxed hop sees the state directory read-only and the key folder
+/// empty, and its own layer still applies. The pack is a subfolder so the
+/// state directory sits outside the overlay, as it does in use.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hop_sees_the_tin_read_only_and_no_key() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let home = sb.home().display().to_string();
+    let keys = sb.path().join(".cigscript-keys").display().to_string();
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"sh\", [\"-c\", \"{{ echo probe > {home}/tin-probe; }} 2>err.txt; echo rc=$? > rc.txt; cat err.txt >> rc.txt; ls -A {keys} | wc -l > keys.txt; echo $CIGSCRIPT_HOME > inner-home.txt; echo made > made.txt\"], {{cwd: \"p\", box: true}})\n}}\n"
+    );
+    sb.write("s.cig", &script);
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(
+        !err.contains("E712"),
+        "the guard fell back where the box did not: {err}"
+    );
+    // The layer applied with the state directory read-only.
+    assert_eq!(sb.read("p/made.txt").trim(), "made", "{err}");
+    let rc = sb.read("p/rc.txt");
+    assert!(
+        !rc.contains("rc=0") && rc.contains("Read-only file system"),
+        "the hop wrote into the tin: {rc}\n{err}"
+    );
+    assert!(!sb.home().join("tin-probe").exists());
+    assert_eq!(
+        sb.read("p/keys.txt").trim(),
+        "0",
+        "the key folder was not empty"
+    );
+    assert!(
+        sb.read("p/inner-home.txt").contains("/inbox/"),
+        "a cig inside the hop would not have the inbox as its state root: {}",
+        sb.read("p/inner-home.txt")
+    );
+    // The inbox went with the hop.
+    assert!(
+        !sb.home().join("inbox").exists()
+            || fs::read_dir(sb.home().join("inbox"))
+                .unwrap()
+                .next()
+                .is_none(),
+        "the inbox was left behind"
+    );
+}
+
+/// A cig started inside a boxed hop records its run in the inbox; the run
+/// is taken in as a child, listed under its parent, and unburned with it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cig_inside_a_boxed_hop_is_a_child_run_unburned_with_its_parent() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "p/inner.cig",
+        "burn {\n  fs.write_text(\"inner.txt\", \"from inside\")\n}\n",
+    );
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"{}\", [\"run\", \"inner.cig\"], {{cwd: \"p\", box: true}})\n}}\n",
+        env!("CARGO_BIN_EXE_cig")
+    );
+    sb.write("outer.cig", &script);
+    let out = sb.cig(&["run", "outer.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert_eq!(sb.read("p/inner.txt"), "from inside", "{err}");
+    assert!(err.contains("child run "), "{err}");
+    let runs = sb.runs();
+    assert_eq!(runs.len(), 2, "{runs:?}");
+    let child = runs
+        .iter()
+        .find(|r| r["parent"].is_string())
+        .unwrap_or_else(|| panic!("no child run: {runs:?}"));
+    let outer = runs.iter().find(|r| r["parent"].is_null()).unwrap();
+    let child_id = child["id"].as_str().unwrap().to_string();
+    let outer_id = outer["id"].as_str().unwrap().to_string();
+    assert_eq!(child["parent"].as_str().unwrap(), outer_id);
+    assert_eq!(child["status"], "ok");
+    let shown = sb.run_ok(&["runs", &child_id]);
+    assert!(
+        shown.contains("parent") && shown.contains(&outer_id),
+        "{shown}"
+    );
+    let shown = sb.run_ok(&["runs", &outer_id]);
+    assert!(
+        shown.contains("children") && shown.contains(&child_id),
+        "{shown}"
+    );
+    // The child's journal reads under this machine's key.
+    let shown = sb.run_ok(&["runs", &child_id, "--verify"]);
+    assert!(shown.contains("through its parent"), "{shown}");
+    // A child is unburned through its parent, not on its own.
+    let err = sb.run_err(&["unburn", &child_id], 1);
+    assert!(err.contains("E714") && err.contains(&outer_id), "{err}");
+    sb.run_ok(&["unburn", &outer_id]);
+    assert!(
+        !sb.exists("p/inner.txt"),
+        "the child's change stayed after the parent's unburn"
+    );
+    assert_eq!(sb.read("p/keep.txt"), "v1\n");
+}
+
+/// Whatever a hop leaves in the inbox that is not a run is dropped, and
+/// said so once per entry.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_inbox_entry_that_is_not_a_run_is_dropped_with_a_note() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"mkdir -p $CIGSCRIPT_HOME/runs/20990101T000000-abcdef $CIGSCRIPT_HOME/runs/not-a-run && echo junk > $CIGSCRIPT_HOME/runs/20990101T000000-abcdef/run.json\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert_eq!(err.matches("note[E713 burn]").count(), 2, "{err}");
+    assert!(
+        err.contains("not a run id") && err.contains("run.json:"),
+        "{err}"
+    );
+    assert_eq!(sb.runs().len(), 1, "a dropped entry was listed as a run");
+    assert!(!sb.home().join("runs").join("not-a-run").exists());
+}
+
+/// `CIG_TIN_GUARD=0` is the guard off for one run: the proof that the
+/// guard is what keeps a hop out of the tin.
+#[cfg(target_os = "linux")]
+#[test]
+fn tin_guard_off_leaves_the_tin_writable_to_a_boxed_hop() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let home = sb.home().display().to_string();
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"sh\", [\"-c\", \"echo probe > {home}/tin-probe; echo $CIGSCRIPT_HOME > inner-home.txt\"], {{cwd: \"p\", box: true}})\n}}\n"
+    );
+    sb.write("s.cig", &script);
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_TIN_GUARD", "0")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(sb.home().join("tin-probe").exists(), "{err}");
+    assert_eq!(sb.read("p/inner-home.txt").trim(), home);
+}
+
+/// Where the guard cannot be made, `auto` says so once for the run and the
+/// hops run boxed without it; `on` refuses the hop.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_guard_unavailable_is_one_note_under_auto_and_a_refusal_under_on() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo a > a.txt\"], {cwd: \"p\", box: true})\n  proc.run(\"sh\", [\"-c\", \"echo b > b.txt\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_NO_GUARD", "1")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert_eq!(err.matches("note[E712 burn]").count(), 1, "{err}");
+    assert!(err.contains("CIG_INTERNAL_NO_GUARD"), "{err}");
+    assert!(sb.exists("p/a.txt") && sb.exists("p/b.txt"), "{err}");
+    sb.run_ok(&["config", "tin_guard", "on"]);
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_INTERNAL_NO_GUARD", "1")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("E712") && err.contains("tin_guard = on"),
+        "{err}"
+    );
+    assert!(sb.cig(&["explain", "E712"]).status.success());
+    assert!(sb.cig(&["explain", "E713"]).status.success());
+    assert!(sb.cig(&["explain", "E714"]).status.success());
+}
+
+/// `tin_guard = on` guards a hop outside the box too: the same namespaces
+/// without the overlay, the tin read-only, the key folder empty.
+#[cfg(target_os = "linux")]
+#[test]
+fn tin_guard_on_guards_a_hop_outside_the_box() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.run_ok(&["config", "tin_guard", "on"]);
+    let home = sb.home().display().to_string();
+    let script = format!(
+        "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"sh\", [\"-c\", \"{{ echo probe > {home}/tin-probe; }} 2>err.txt; echo rc=$? > rc.txt; cat err.txt >> rc.txt; echo $CIGSCRIPT_HOME > inner-home.txt\"], {{cwd: \"p\", touches: [\"**\"]}})\n}}\n"
+    );
+    sb.write("s.cig", &script);
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if !out.status.success() {
+        // Refused, as `on` must where the namespaces cannot be had.
+        assert!(err.contains("E712"), "{err}");
+        assert!(
+            !box_expected_here(),
+            "this machine makes user namespaces, yet the guard was refused: {err}"
+        );
+        return;
+    }
+    let rc = sb.read("p/rc.txt");
+    assert!(
+        !rc.contains("rc=0") && rc.contains("Read-only file system"),
+        "an unboxed hop wrote into the tin under tin_guard = on: {rc}\n{err}"
+    );
+    assert!(!sb.home().join("tin-probe").exists());
+    assert!(sb.read("p/inner-home.txt").contains("/inbox/"));
+    assert!(!err.contains("E712"), "{err}");
+}
+
 /// Doctor looks at the tin's protection; looking must not make a key.
 #[cfg(unix)]
 #[test]

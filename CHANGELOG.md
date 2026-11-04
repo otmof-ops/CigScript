@@ -3,6 +3,34 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.10.0 — 2026-11-05
+
+The headline of the tin's protections (#105, L1): the tin read-only to the
+scripts it protects, while they run.
+
+- **The tin guard.** A boxed hop on Linux sees the state directory
+  read-only and the key folder empty: the state root bound over itself and
+  remounted read-only in the box's own mount namespace, after the hop's
+  layers and the inbox were bound writable underneath, and an empty tmpfs
+  over the key folder (made before the hop, so none can be planted). A hop
+  that rewrites or deletes a tin object or a journal gets `EROFS`. `tin_guard`
+  is `auto` (boxed hops, wherever the kernel allows; one note, `E712`, where
+  it does not), `on` (every hop, boxed or not, in the same namespaces
+  without the overlay, and a refusal where the guard cannot be made) or
+  `off`; `CIG_TIN_GUARD=0` is off for one run. `cig doctor`'s tin block
+  gains a `guard` line, tried rather than guessed.
+- **The inbox and child runs.** The one place a guarded hop may write. A cig
+  started inside the hop has it as its own state root, with a key file of
+  its own and the parent's settings copied in, so `cig run` inside a boxed
+  task (cig-orchestrator's, for one) keeps working. When the hop ends its
+  runs are taken in as children of the run: listed under it (`cig runs
+  <id>`), `parent` on their records, their journals re-signed under this
+  machine's key. A child's changes reached the pack through the hop's layer
+  and are in the parent's journal with their before-images, so a child keeps
+  its record and journal, not its objects, and is unburned through its
+  parent (`E714`). Anything else left in the inbox is dropped with a note
+  (`E713`).
+
 ## 1.9.0 — 2026-11-05
 
 The second of the tin's protections (#105): a record scripts cannot rewrite.

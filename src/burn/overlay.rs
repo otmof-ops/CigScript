@@ -189,6 +189,132 @@ pub struct Setup {
     pub binds: Vec<std::ffi::CString>,
     pub cwd: std::ffi::CString,
     pub why: std::ffi::CString,
+    /// The tin guard, when the setting asks for it (`tin_guard` auto or on).
+    pub guard: Option<Guard>,
+}
+
+/// The tin read-only to the hop, and the key out of its sight. The state
+/// root is bound over itself and remounted read-only, after the subtrees a
+/// hop legitimately writes (its own layers, its protocol file) were bound
+/// writable underneath, which the non-recursive remount leaves alone; an
+/// empty tmpfs goes over the key folder. A guard that cannot be made is
+/// noted in `why`, and the hop runs boxed without it (`tin_guard = on`
+/// refuses instead).
+#[cfg(target_os = "linux")]
+pub struct Guard {
+    pub home: std::ffi::CString,
+    pub keys: std::ffi::CString,
+    pub writable: Vec<std::ffi::CString>,
+    pub why: std::ffi::CString,
+    /// `tin_guard = on`: a guard that cannot be made refuses the hop.
+    pub required: bool,
+    /// The inbox: the one writable place under the state directory, and a
+    /// cig inside the hop's own state root.
+    pub inbox: PathBuf,
+    /// `CIG_INTERNAL_NO_GUARD`: behave as if the mounts were refused.
+    pub pretend_unavailable: bool,
+}
+
+/// What confines a hop: the box (an overlay over each pack root, with the
+/// guard), or the guard alone (`tin_guard = on`, for a hop outside the box).
+#[derive(Debug)]
+pub enum Plan<'a> {
+    Boxed(&'a Layers),
+    GuardOnly { run_dir: PathBuf, seq: u64 },
+}
+
+impl Plan<'_> {
+    /// Where this hop's notes go (`why`, `guard-why`): the layers directory,
+    /// or a folder of the hop's own under the run's `hops`.
+    pub fn base(&self) -> PathBuf {
+        match self {
+            Plan::Boxed(l) => l.dir.clone(),
+            Plan::GuardOnly { run_dir, seq } => run_dir.join("hops").join(format!("{seq}-guard")),
+        }
+    }
+
+    /// The run this hop belongs to.
+    pub fn run_dir(&self) -> PathBuf {
+        match self {
+            Plan::Boxed(l) => l
+                .dir
+                .parent()
+                .and_then(Path::parent)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| l.dir.clone()),
+            Plan::GuardOnly { run_dir, .. } => run_dir.clone(),
+        }
+    }
+
+    pub fn run_id(&self) -> String {
+        dir_name(&self.run_dir())
+    }
+}
+
+/// Where the guard writes why it could not be made.
+pub fn guard_why_path(base: &Path) -> PathBuf {
+    base.join("guard-why")
+}
+
+/// What a hop's setup wrote when it could not be made at all (`why`).
+pub fn why_at(base: &Path) -> Option<String> {
+    fs::read_to_string(base.join("why"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// The inbox of a run: under the state directory, named by the run, the
+/// one place a guarded hop may write. A cig started inside the hop has
+/// `home` under it as its state root and `keys` as its key folder.
+pub fn inbox_dir(run_dir: &Path) -> PathBuf {
+    let home = super::runs::home_dir();
+    let home = std::path::absolute(&home).unwrap_or(home);
+    home.join("inbox").join(dir_name(run_dir))
+}
+
+/// Make a run's inbox, owner-only, with the parent's settings copied in
+/// for the cig inside and the key kept in a file of the inbox's own: the
+/// hop must not reach the parent's key through the keyring.
+pub fn prepare_inbox(run_dir: &Path) -> io::Result<PathBuf> {
+    let inbox = inbox_dir(run_dir);
+    let home = inbox.join("home");
+    let keys = inbox.join("keys");
+    for d in [&inbox, &home, &keys] {
+        fs::create_dir_all(d)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(d, fs::Permissions::from_mode(0o700));
+        }
+    }
+    let mut text: String = fs::read_to_string(crate::config::path())
+        .unwrap_or_default()
+        .lines()
+        .filter(|l| {
+            l.split_once('=')
+                .map(|(k, _)| k.trim() != "seal_key")
+                .unwrap_or(true)
+        })
+        .map(|l| format!("{l}\n"))
+        .collect();
+    text.push_str("seal_key = file\n");
+    fs::write(home.join("config"), text)?;
+    Ok(inbox)
+}
+
+/// What the `tin_guard` setting says: `auto` (the default), `on` or `off`;
+/// `CIG_TIN_GUARD=0` is `off` for one run.
+pub fn guard_setting() -> String {
+    if std::env::var_os("CIG_TIN_GUARD").is_some_and(|v| v == "0") {
+        return "off".to_string();
+    }
+    let s = crate::config::Config::load().get("tin_guard");
+    if s == "on" || s == "off" {
+        s
+    } else {
+        "auto".to_string()
+    }
 }
 
 /// How many trees the child binds at most (a stack array holds their
@@ -198,7 +324,7 @@ const MAX_BINDS: usize = 64;
 
 #[cfg(target_os = "linux")]
 impl Setup {
-    pub fn new(layers: &Layers, cwd: &Path) -> io::Result<Setup> {
+    pub fn new(plan: &Plan, cwd: &Path) -> io::Result<Setup> {
         use std::os::unix::ffi::OsStrExt;
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
@@ -208,7 +334,11 @@ impl Setup {
         };
         let mut mounts = Vec::new();
         let mut binds = Vec::new();
-        for (root, upper, work) in &layers.roots {
+        let layers = match plan {
+            Plan::Boxed(l) => Some(*l),
+            Plan::GuardOnly { .. } => None,
+        };
+        for (root, upper, work) in layers.map(|l| l.roots.as_slice()).unwrap_or(&[]) {
             let opts = format!(
                 "lowerdir={},upperdir={},workdir={},userxattr",
                 escape(root),
@@ -230,13 +360,52 @@ impl Setup {
                 }
             }
         }
+        // The guard: the state root, the key folder, and what stays writable.
+        let base = plan.base();
+        fs::create_dir_all(&base)?;
+        let run_dir = plan.run_dir();
+        let guard = if guard_setting() == "off" {
+            None
+        } else {
+            let home = std::path::absolute(super::runs::home_dir())
+                .unwrap_or_else(|_| super::runs::home_dir());
+            // The key folder is made before the hop runs, so that the empty
+            // tmpfs has something to cover: a hop must neither read a key
+            // nor plant one for the first seal to pick up.
+            let keys = super::seal::keys_dir();
+            fs::create_dir_all(&keys)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&keys, fs::Permissions::from_mode(0o700));
+            }
+            let hops = run_dir.join("hops");
+            fs::create_dir_all(&hops)?;
+            let mut writable = vec![cstr(&hops)?];
+            if let Some(l) = layers {
+                writable.push(cstr(&l.dir)?);
+            }
+            // The inbox: a cig inside the hop has it as its own state root.
+            let inbox = prepare_inbox(&run_dir)?;
+            writable.push(cstr(&inbox)?);
+            Some(Guard {
+                home: cstr(&home)?,
+                keys: cstr(&keys)?,
+                writable,
+                why: cstr(&guard_why_path(&base))?,
+                required: guard_setting() == "on",
+                inbox,
+                pretend_unavailable: std::env::var_os("CIG_INTERNAL_NO_GUARD").is_some(),
+            })
+        };
         Ok(Setup {
             uid_map: format!("{uid} {uid} 1\n").into_bytes(),
             gid_map: format!("{gid} {gid} 1\n").into_bytes(),
             mounts,
             binds,
             cwd: cstr(cwd)?,
-            why: cstr(&layers.dir.join("why"))?,
+            why: cstr(&base.join("why"))?,
+            guard,
         })
     }
 
@@ -277,6 +446,74 @@ impl Setup {
         ) != 0
         {
             return self.fail(b"making the mount tree private refused");
+        }
+        // The tin guard, before the overlays: the state root bound over
+        // itself (read-write), the hop's own subtrees bound writable under
+        // it, then the root remounted read-only (not recursively, so those
+        // stay writable), and an empty tmpfs over the key folder. A failure
+        // here is noted and the hop goes on boxed without the guard; the
+        // parent decides what `tin_guard = on` makes of it.
+        if let Some(g) = &self.guard {
+            let null = std::ptr::null::<libc::c_char>();
+            let mut failed: Option<&[u8]> = None;
+            if g.pretend_unavailable {
+                failed = Some(b"CIG_INTERNAL_NO_GUARD is set");
+            }
+            if failed.is_none()
+                && libc::mount(
+                    g.home.as_ptr(),
+                    g.home.as_ptr(),
+                    null,
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                ) != 0
+            {
+                failed = Some(b"binding the state directory over itself refused");
+            }
+            if failed.is_none() {
+                for w in &g.writable {
+                    if libc::mount(
+                        w.as_ptr(),
+                        w.as_ptr(),
+                        null,
+                        libc::MS_BIND,
+                        std::ptr::null(),
+                    ) != 0
+                    {
+                        failed = Some(b"binding a writable subtree of the state directory refused");
+                        break;
+                    }
+                }
+            }
+            if failed.is_none()
+                && libc::mount(
+                    null,
+                    g.home.as_ptr(),
+                    null,
+                    libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+                    std::ptr::null(),
+                ) != 0
+            {
+                failed = Some(b"remounting the state directory read-only refused");
+            }
+            if failed.is_none()
+                && libc::mount(
+                    c"tmpfs".as_ptr(),
+                    g.keys.as_ptr(),
+                    c"tmpfs".as_ptr(),
+                    libc::MS_NOSUID | libc::MS_NODEV,
+                    c"mode=0700,size=16k".as_ptr() as *const libc::c_void,
+                ) != 0
+            {
+                failed = Some(b"hiding the key folder refused");
+            }
+            if let Some(what) = failed {
+                self.note(&g.why, what);
+                if g.required {
+                    // Asked for, not available: the hop does not run.
+                    return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+                }
+            }
         }
         // The build and dependency trees, held open before the overlay hides
         // them. Opened here, after the namespace split: a descriptor from
@@ -334,6 +571,25 @@ impl Setup {
         Ok(())
     }
 
+    /// Write a reason with the errno to `at`; the exec goes on.
+    unsafe fn note(&self, at: &std::ffi::CString, what: &[u8]) {
+        let errno = *libc::__errno_location();
+        let fd = libc::open(
+            at.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_CLOEXEC,
+            0o644,
+        );
+        if fd >= 0 {
+            let _ = libc::write(fd, what.as_ptr() as *const libc::c_void, what.len());
+            let mut buf = [0u8; 32];
+            let n = itoa(errno, &mut buf);
+            let _ = libc::write(fd, b" (errno ".as_ptr() as *const libc::c_void, 8);
+            let _ = libc::write(fd, buf.as_ptr() as *const libc::c_void, n);
+            let _ = libc::write(fd, b")\n".as_ptr() as *const libc::c_void, 2);
+            libc::close(fd);
+        }
+    }
+
     /// Write the reason with the errno, then refuse the exec.
     unsafe fn fail(&self, what: &[u8]) -> io::Result<()> {
         let errno = *libc::__errno_location();
@@ -353,6 +609,13 @@ impl Setup {
         }
         Err(io::Error::from_raw_os_error(libc::ENOTSUP))
     }
+}
+
+/// A directory's own name (a run's id), as text.
+pub(crate) fn dir_name(p: &Path) -> String {
+    p.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default()
 }
 
 /// Overlayfs options separate directories with `,` and `:`, so those are
