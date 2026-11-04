@@ -4235,7 +4235,9 @@ fn a_loose_state_directory_warns_unattended_and_refuses_on_a_terminal() {
 #[test]
 fn doctor_reports_the_tin_without_making_a_key() {
     let sb = Sandbox::new();
-    let out = sb.run_ok(&["doctor"]);
+    // Doctor's exit code reflects the machine (a tool missing, cig not on
+    // PATH); the tin block is what this test is about.
+    let out = String::from_utf8_lossy(&sb.cig(&["doctor"]).stdout).to_string();
     assert!(out.contains("  tin"), "{out}");
     assert!(out.contains("not made yet"), "{out}");
     assert!(
