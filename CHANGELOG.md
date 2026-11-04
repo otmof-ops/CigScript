@@ -19,7 +19,9 @@ The second of the tin's protections (#105): a record scripts cannot rewrite.
 - **The ledger.** One line per run in the keys directory, apart from the
   tin, each MACed under its own subkey (`ledger-mac`) over the line before
   it: where every run's journal ended, when it was unburned, pruned,
-  forgotten or brought in by a parcel. It catches what a per-journal chain
+  forgotten or brought in by a parcel, each line naming the tin it
+  witnesses so that two state directories beside one key keep separate
+  accounts. It catches what a per-journal chain
   cannot: a journal cut short, or an older copy swapped in (`E709`). `cig
   runs --prune` is recorded, so it stays quiet; a run removed by hand gets
   one calm note (`E710`), and `cig runs --forget <id>` stops it. `cig tin

@@ -4425,6 +4425,41 @@ fn tin_head_matches_the_ledger_and_an_edited_ledger_is_caught() {
     assert!(err.contains("ledger") && err.contains("E709"), "{err}");
 }
 
+/// Two state directories under one parent sit beside one key and so share
+/// one ledger file. They are two tins: each line names the tin it
+/// witnesses, so a run in one is not a missing run in the other. The
+/// portability probe keeps every case's home under one parent and found
+/// the note firing across them.
+#[test]
+fn two_tins_beside_one_key_keep_separate_accounts() {
+    let sb = Sandbox::new();
+    let id = two_op_run(&sb);
+    let other = sb.path().join("home2");
+    let other = other.to_string_lossy().to_string();
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIGSCRIPT_HOME", &other)]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let ledger = sb.read(".cigscript-keys/ledger.jsonl");
+    assert_eq!(ledger.lines().count(), 2, "{ledger}");
+    assert!(ledger.contains("\"tin\":\""), "{ledger}");
+    // Neither tin sees the other's run as missing.
+    let err = String::from_utf8_lossy(&sb.cig(&["runs"]).stderr).to_string();
+    assert!(!err.contains("E710"), "{err}");
+    let out = sb.cig_env(&["runs"], &[("CIGSCRIPT_HOME", &other)]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!err.contains("E710"), "{err}");
+    // A run really removed by hand is still noted, in its own tin only.
+    fs::remove_dir_all(sb.home().join("runs").join(&id)).unwrap();
+    let err = String::from_utf8_lossy(&sb.cig(&["runs"]).stderr).to_string();
+    assert!(err.contains("E710") && err.contains(&id), "{err}");
+    let out = sb.cig_env(&["runs"], &[("CIGSCRIPT_HOME", &other)]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!err.contains("E710"), "{err}");
+}
+
 /// Doctor looks at the tin's protection; looking must not make a key.
 #[cfg(unix)]
 #[test]

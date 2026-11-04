@@ -282,7 +282,9 @@ fn note_missing_runs(ctx: &Ctx, all: &[RunRecord]) {
     };
     let mut seen = std::collections::BTreeSet::new();
     let mut missing: Vec<String> = Vec::new();
-    for l in ledger.lines.iter().rev() {
+    // Only this tin's lines: another state directory beside the same key
+    // keeps its own runs, and they are not missing from here.
+    for l in ledger.of_this_tin().rev() {
         if l.kind != "run" && l.kind != "unburn" && l.kind != "origin" {
             continue;
         }
