@@ -3,6 +3,47 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.11.2 — 2026-11-05
+
+The box and the guard, hardened after a review of 1.11.1. The keyring
+finding was reproduced on a desktop that keeps the tin's key there. The
+five fixes and the proxy's rules each have a test that fails without them;
+the smaller items are covered by the box and guard tests as they stand.
+
+- **Fixed: a guarded hop could reach the key in the OS keyring.** On Linux
+  that keyring is the Secret Service on the session bus, and a boxed hop
+  had the bus. While the key may be in the keyring, a guarded hop now gets
+  no session bus: the address is not passed on and the bus and systemd's
+  private socket are covered. `cig config seal_key file` keeps the bus for
+  hops and the key in a file the guard hides.
+- **Fixed: a key file named by `CIG_SEAL_KEY_FILE` outside the key folder
+  was readable by a hop**, which was also told where it was. It is covered
+  and the variable is not passed on.
+- **Fixed: a hop on the registry network could swap the proxy's socket**
+  for a link to another socket on the machine, which the forwarder would
+  then have connected to. The socket lives under the run's `proxy/`, read
+  only inside the box whether or not the guard could be made.
+- **Fixed: an isolated hop could declare an undo through the burn
+  protocol** that cig would later run outside the box. A hop with a network
+  of its own gets no `CIG_JOURNAL`.
+- **Fixed: a kept layer's record sat in the layer's own folder,** which
+  the hop could write, so a planted record could keep a layer a dead cig
+  left behind. Records live under the run's `kept/`.
+- **The proxy:** a name or `*.suffix` in `allow_hosts` means port 443
+  (`host:port` for any other); a name admitted by a wildcard that resolves
+  to loopback, a private or a link-local address is refused; a host a hop
+  asked for is printed with control characters masked.
+- **Smaller:** the box's relay and init are non-dumpable once the user
+  namespace's maps are written, the forwarder too; descriptors a library
+  left without close-on-exec close at the hop's exec; `/etc/resolv.conf`
+  is covered with `/dev/null` instead of an empty file in a folder the hop
+  could write; the guard's read-only remount keeps the mount's own flags
+  (a home mounted `noatime` or `nodev` no longer turns the guard away).
+- **Said plainly in BURN.md:** the guard keeps the tin read-only and the
+  key out of reach, and the box keeps the pack; a hop that reaches other
+  services you run can act through them. Neither is a sandbox for the rest
+  of the machine.
+
 ## 1.11.1 — 2026-11-05
 
 - **Fixed: a boxed hop's timeout fires.** The box's relay and init (1.11.0's

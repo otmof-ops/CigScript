@@ -775,6 +775,17 @@ fn command(
     for (k, v) in &o.env {
         c.env(k, v);
     }
+    // No way to the key by name, after the hop's own `env` so a script
+    // cannot hand one back: the file `CIG_SEAL_KEY_FILE` names is covered
+    // and a cig inside keeps its key in the inbox; while the key may be in
+    // the OS keyring, no session bus either (its sockets are covered).
+    #[cfg(target_os = "linux")]
+    if let Some(g) = setup.as_ref().and_then(|x| x.guard.as_ref()) {
+        c.env_remove("CIG_SEAL_KEY_FILE");
+        if g.bus_cut {
+            c.env_remove("DBUS_SESSION_BUS_ADDRESS");
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -1794,12 +1805,19 @@ fn hop(
     if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
     }
-    let report = i.kernel.hop_journal();
     // The box: the hop writes into a layer over the pack. Where the box
     // cannot be made, the hop runs on the tin and says so.
     // Isolation asked for (a network other than the machine's) is not a
     // thing to fall back from: without the box it is refused (E777).
     let isolation = o.boxed && o.box_spec.network != crate::burn::overlay::Network::On;
+    // A hop asked to be isolated is code its caller does not trust, so it
+    // gets no burn protocol: an undo it declared there is a command cig
+    // would run later, outside every namespace, as you.
+    let report = if isolation {
+        None
+    } else {
+        i.kernel.hop_journal()
+    };
     let layers: Option<crate::burn::overlay::Layers> = if o.boxed {
         match i.kernel.box_prepare() {
             Some(Ok(l)) => Some(l),

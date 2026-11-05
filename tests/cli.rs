@@ -4499,6 +4499,108 @@ fn a_boxed_hop_sees_the_tin_read_only_and_no_key() {
     );
 }
 
+/// A key file named outright (`CIG_SEAL_KEY_FILE`, the CI setup) lies
+/// outside the key folder the guard hides: the hop is not told where it is,
+/// and reading it there gives nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hop_cannot_read_a_key_file_named_outside_the_key_folder() {
+    let sb = Sandbox::new();
+    let key = sb.path().join("elsewhere").join("tin.key");
+    fs::create_dir_all(key.parent().unwrap()).unwrap();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "p/probe.sh",
+        &format!(
+            "printf 'bytes=%s\\n' \"$(cat {} 2>/dev/null | wc -c)\" > key.txt\nprintf 'var=%s\\n' \"${{CIG_SEAL_KEY_FILE:-unset}}\" >> key.txt\n",
+            key.display()
+        ),
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"probe.sh\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let key_s = key.display().to_string();
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_SEAL_KEY_FILE", key_s.as_str())]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    // The run signed its journal with that key, so it is there, and real.
+    assert!(
+        fs::metadata(&key).map(|m| m.len() > 0).unwrap_or(false),
+        "the key file was not made: {err}"
+    );
+    let seen = sb.read("p/key.txt");
+    assert!(
+        seen.contains("bytes=0") && seen.contains("var=unset"),
+        "the hop reached the key file: {seen}\n{err}"
+    );
+}
+
+/// While the key may be in the OS keyring (the Secret Service, on the
+/// session bus), a guarded hop gets no session bus: the address is not
+/// passed on and the bus and systemd's private socket are covered. With
+/// `seal_key = file` the bus is left alone.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hop_gets_no_session_bus_while_the_key_may_be_in_the_keyring() {
+    let sb = Sandbox::new();
+    // Stand-ins for the bus and systemd's private socket. cig's own keyring
+    // lookup meets the same stand-in and falls back to a key file, so the
+    // test never reaches a real keyring.
+    sb.write("rt/bus", "");
+    sb.write("rt/systemd/private", "");
+    let rt = sb.path().join("rt").display().to_string();
+    let addr = format!("unix:path={rt}/bus");
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "p/probe.sh",
+        "b=open; [ -c \"$XDG_RUNTIME_DIR/bus\" ] && b=covered\np=open; [ -c \"$XDG_RUNTIME_DIR/systemd/private\" ] && p=covered\nprintf 'bus=%s private=%s addr=%s\\n' \"$b\" \"$p\" \"${DBUS_SESSION_BUS_ADDRESS:-unset}\" > bus.txt\n",
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"probe.sh\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let envs = [
+        ("XDG_RUNTIME_DIR", rt.as_str()),
+        ("DBUS_SESSION_BUS_ADDRESS", addr.as_str()),
+        ("CIG_SEAL_KEY", "keyring"),
+    ];
+    let out = sb.cig_env(&["run", "s.cig"], &envs);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    let seen = sb.read("p/bus.txt");
+    assert!(
+        seen.contains("bus=covered")
+            && seen.contains("private=covered")
+            && seen.contains("addr=unset"),
+        "the hop kept a way to the keyring: {seen}\n{err}"
+    );
+    // The stand-ins themselves are untouched outside the hop.
+    assert!(sb.path().join("rt/bus").is_file());
+    // With the key in a file the guard hides, the bus is left to the hop.
+    let envs = [
+        ("XDG_RUNTIME_DIR", rt.as_str()),
+        ("DBUS_SESSION_BUS_ADDRESS", addr.as_str()),
+        ("CIG_SEAL_KEY", "file"),
+    ];
+    let out = sb.cig_env(&["run", "s.cig"], &envs);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    let seen = sb.read("p/bus.txt");
+    assert!(
+        seen.contains("bus=open") && seen.contains(&format!("addr={addr}")),
+        "the bus was cut although the key is a file: {seen}\n{err}"
+    );
+}
+
 /// A cig started inside a boxed hop records its run in the inbox; the run
 /// is taken in as a child, listed under its parent, and unburned with it.
 #[cfg(target_os = "linux")]
@@ -5081,6 +5183,13 @@ fn a_kept_layer_applies_later() {
     let layer = sb.read("p/layer.txt");
     let (run, seq) = layer.trim().split_once('/').expect("run/seq");
     assert_eq!(run, sb.runs()[0]["id"].as_str().unwrap(), "{layer}");
+    // The record is kept apart from the layer, where no hop may write.
+    let run_dir = sb.home().join("runs").join(run);
+    assert!(
+        run_dir.join("kept").join(format!("{seq}.json")).is_file(),
+        "no record under kept/"
+    );
+    assert!(!run_dir.join("box").join(seq).join("kept.json").exists());
     let list = sb.run_ok(&["box", "list"]);
     assert!(list.contains(run) && list.contains("rm keep.txt"), "{list}");
     let out = sb.run_ok(&["box", "apply", &run[..12], seq]);
@@ -5098,6 +5207,157 @@ fn a_kept_layer_applies_later() {
     assert!(err.contains("no kept layers"), "{err}");
     sb.run_ok(&["unburn", applied["id"].as_str().unwrap()]);
     assert!(!sb.exists("p/made.txt") && sb.read("p/keep.txt") == "v1\n");
+}
+
+/// A layer record planted in the layers directory by the hop keeps
+/// nothing: only cig's record, kept where no hop may write, does. The case
+/// that matters is a cig that dies mid-hop: its unapplied layers are
+/// dropped on sight unless they were kept on purpose.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_record_planted_beside_a_layer_keeps_nothing() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let home = sb.home().display().to_string();
+    sb.write(
+        "p/plant.sh",
+        &format!(
+            "for d in {home}/runs/*/box/*; do printf '%s' '{{\"run\":\"x\",\"seq\":1,\"label\":\"planted\",\"roots\":[\"/\"],\"written\":0,\"removed\":0,\"at\":\"\"}}' > \"$d/kept.json\"; done\nfor d in {home}/runs/*; do mkdir -p \"$d/kept\"; done\necho x > made.txt\nexec sleep 31.9\n"
+        ),
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"plant.sh\"], {cwd: \"p\", box: true})\n}\n",
+    );
+    let sleeping = || {
+        Command::new("pgrep")
+            .args(["-f", "sleep 31.9"])
+            .stdout(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    let mut cig = sb.cig_spawn(&["run", "s.cig"]);
+    let mut up = false;
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if sleeping() {
+            up = true;
+            break;
+        }
+    }
+    let _ = cig.kill();
+    let out = cig.wait_with_output().expect("wait");
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(up, "the hop never started: {err}");
+    if fell_back(&err) {
+        allow_fallback(&err);
+        let _ = Command::new("pkill").args(["-f", "sleep 31.9"]).status();
+        return;
+    }
+    for _ in 0..30 {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        if !sleeping() {
+            break;
+        }
+    }
+    // The next look at the runs drops the dead cig's layers; a planted
+    // record does not keep one.
+    sb.cig(&["runs"]);
+    let list = String::from_utf8_lossy(&sb.cig(&["box", "list"]).stderr).to_string();
+    assert!(
+        list.contains("no kept layers"),
+        "a planted record kept a layer: {list}"
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert!(!sb.home().join("runs").join(&id).join("box").exists());
+}
+
+/// A hop on the registry network cannot put a link in the place of the
+/// proxy's socket, which the forwarder would follow to another socket:
+/// the folder it sits in is read-only inside the box.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_proxy_socket_cannot_be_swapped_by_the_hop() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let home = sb.home().display().to_string();
+    sb.write(
+        "p/swap.sh",
+        &format!(
+            "n=0\nfor s in {home}/runs/*/proxy/*.sock; do n=$((n+1)); {{ rm -f \"$s\" && ln -s /dev/null \"$s\"; }} 2>>err.txt; done\necho \"sockets=$n\" > swap.txt\n"
+        ),
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"swap.sh\"], {cwd: \"p\", box: {network: \"registry\", allow_hosts: [\"registry.npmjs.org\"]}})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if err.contains("E777") && !box_expected_here() {
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    assert!(
+        sb.read("p/swap.txt").contains("sockets=1"),
+        "the hop did not find the socket: {}\n{err}",
+        sb.read("p/swap.txt")
+    );
+    let tried = sb.read("p/err.txt");
+    assert!(
+        tried.contains("Read-only file system"),
+        "the hop could replace the proxy's socket: {tried}\n{err}"
+    );
+    // With the guard off the state directory is the hop's to write, and the
+    // socket's folder is still read-only to it.
+    fs::remove_file(sb.path().join("p/err.txt")).unwrap();
+    let out = sb.cig_env(&["run", "s.cig"], &[("CIG_TIN_GUARD", "0")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    let tried = sb.read("p/err.txt");
+    assert!(
+        tried.contains("Read-only file system"),
+        "without the guard the hop could replace the proxy's socket: {tried}\n{err}"
+    );
+}
+
+/// A hop asked to be isolated (a network of its own) gets no burn
+/// protocol: an undo it declared would be a command cig runs later,
+/// outside the box. The unburn runs nothing of the hop's.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_isolated_hop_has_no_burn_protocol() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let marker = sb.path().join("compensation-ran");
+    sb.write(
+        "p/claim.sh",
+        &format!(
+            "printf 'journal=%s\\n' \"${{CIG_JOURNAL:-unset}}\" > claim.txt\nprintf '%s\\n' '{{\"op\":\"compensate\",\"label\":\"x\",\"undo\":[\"touch\",\"{}\"]}}' >> \"${{CIG_JOURNAL:-/dev/null}}\"\n",
+            marker.display()
+        ),
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"claim.sh\"], {cwd: \"p\", box: {network: \"off\"}})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if err.contains("E777") && !box_expected_here() {
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    assert!(
+        sb.read("p/claim.txt").contains("journal=unset"),
+        "{}",
+        sb.read("p/claim.txt")
+    );
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert!(
+        !marker.exists(),
+        "the unburn ran an undo the isolated hop declared"
+    );
 }
 
 /// A kept layer goes with `cig box discard`, and with an unburn of the run

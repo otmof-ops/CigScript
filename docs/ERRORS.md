@@ -1703,7 +1703,7 @@ the box for untrusted code: its network, the watch, kept layers, the kill switch
 
 | code | title | kind of no | what to type next |
 |---|---|---|---|
-| [`E771`](#e771-a-host-outside-the-allow-list) | a host outside the allow list | these are MY ciggies | if the host is legitimate, add it to box.allow_hosts (a name, *.suffix, or host:port); if not, that is the finding |
+| [`E771`](#e771-a-host-outside-the-allow-list) | a host outside the allow list | these are MY ciggies | if the host is legitimate, add it to box.allow_hosts (a name or *.suffix, on 443, or host:port); if not, that is the finding |
 | [`E777`](#e777-no-isolation-for-untrusted-code) | no isolation for untrusted code | these are MY ciggies | on Linux, allow unprivileged user namespaces and have overlayfs; otherwise run it on a machine that has the box, or drop the isolation knowing what that means |
 | [`E780`](#e780-a-layer-was-kept,-not-applied) | a layer was kept, not applied | can't see any ciggies bro | cig box list, then cig box apply <run> <hop> or cig box discard <run> <hop> |
 
@@ -1715,7 +1715,7 @@ the box for untrusted code: its network, the watch, kept layers, the kill switch
 
 A boxed hop with network: registry tried to connect somewhere its allow_hosts does not name. The box's only way out is cig's proxy, which refused the connection and recorded it; the hop saw the refusal and nothing left the machine.
 
-**What to type next:** if the host is legitimate, add it to box.allow_hosts (a name, *.suffix, or host:port); if not, that is the finding
+**What to type next:** if the host is legitimate, add it to box.allow_hosts (a name or *.suffix, on 443, or host:port); if not, that is the finding
 
 **Known causes**, ranked; doctor checks them in this order:
 
