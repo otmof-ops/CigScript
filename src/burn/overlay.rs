@@ -347,6 +347,16 @@ pub fn keep(
     scratch: Option<&Path>,
 ) -> io::Result<Kept> {
     let (written, removed) = summarize(layers)?;
+    // The overlays' work folders are needed only while they are mounted (the
+    // hop's namespace is gone now), and overlayfs leaves one unreadable (mode
+    // 0): a kept layer drops them, so whatever reads the state directory (a
+    // backup, rsync, a tool walking the tin) can read all of it.
+    for (_, _, work) in &layers.roots {
+        let _ = remove_tree_force(work);
+    }
+    if let Some(s) = scratch {
+        let _ = remove_tree_force(&s.join("home-work"));
+    }
     let kept = Kept {
         run: dir_name(&Plan::Boxed(layers).run_dir()),
         seq: seq_of(layers),

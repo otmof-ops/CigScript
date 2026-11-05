@@ -5239,6 +5239,23 @@ fn a_kept_layer_applies_later() {
         "no record under kept/"
     );
     assert!(!run_dir.join("box").join(seq).join("kept.json").exists());
+    // Every folder under the run can be read: the overlay's work folder,
+    // which overlayfs leaves unreadable, went with the hop.
+    fn walk(d: &Path) {
+        for e in fs::read_dir(d).unwrap_or_else(|e| panic!("{}: {e}", d.display())) {
+            let p = e.unwrap().path();
+            if fs::symlink_metadata(&p).unwrap().is_dir() {
+                walk(&p);
+            }
+        }
+    }
+    walk(&run_dir);
+    assert!(!run_dir
+        .join("box")
+        .join(seq)
+        .join("0")
+        .join("work")
+        .exists());
     let list = sb.run_ok(&["box", "list"]);
     assert!(list.contains(run) && list.contains("rm keep.txt"), "{list}");
     let out = sb.run_ok(&["box", "apply", &run[..12], seq]);

@@ -35,6 +35,10 @@ the machine can be written (#106; for cig-orchestrator's rehearsal, its
 - **`cig box discard`** now takes the layer's record and scratch folder with
   it; `cig runs --prune` and an unburn take a contained hop's scratch folder
   too.
+- **A kept layer leaves no unreadable folder in the state directory.**
+  overlayfs leaves its work folder at mode 0; a kept layer kept it, so a
+  backup or anything else walking `~/.cigscript` was refused there. The work
+  folders go when a layer is kept.
 - **Fixed: a contained hop's network could not start when cig itself lived
   under /tmp.** The box's temp goes over /tmp, and the forwarder was started
   by its path after that, so a cig in a build tree or a tool folder under
