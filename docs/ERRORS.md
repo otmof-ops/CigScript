@@ -1740,6 +1740,7 @@ The hop asked the box to isolate it (a network of its own: off or registry) and 
 **Known causes**, ranked; doctor checks them in this order:
 
 1. unprivileged user namespaces are disabled, the kernel has no overlayfs, or the state directory sits on an overlay (a container's layer) (no probe; a suggestion, not a finding). **Remedy:** cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user namespaces enabled let the box be made
+2. the contained box (contain: true) refused its setup: cig runs as root, where a hop keeps its capabilities in the box, or there is no scratch folder outside your home and the pack (HOME=/, as in a service account or a container run as any user) (no probe; a suggestion, not a finding). **Remedy:** run cig as an ordinary user whose HOME is a directory of its own; the message names which
 
 Related: `E763`, `E771`.
 

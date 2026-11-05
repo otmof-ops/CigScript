@@ -1579,6 +1579,10 @@ related = ["E763", "E771"]
 why = "unprivileged user namespaces are disabled, the kernel has no overlayfs, or the state directory sits on an overlay (a container's layer)"
 probe = "none"
 remedy = "cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user namespaces enabled let the box be made"
+[[code.cause]]
+why = "the contained box (contain: true) refused its setup: cig runs as root, where a hop keeps its capabilities in the box, or there is no scratch folder outside your home and the pack (HOME=/, as in a service account or a container run as any user)"
+probe = "none"
+remedy = "run cig as an ordinary user whose HOME is a directory of its own; the message names which"
 
 [[code]]
 code = "E780"

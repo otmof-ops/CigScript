@@ -5529,6 +5529,35 @@ fn a_contained_hop_reaches_no_socket_device_key_or_tin() {
     }
 }
 
+/// A contained box whose setup is refused says why (E777), never "not
+/// found" (E551): with HOME=/ (a service account, a container run as any
+/// user) the box has no scratch folder outside the home, and as root
+/// `contain` is refused outright. Either way the hop does not run.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_box_that_cannot_be_set_up_says_why() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo ran > ran.txt\"], {cwd: \"p\", box: {network: \"off\", contain: true, apply: \"never\"}})\n}\n",
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("HOME", "/")]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("E777"), "{err}");
+    assert!(!err.contains("E551"), "{err}");
+    assert!(!err.contains("no such file"), "{err}");
+    assert!(!sb.exists("p/ran.txt"), "{err}");
+    if box_expected_here() {
+        // The box is made here, so its setup refused, and the reason is told.
+        assert!(
+            err.contains("scratch folder") || err.contains("not as root"),
+            "{err}"
+        );
+    }
+}
+
 /// With `contain` and the default `apply`, a layer that stays inside its
 /// footprint is applied; one that leaves it is held back, the pack untouched.
 #[cfg(target_os = "linux")]
