@@ -252,11 +252,14 @@ mod imp {
             .to_socket_addrs()
             .map(|a| a.collect())
             .unwrap_or_default();
-        let outside: Vec<std::net::SocketAddr> = addrs
+        // IPv4 first: on a network where IPv6 is not routed a v6 address only
+        // times out, and a registry name has several of them.
+        let mut outside: Vec<std::net::SocketAddr> = addrs
             .iter()
             .copied()
             .filter(|a| !by_wildcard || !internal(&a.ip()))
             .collect();
+        outside.sort_by_key(|a| a.is_ipv6());
         if by_wildcard && !addrs.is_empty() && outside.is_empty() {
             let _ = writer.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
             event(
@@ -267,7 +270,7 @@ mod imp {
         }
         let upstream = outside
             .into_iter()
-            .find_map(|a| TcpStream::connect_timeout(&a, Duration::from_secs(10)).ok());
+            .find_map(|a| TcpStream::connect_timeout(&a, Duration::from_secs(5)).ok());
         let Some(upstream) = upstream else {
             let _ = writer.write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
             event(

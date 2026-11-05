@@ -3,6 +3,70 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.12.0 — 2026-11-05
+
+The rehearsal box: a hop whose code you did not write runs so that
+everything it writes is a layer cig reads afterwards, and nothing else on
+the machine can be written (#106; for cig-orchestrator's rehearsal, its
+#55 and #56). Linux.
+
+- **`box: {contain: true}`.** The pack's roots layered with nothing passed
+  through; a layer on your home itself, so `~/.bashrc` lands in it by any
+  name; the box's own temp; then the whole tree read-only in one call and
+  only the layers writable again. A `/dev` of its own (no input devices,
+  cameras, sound or disks), its own IPC, host name, cgroup view and
+  session, `no_new_privs`, and a syscall filter: no Unix socket, no new user
+  namespace, no io_uring, ptrace, keyrings, BPF or mount calls, only this
+  machine's architecture. Needs Linux 5.12, x86_64 or aarch64, a user that
+  is not root, a network of its own and the PID namespace; refused (`E777`)
+  where it cannot be had.
+- **`box: {expect: [...]}`.** The hop's footprint as globs (`~/` for the
+  home). What the layers hold outside it comes back as `r.outside` (with
+  links into the home that it does not name, set-id files and unreadable
+  folders reported whatever it says), with `r.changed` and `r.refused`, and one note
+  (`E781`). Under `contain`, a hop off its footprint is held back.
+- **Evidence.** A rehearsal or a contained hop that fails keeps its layer;
+  the error's value carries it and the judgement.
+- **`proc.apply_layer(layer)` and `proc.discard_layer(layer)`.** Apply a
+  layer this run kept, journaled, only while it holds exactly what was
+  judged (`E782`), or drop it.
+- **A cig inside a contained hop** keeps a throwaway state; nothing of it is
+  taken in.
+- **`cig box discard`** now takes the layer's record and scratch folder with
+  it; `cig runs --prune` and an unburn take a contained hop's scratch folder
+  too.
+- **A kept layer leaves no unreadable folder in the state directory.**
+  overlayfs leaves its work folder at mode 0; a kept layer kept it, so a
+  backup or anything else walking `~/.cigscript` was refused there. The work
+  folders go when a layer is kept.
+- **Fixed: a contained hop's network could not start when cig itself lived
+  under /tmp.** The box's temp goes over /tmp, and the forwarder was started
+  by its path after that, so a cig in a build tree or a tool folder under
+  /tmp left the hop with no way out (npm then fell back to a stale cache
+  after a minute of retries). The forwarder's program is held before any
+  mount and started through that handle.
+- **The proxy tries a registry's IPv4 addresses first**, five seconds an
+  address: on a network that drops IPv6 (some VPNs do, against leaks) a v6
+  address only times out.
+- **Fixed: two senders could file reports at once.** A send waited five
+  seconds for another sender's lock and then went ahead without it, so a
+  run's background flush and a `cig crash send` typed meanwhile could both
+  file, and against GitHub the same report could be filed twice. It now waits
+  up to two minutes, and when the lock is still held the report stays queued
+  for the next send. Within one process the lock is re-entrant: a flush no
+  longer stalls five seconds on its own lock for every report.
+- **Fixed: the same failure reported twice within one second lost a count.**
+  A report's id is its time to the second and its fingerprint, so the second
+  report overwrote the first in the ashtray. A new report claims a name of its
+  own (`<id>-2`, and so on).
+- **The test suite can no longer reach a real tracker.** Every cig a test
+  starts files into the sandbox's own tracker, background flushes included;
+  one started without it could send a test report through an authenticated
+  `gh`.
+- **Fixed: `proc.shell` dropped a boxed hop's layer.** It gives back the
+  layer and the judgement as `proc.run` does (since 1.11.0 a shell hop with
+  `apply: "never"` kept its layer without saying where).
+
 ## 1.11.2 — 2026-11-05
 
 The box and the guard, hardened after a review of 1.11.1. The keyring

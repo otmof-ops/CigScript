@@ -46,6 +46,14 @@ pub static TABLE: &[Builtin] = &[
     b("proc.pipe", Effect::Proc, 1, Some(2), pipe),
     b("proc.shell", Effect::Proc, 1, Some(2), shell),
     b("proc.which", Effect::Read, 1, Some(1), which),
+    b("proc.apply_layer", Effect::Write, 1, Some(1), apply_layer),
+    b(
+        "proc.discard_layer",
+        Effect::Write,
+        1,
+        Some(1),
+        discard_layer,
+    ),
 ];
 
 /// Default wall-clock limit for a hop: ten minutes.
@@ -270,6 +278,87 @@ struct Raw {
     duration_ms: i64,
     /// `<run>/<seq>` when the hop's layer was kept rather than applied.
     layer: Option<String>,
+    /// What the box saw, for a hop that asked to be judged (`expect` or
+    /// `contain`): the changes outside `expect`, the hosts the proxy
+    /// refused, and the counts.
+    judged: Option<Judgement>,
+}
+
+/// A boxed hop's judgement, as the result carries it.
+struct Judgement {
+    outside: Vec<crate::burn::overlay::Unexpected>,
+    refused: Vec<String>,
+    changed: [usize; 4],
+}
+
+impl Judgement {
+    fn of(j: crate::burn::overlay::Judged, refused: Vec<String>) -> Judgement {
+        Judgement {
+            changed: [j.written, j.removed, j.home_written, j.home_removed],
+            outside: j.outside,
+            refused,
+        }
+    }
+
+    /// Into a result or an error's value: `outside`, `refused`, `changed`.
+    fn insert(&self, m: &mut IndexMap<String, Value>) {
+        let outside: Vec<Value> = self
+            .outside
+            .iter()
+            .map(|u| {
+                let mut e = IndexMap::new();
+                e.insert("path".to_string(), Value::str(&u.path));
+                e.insert("kind".to_string(), Value::str(u.kind));
+                Value::map(e)
+            })
+            .collect();
+        m.insert("outside".to_string(), Value::list(outside));
+        m.insert(
+            "refused".to_string(),
+            Value::list(self.refused.iter().map(Value::str).collect()),
+        );
+        let mut c = IndexMap::new();
+        for (k, v) in ["written", "removed", "home_written", "home_removed"]
+            .iter()
+            .zip(self.changed)
+        {
+            c.insert(k.to_string(), Value::Int(v as i64));
+        }
+        m.insert("changed".to_string(), Value::map(c));
+    }
+
+    /// One note when the hop wrote outside `expect`: the first few paths,
+    /// printed with control characters masked, and how many more.
+    fn note(&self, err: &mut dyn std::io::Write, label: &str, held: bool) {
+        if self.outside.is_empty() {
+            return;
+        }
+        let shown: Vec<String> = self
+            .outside
+            .iter()
+            .take(5)
+            .map(|u| {
+                let p = crate::burn::overlay::printable_path(&u.path);
+                if u.kind == "write" {
+                    p
+                } else {
+                    format!("{p} ({})", u.kind)
+                }
+            })
+            .collect();
+        let more = self.outside.len().saturating_sub(5);
+        let _ = writeln!(
+            err,
+            "note[E781 burn]: `{label}` changed what it was not expected to: {}{}{}",
+            shown.join(", "),
+            if more > 0 {
+                format!(" (and {more} more)")
+            } else {
+                String::new()
+            },
+            if held { "; its layer is held back" } else { "" }
+        );
+    }
 }
 
 fn quote(bytes: &[u8]) -> String {
@@ -786,6 +875,31 @@ fn command(
             c.env_remove("DBUS_SESSION_BUS_ADDRESS");
         }
     }
+    // A contained hop: its temp is the box's, a cig started in it keeps a
+    // state of its own there (thrown away with the hop, never taken in), and
+    // nothing names a socket it could not open anyway.
+    #[cfg(target_os = "linux")]
+    if let Some(ct) = setup.as_ref().and_then(|x| x.contain.as_ref()) {
+        let tmp = if ct.tmp_over {
+            std::path::PathBuf::from("/tmp")
+        } else {
+            ct.scratch.join("tmp")
+        };
+        for k in ["TMPDIR", "TMP", "TEMP"] {
+            c.env(k, &tmp);
+        }
+        c.env("CIGSCRIPT_HOME", tmp.join(".cig-home"));
+        c.env("CIG_KEYS_DIR", tmp.join(".cig-keys"));
+        c.env("CIG_SEAL_KEY", "file");
+        for k in [
+            "CIG_SEAL_KEY_FILE",
+            "CIG_PARENT_RUN",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "SSH_AUTH_SOCK",
+        ] {
+            c.env_remove(k);
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -883,6 +997,21 @@ fn parse_box_spec(
                 }
             }
             ("pidns", v) => spec.pidns = v.truthy(),
+            ("contain", v) => spec.contain = v.truthy(),
+            ("expect", Value::List(l)) => {
+                for item in l.borrow().iter() {
+                    match item {
+                        Value::Str(g) => spec.expect.push(g.to_string()),
+                        other => {
+                            return Err(type_error(format!(
+                                "{name}: box.expect holds a {}; want globs as strings",
+                                other.type_name()
+                            ))
+                            .at(s))
+                        }
+                    }
+                }
+            }
             ("apply", Value::Str(a)) => {
                 spec.apply = match a.to_string().as_str() {
                     "on_success" => Apply::OnSuccess,
@@ -898,10 +1027,24 @@ fn parse_box_spec(
             }
             (other, _) => {
                 return Err(type_error(format!(
-                    "{name}: box has no option `{other}` (network, allow_hosts, pidns, apply)"
+                    "{name}: box has no option `{other}` (network, allow_hosts, pidns, apply, contain, expect)"
                 ))
                 .at(s))
             }
+        }
+    }
+    if spec.contain {
+        if spec.network == Network::On {
+            return Err(type_error(format!(
+                "{name}: box.contain needs network: \"off\" or \"registry\": with the machine's network the hop could reach services on this machine"
+            ))
+            .at(s));
+        }
+        if !spec.pidns {
+            return Err(type_error(format!(
+                "{name}: box.contain needs pidns: the hop must not see your processes"
+            ))
+            .at(s));
         }
     }
     Ok(spec)
@@ -1490,6 +1633,7 @@ fn run_child(
                     err,
                     duration_ms,
                     layer: None,
+                    judged: None,
                 }),
                 None => {
                     #[cfg(unix)]
@@ -1859,6 +2003,7 @@ fn hop(
             None
         };
         let ran = run_child(name, cmd, args, o, s, report.as_deref(), Some(&plan));
+        let mut refused = Vec::new();
         if let Some(p) = proxy {
             p.stop();
             for what in crate::burn::proxy::refused(&events) {
@@ -1867,9 +2012,31 @@ fn hop(
                     "note[E771 burn]: `{}` tried {what}, which is not in allow_hosts; refused",
                     hop_label(cmd, args)
                 );
+                refused.push(what);
             }
         }
-        take_in_children(i, &plan);
+        // `contain`: a cig inside kept a throwaway state in the box's temp;
+        // nothing of it is taken in (its records could name any path with
+        // any before-image, and it could not write outside the layers).
+        let contained = o.box_spec.contain;
+        if !contained {
+            take_in_children(i, &plan);
+        }
+        // The judgement, for a hop that asked for one: what its layers hold
+        // outside `expect` (the home's too, under `contain`).
+        let wants_judgement = contained || !o.box_spec.expect.is_empty();
+        let judge_now = |l: &crate::burn::overlay::Layers, refused: &[String]| {
+            let home = crate::burn::overlay::home_layer_of(&l.dir);
+            let j = crate::burn::overlay::judge(
+                l,
+                home.as_ref().map(|(h, u)| (h.as_path(), u.as_path())),
+                &o.box_spec.expect,
+            );
+            Judgement::of(j, refused.to_vec())
+        };
+        // Evidence: a rehearsal (`apply: "never"`) or a contained hop keeps
+        // its layer whatever became of the hop, so what it did can be read.
+        let keep_evidence = contained || o.box_spec.apply == crate::burn::overlay::Apply::Never;
         // The guard: asked for and not available is a refusal (E712); not
         // available under `auto` is one note, and the hop ran boxed without it.
         if let Some(why) = guard_why(&plan) {
@@ -1920,6 +2087,20 @@ fn hop(
             let raw = match ran {
                 Ok(raw) => raw,
                 Err(d) => {
+                    if keep_evidence {
+                        if let Some(payload) = keep_as_evidence(
+                            i,
+                            l,
+                            cmd,
+                            args,
+                            o,
+                            wants_judgement.then(|| judge_now(l, &refused)),
+                            IndexMap::new(),
+                        ) {
+                            i.cough_payload = Some(payload);
+                            return Err(d);
+                        }
+                    }
                     crate::burn::overlay::discard(l);
                     let _ = writeln!(
                         i.err,
@@ -1935,7 +2116,25 @@ fn hop(
             let out = decode(name, "stdout", &raw.out, o.encoding, s)?;
             let err = decode(name, "stderr", &raw.err, Encoding::Lossy, s)?;
             let value = result_map(raw.code, &out, &err, raw.duration_ms, false);
+            let base = match &value {
+                Value::Map(m) => m.borrow().clone(),
+                _ => IndexMap::new(),
+            };
             if let Err(d) = enforce_contract(i, name, &hop_label(cmd, args), &raw, o, value, s) {
+                if keep_evidence {
+                    if let Some(payload) = keep_as_evidence(
+                        i,
+                        l,
+                        cmd,
+                        args,
+                        o,
+                        wants_judgement.then(|| judge_now(l, &refused)),
+                        base,
+                    ) {
+                        i.cough_payload = Some(payload);
+                        return Err(d);
+                    }
+                }
                 crate::burn::overlay::discard(l);
                 let _ = writeln!(
                     i.err,
@@ -1944,19 +2143,28 @@ fn hop(
                 );
                 return Err(d);
             }
-            // The layer's fate: applied (the default), kept (`apply: never`,
-            // or `ask` away from a terminal), or asked about.
+            // The judgement, then the layer's fate: applied (the default),
+            // kept (`apply: never`, `ask` away from a terminal, or a
+            // contained hop that changed what it was not expected to), or
+            // asked about.
+            let judgement = wants_judgement.then(|| judge_now(l, &refused));
+            let off_footprint = judgement.as_ref().is_some_and(|j| !j.outside.is_empty());
             let keep = match o.box_spec.apply {
-                crate::burn::overlay::Apply::OnSuccess => false,
+                crate::burn::overlay::Apply::OnSuccess => contained && off_footprint,
                 crate::burn::overlay::Apply::Never => true,
                 crate::burn::overlay::Apply::Ask => !ask_to_apply(i, l, &hop_label(cmd, args)),
             };
+            if let Some(j) = &judgement {
+                j.note(&mut i.err, &hop_label(cmd, args), keep);
+            }
             if keep {
+                let scratch = crate::burn::overlay::scratch_of(&l.dir);
                 let kept = crate::burn::overlay::keep(
                     l,
                     &hop_label(cmd, args),
                     o.cwd.as_deref(),
                     &o.touches_sealed,
+                    scratch.as_deref(),
                 )
                 .map_err(|e| {
                     cigscript_burn(format!("{name}: the layer could not be kept: {e}"))
@@ -1977,6 +2185,7 @@ fn hop(
                 );
                 let mut raw = raw;
                 raw.layer = Some(format!("{}/{}", kept.run, kept.seq));
+                raw.judged = judgement;
                 return Ok(Some((raw, out, err)));
             }
             let applied = i.kernel.box_apply(l, &o.touches_sealed).map_err(|e| {
@@ -2000,6 +2209,8 @@ fn hop(
                     applied.deleted.len()
                 )
             );
+            let mut raw = raw;
+            raw.judged = judgement;
             return Ok(Some((raw, out, err)));
         }
     }
@@ -2052,6 +2263,143 @@ fn hop(
 /// `proc.run(cmd, args = [], opts = {})` → `{code, out, err, duration_ms,
 /// timed_out, simulated}`. Any exit code is an answer unless `check` or
 /// `ok` says otherwise.
+/// A layer this run kept, named by the `layer` a boxed hop's result (or
+/// error) carried: `<run>/<hop>`.
+fn this_runs_layer(
+    a: &[Value],
+    name: &str,
+    s: Span,
+) -> Result<crate::burn::overlay::Kept, Diagnostic> {
+    let layer = expect_str(a, 0, name, s)?.to_string();
+    let Some((run, seq)) = layer.split_once('/') else {
+        return Err(e782(name, &format!("`{layer}` is not a layer (want the `layer` a boxed hop's result carried, \"<run>/<hop>\")")).at(s));
+    };
+    if crate::crash::active_run().as_deref() != Some(run) {
+        return Err(e782(name, &format!("the layer {layer} is not this run's; cig box apply {run} {seq} applies another run's")).at(s));
+    }
+    crate::burn::overlay::kept_layers()
+        .into_iter()
+        .find(|k| k.run == run && k.seq.to_string() == seq)
+        .ok_or_else(|| {
+            e782(
+                name,
+                &format!("this run keeps no layer {layer} (applied or dropped already?)"),
+            )
+            .at(s)
+        })
+}
+
+fn e782(name: &str, why: &str) -> Diagnostic {
+    cigscript_burn(format!("{name}: {why}"))
+        .code("E782")
+        .with_hint("proc.apply_layer and proc.discard_layer take the `layer` a boxed hop of this run kept (apply: \"never\", or a contained hop held back)")
+}
+
+/// `proc.apply_layer(layer)`: apply a layer this run kept, as native burns
+/// journaled with their before-states, so the run unburns it like any other;
+/// only while the layer still holds exactly what it held when it was judged.
+/// A contained hop's home layer is never applied: it is dropped with the rest.
+fn apply_layer(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let name = "proc.apply_layer";
+    let kept = this_runs_layer(a, name, s)?;
+    let real = i.burning(name, s)?;
+    let layers = crate::burn::overlay::layers_of(&kept);
+    if let Some(d) = &kept.digest {
+        match crate::burn::overlay::layer_digest(&layers) {
+            Ok(now) if &now == d => {}
+            Ok(_) => {
+                return Err(e782(
+                    name,
+                    &format!(
+                        "the layer {}/{} changed since it was judged, so it is not applied",
+                        kept.run, kept.seq
+                    ),
+                )
+                .at(s))
+            }
+            Err(e) => {
+                return Err(e782(
+                    name,
+                    &format!("the layer {}/{} cannot be judged: {e}", kept.run, kept.seq),
+                )
+                .at(s))
+            }
+        }
+    }
+    let mut m = IndexMap::new();
+    if !real {
+        m.insert("written".to_string(), Value::Int(kept.written as i64));
+        m.insert("removed".to_string(), Value::Int(kept.removed as i64));
+        m.insert("simulated".to_string(), Value::Bool(true));
+        return Ok(Value::map(m));
+    }
+    let applied = i.kernel.box_apply(&layers, &kept.touches_sealed).map_err(|e| {
+        cigscript_burn(format!("{name}: {e}"))
+            .code("E763")
+            .at(s)
+            .with_hint("what was applied before the failure is in the journal; the run's rollback puts it back")
+    })?;
+    m.insert(
+        "written".to_string(),
+        Value::Int(applied.created.len() as i64),
+    );
+    m.insert(
+        "removed".to_string(),
+        Value::Int(applied.deleted.len() as i64),
+    );
+    Ok(Value::map(m))
+}
+
+/// `proc.discard_layer(layer)`: drop a layer this run kept, with its record
+/// and, for a contained hop, its scratch folder.
+fn discard_layer(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
+    let name = "proc.discard_layer";
+    let kept = this_runs_layer(a, name, s)?;
+    if i.burning(name, s)? {
+        crate::burn::overlay::discard(&crate::burn::overlay::layers_of(&kept));
+    }
+    Ok(Value::Null)
+}
+
+/// Keep a failed hop's layer as evidence (a rehearsal, or a contained hop),
+/// and give back the error's value: what the result would have carried, the
+/// layer, and the judgement. `None` when the layer could not be kept.
+fn keep_as_evidence(
+    i: &mut Interp,
+    l: &crate::burn::overlay::Layers,
+    cmd: &str,
+    args: &[String],
+    o: &Options,
+    judgement: Option<Judgement>,
+    mut base: IndexMap<String, Value>,
+) -> Option<Value> {
+    let scratch = crate::burn::overlay::scratch_of(&l.dir);
+    let kept = crate::burn::overlay::keep(
+        l,
+        &hop_label(cmd, args),
+        o.cwd.as_deref(),
+        &o.touches_sealed,
+        scratch.as_deref(),
+    )
+    .ok()?;
+    if let Some(j) = &judgement {
+        j.note(&mut i.err, &hop_label(cmd, args), true);
+        j.insert(&mut base);
+    }
+    let _ = writeln!(
+        i.err,
+        "note[E780 burn]: `{}` failed in the box; its layer is kept to be read: cig box list shows it, cig box discard {} {} drops it",
+        hop_label(cmd, args),
+        kept.run,
+        kept.seq
+    );
+    base.insert(
+        "layer".to_string(),
+        Value::str(format!("{}/{}", kept.run, kept.seq)),
+    );
+    Some(Value::map(base))
+}
+
 fn run(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let cmd = expect_str(a, 0, "proc.run", s)?.to_string();
     if cmd.trim().is_empty() {
@@ -2061,14 +2409,7 @@ fn run(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let o = Options::parse(a, 2, "proc.run", s, None)?;
     match hop(i, "proc.run", &cmd, &args, &o, s)? {
         None => Ok(result_map(0, "", "", 0, true)),
-        Some((raw, out, err)) => {
-            let value = result_map(raw.code, &out, &err, raw.duration_ms, false);
-            if let (Some(layer), Value::Map(m)) = (&raw.layer, &value) {
-                m.borrow_mut()
-                    .insert("layer".to_string(), Value::str(layer));
-            }
-            Ok(value)
-        }
+        Some((raw, out, err)) => Ok(hop_value(&raw, &out, &err)),
     }
 }
 
@@ -2214,8 +2555,24 @@ fn shell(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     args.push(script.clone());
     match hop(i, "proc.shell", &cmd, &args, &o, s)? {
         None => Ok(result_map(0, "", "", 0, true)),
-        Some((raw, out, err)) => Ok(result_map(raw.code, &out, &err, raw.duration_ms, false)),
+        Some((raw, out, err)) => Ok(hop_value(&raw, &out, &err)),
     }
+}
+
+/// A hop's result as `proc.run` and `proc.shell` give it: the exit code and
+/// the output, and for a boxed hop the layer it kept and its judgement.
+fn hop_value(raw: &Raw, out: &str, err: &str) -> Value {
+    let value = result_map(raw.code, out, err, raw.duration_ms, false);
+    if let Value::Map(m) = &value {
+        if let Some(layer) = &raw.layer {
+            m.borrow_mut()
+                .insert("layer".to_string(), Value::str(layer));
+        }
+        if let Some(j) = &raw.judged {
+            j.insert(&mut m.borrow_mut());
+        }
+    }
+    value
 }
 
 /// `proc.pipe([[cmd, args...], ...], opts)`: stages connected stdout to

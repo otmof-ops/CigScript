@@ -1596,6 +1596,36 @@ probe = "none"
 remedy = "apply or discard the kept layer by hand"
 
 [[code]]
+code = "E781"
+title = "a hop changed what it was not expected to"
+meaning = "A boxed hop with box.expect wrote, linked, replaced or removed something its expected footprint does not name, or left a link that leaves the pack, a set-id file, or a folder that cannot be read. The note lists the first few paths; the hop's result carries them all (outside). Under box.contain the layer is held back rather than applied."
+fix = "read the paths: add one to box.expect if the tool meant it, or treat it as the finding it is"
+no = "these-are-mine"
+arises = ["run"]
+tags = ["kernel"]
+since = "1.12.0"
+related = ["E780", "E771", "E782"]
+[[code.cause]]
+why = "the tool writes somewhere its footprint does not name yet (a new cache folder, a lockfile it updates), or code it runs is doing what it should not"
+probe = "none"
+remedy = "compare the path with the tool's documented footprint; widen box.expect only for what the tool itself does"
+
+[[code]]
+code = "E782"
+title = "not a layer this run can apply"
+meaning = "proc.apply_layer or proc.discard_layer was given something other than a layer this run kept, or the kept layer no longer holds exactly what it held when the hop was judged (something changed it in between), so applying it would apply what nobody judged."
+fix = "pass the layer a boxed hop of this run returned; a layer that changed is not applied: run the hop again"
+no = "cant-see-any"
+arises = ["run"]
+tags = ["kernel"]
+since = "1.12.0"
+related = ["E780", "E781"]
+[[code.cause]]
+why = "the layer belongs to another run, was applied or dropped already, or was changed after the hop was judged"
+probe = "none"
+remedy = "cig box list shows the kept layers; cig box apply <run> <hop> applies another run's"
+
+[[code]]
 code = "E715"
 title = "debugging is allowed"
 meaning = "CIG_ALLOW_DEBUG is set, so cig does not stop a debugger or another process of the same user from reading the tin's key out of its memory. This is for contributors debugging cig; cig says so on every run while it is set."

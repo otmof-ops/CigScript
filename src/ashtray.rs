@@ -27,7 +27,7 @@ pub fn backoff_secs(attempts: u32) -> u64 {
 
 /// Put a report in the ashtray. Nothing is sent here.
 pub fn queue(report: &mut CrashReport) -> io::Result<PathBuf> {
-    crash::write(report)
+    crash::write_new(report)
 }
 
 /// The repository a report goes to: its own, when the tool that made it
@@ -85,7 +85,15 @@ pub struct Flushed {
 /// Try to send one report now. A failure is recorded on the report (the
 /// reason, the attempt count, when to try again) and the report stays.
 pub fn try_send(report: &mut CrashReport, cfg: &Config) -> Result<SendOutcome, String> {
-    let _lock = lock(std::time::Duration::from_secs(5));
+    // One sender at a time, really: a send that went ahead without the lock
+    // could file a report a flush is filing too. When another sender keeps
+    // it past the wait, this report stays queued, untouched, for the next.
+    let Some(_lock) = lock(SEND_WAIT) else {
+        return Err(
+            "another cig is still sending reports; this one stays in the ashtray and goes with the next send"
+                .to_string(),
+        );
+    };
     // A flush that held the lock may have filed this very report meanwhile.
     if let Ok(Some(fresh)) = crash::find(&report.id) {
         if let Some(issue) = fresh.issue.clone() {
@@ -140,17 +148,43 @@ pub fn try_send(report: &mut CrashReport, cfg: &Config) -> Result<SendOutcome, S
 /// The one sender at a time: a run's background flush and a `cig crash
 /// send` typed meanwhile must not both file the same report. The lock is a
 /// file made atomically; one older than ten minutes is a dead sender's.
-pub struct Lock(PathBuf);
+/// Within one process it is re-entrant: a flush holds it while each report
+/// goes through `try_send`, which takes it again at once.
+pub struct Lock {
+    path: PathBuf,
+    owner: bool,
+}
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        if self.owner {
+            let _ = std::fs::remove_file(&self.path);
+            if let Ok(mut held) = HELD.lock() {
+                held.retain(|p| p != &self.path);
+            }
+        }
     }
 }
 
+/// The lock files this process holds.
+static HELD: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+/// How long a sender waits for another to finish: long enough for a flush
+/// to prove a few repros in their sandboxes.
+pub const SEND_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 pub fn lock(wait: std::time::Duration) -> Option<Lock> {
-    let path = crash::ashtray_dir().join(".flush.lock");
     let _ = std::fs::create_dir_all(crash::ashtray_dir());
+    lock_at(&crash::ashtray_dir().join(".flush.lock"), wait)
+}
+
+/// The lock at `path` (see `Lock`), waiting up to `wait` for another
+/// process to let it go; `None` when it did not.
+pub fn lock_at(path: &std::path::Path, wait: std::time::Duration) -> Option<Lock> {
+    let path = path.to_path_buf();
+    if HELD.lock().map(|h| h.contains(&path)).unwrap_or(false) {
+        return Some(Lock { path, owner: false });
+    }
     let started = std::time::Instant::now();
     loop {
         match std::fs::OpenOptions::new()
@@ -161,7 +195,10 @@ pub fn lock(wait: std::time::Duration) -> Option<Lock> {
             Ok(mut f) => {
                 use std::io::Write;
                 let _ = writeln!(f, "{}", std::process::id());
-                return Some(Lock(path));
+                if let Ok(mut held) = HELD.lock() {
+                    held.push(path.clone());
+                }
+                return Some(Lock { path, owner: true });
             }
             Err(_) => {
                 let stale = std::fs::metadata(&path)
@@ -312,4 +349,37 @@ pub fn announce_fixed(cfg: &Config, releases: &[crate::update::Release]) -> Vec<
 /// The last time this process queued a report: `cig run` asks once about it.
 pub fn stamp_now() -> String {
     now_rfc3339()
+}
+
+#[cfg(test)]
+mod lock_tests {
+    use super::*;
+
+    #[test]
+    fn the_lock_is_one_sender_at_a_time_and_reentrant_within_one() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join(".flush.lock");
+        let outer = lock_at(&path, std::time::Duration::ZERO).expect("free");
+        assert!(path.exists());
+        // The same process takes it again at once (a flush's try_send).
+        let started = std::time::Instant::now();
+        let inner = lock_at(&path, std::time::Duration::from_secs(5)).expect("re-entrant");
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+        drop(inner);
+        assert!(path.exists(), "the inner guard let go of the outer's lock");
+        // Another holder (the file, made by another process) is waited for,
+        // and not taken while it stays.
+        drop(outer);
+        assert!(!path.exists());
+        std::fs::write(&path, "4242\n").unwrap();
+        assert!(lock_at(&path, std::time::Duration::from_millis(150)).is_none());
+        let p2 = path.clone();
+        let freer = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            std::fs::remove_file(&p2).unwrap();
+        });
+        let got = lock_at(&path, std::time::Duration::from_secs(10));
+        freer.join().unwrap();
+        assert!(got.is_some(), "the lock was not taken once it was let go");
+    }
 }

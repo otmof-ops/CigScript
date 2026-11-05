@@ -196,6 +196,21 @@ impl Interp {
             .map_err(|e| e.or_at(span))
     }
 
+    /// For a builtin that changes the world through the kernel without an
+    /// op of its own (`proc.apply_layer`): the burn-block rule, and whether
+    /// it runs for real (not in a dry run, not under `unlit`).
+    pub(crate) fn burning(&self, name: &str, span: Span) -> Result<bool, Diagnostic> {
+        if self.burn_depth == 0 {
+            return Err(burn_error(format!(
+                "{name} changes the world, so it must be inside a burn block"
+            ))
+            .code("E701")
+            .at(span)
+            .with_hint(format!("wrap it: burn {{ {name}(...) }}")));
+        }
+        Ok(self.unlit_depth == 0 && self.kernel.mode != crate::burn::Mode::DryRun)
+    }
+
     pub fn run_program(&mut self, program: &Program) -> Result<(), Diagnostic> {
         if std::env::var("CIG_INTERNAL_PANIC").as_deref() == Ok("eval") {
             // Test hook for the crash reporter: a panic from inside the

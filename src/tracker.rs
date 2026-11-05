@@ -451,20 +451,42 @@ impl Tracker for FileTracker {
         labels: &[String],
     ) -> Result<IssueRef, String> {
         offline()?;
-        let number = self
+        // A number is never handed out twice, as the real tracker's are not:
+        // each issue is written aside and linked into its name, which fails
+        // when another sender took that number first, and the next is tried.
+        let mut number = self
             .all(repo)?
             .iter()
             .map(|v| v["number"].as_u64().unwrap_or(0))
             .max()
             .unwrap_or(0)
             + 1;
-        let url = format!("file://{}", self.path(repo, number).display());
-        let v = serde_json::json!({
-            "number": number, "url": url, "title": title, "body": body,
-            "labels": labels, "state": "open", "closed_at": null, "comments": [],
-        });
-        self.write(&self.path(repo, number), &v)?;
-        Ok(Self::issue_of(&v))
+        let dir = self.repo_dir(repo);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let aside = dir.join(format!(
+            ".new-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        loop {
+            let url = format!("file://{}", self.path(repo, number).display());
+            let v = serde_json::json!({
+                "number": number, "url": url, "title": title, "body": body,
+                "labels": labels, "state": "open", "closed_at": null, "comments": [],
+            });
+            self.write(&aside, &v)?;
+            match fs::hard_link(&aside, self.path(repo, number)) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&aside);
+                    return Ok(Self::issue_of(&v));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => number += 1,
+                Err(e) => {
+                    let _ = fs::remove_file(&aside);
+                    return Err(e.to_string());
+                }
+            }
+        }
     }
     fn edit_body(&self, repo: &str, number: u64, body: &str) -> Result<(), String> {
         offline()?;
@@ -487,5 +509,32 @@ impl Tracker for FileTracker {
     fn get(&self, repo: &str, number: u64) -> Result<IssueRef, String> {
         offline()?;
         Ok(Self::issue_of(&self.read(&self.path(repo, number))?))
+    }
+}
+
+#[cfg(test)]
+mod file_tracker_tests {
+    use super::*;
+
+    #[test]
+    fn senders_at_once_never_share_an_issue_number() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().to_path_buf();
+        let threads: Vec<_> = (0..8)
+            .map(|i| {
+                let dir = dir.clone();
+                std::thread::spawn(move || {
+                    let tr = FileTracker { dir };
+                    tr.create("o/r", &format!("[fp{i}] report {i}"), "body", &[])
+                        .unwrap()
+                        .number
+                })
+            })
+            .collect();
+        let mut numbers: Vec<u64> = threads.into_iter().map(|h| h.join().unwrap()).collect();
+        numbers.sort();
+        assert_eq!(numbers, (1..=8).collect::<Vec<u64>>());
+        let files = fs::read_dir(dir.join("o__r")).unwrap().flatten().count();
+        assert_eq!(files, 8, "an issue was overwritten or a temporary was left");
     }
 }

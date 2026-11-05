@@ -54,9 +54,14 @@ pub fn why(layers: &Layers) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Throw the layers away: nothing of the hop lands.
+/// Throw the layers away: nothing of the hop lands. A contained hop's
+/// scratch folder (its home layer, its temp) goes with them.
 pub fn discard(layers: &Layers) {
     let _ = fs::remove_file(kept_record(&layers.dir));
+    #[cfg(target_os = "linux")]
+    if let Some(scratch) = Contain::scratch_of(&layers.dir) {
+        let _ = remove_tree_force(&scratch);
+    }
     let _ = remove_tree_force(&layers.dir);
     // The `box` directory itself, once no hop's layers are left in it.
     if let Some(parent) = layers.dir.parent() {
@@ -184,6 +189,14 @@ pub struct BoxSpec {
     pub network: Network,
     pub allow_hosts: Vec<String>,
     pub apply: Apply,
+    /// Everything the hop can write is a layer cig reads afterwards (the
+    /// pack's, the home's, a temp of its own); the rest of the machine is
+    /// read-only to it, and it opens no Unix socket (`contain`).
+    pub contain: bool,
+    /// What the hop is expected to write: globs under the pack root, or
+    /// starting `~/` for the home. A change matching none is reported
+    /// (`outside`) and, under `contain`, holds the layer back.
+    pub expect: Vec<String>,
 }
 
 impl Default for BoxSpec {
@@ -193,6 +206,8 @@ impl Default for BoxSpec {
             network: Network::On,
             allow_hosts: Vec::new(),
             apply: Apply::OnSuccess,
+            contain: false,
+            expect: Vec::new(),
         }
     }
 }
@@ -278,6 +293,14 @@ pub struct Kept {
     pub written: usize,
     pub removed: usize,
     pub at: String,
+    /// `contain`: the scratch folder holding the hop's home layer, removed
+    /// with the layer (the home layer itself is never applied).
+    #[serde(default)]
+    pub scratch: Option<PathBuf>,
+    /// What the layer held when it was judged (`layer_digest`): applying it
+    /// later checks it still holds exactly that.
+    #[serde(default)]
+    pub digest: Option<String>,
     #[serde(skip)]
     pub dir: PathBuf,
 }
@@ -321,8 +344,19 @@ pub fn keep(
     label: &str,
     cwd: Option<&Path>,
     touches_sealed: &[String],
+    scratch: Option<&Path>,
 ) -> io::Result<Kept> {
     let (written, removed) = summarize(layers)?;
+    // The overlays' work folders are needed only while they are mounted (the
+    // hop's namespace is gone now), and overlayfs leaves one unreadable (mode
+    // 0): a kept layer drops them, so whatever reads the state directory (a
+    // backup, rsync, a tool walking the tin) can read all of it.
+    for (_, _, work) in &layers.roots {
+        let _ = remove_tree_force(work);
+    }
+    if let Some(s) = scratch {
+        let _ = remove_tree_force(&s.join("home-work"));
+    }
     let kept = Kept {
         run: dir_name(&Plan::Boxed(layers).run_dir()),
         seq: seq_of(layers),
@@ -333,6 +367,8 @@ pub fn keep(
         written,
         removed,
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        scratch: scratch.map(Path::to_path_buf),
+        digest: Some(layer_digest(layers)?),
         dir: layers.dir.clone(),
     };
     let text = serde_json::to_string_pretty(&kept).map_err(io::Error::other)?;
@@ -423,6 +459,9 @@ pub fn drop_unapplied(run_dir: &Path) -> usize {
         }
     }
     let _ = fs::remove_dir(run_dir.join("box"));
+    // A contained hop's scratch folder whose layer is not kept.
+    #[cfg(target_os = "linux")]
+    sweep_scratch(run_dir);
     // A record whose layer is gone keeps nothing.
     if let Ok(rd) = fs::read_dir(run_dir.join("kept")) {
         for e in rd.flatten() {
@@ -469,6 +508,431 @@ pub struct Setup {
     /// The forwarder to start inside the namespace (`cig internal-forward
     /// <sock> <port>`), as the argv to exec.
     pub forward: Option<[std::ffi::CString; 4]>,
+    /// `contain`: the home layer, the read-only rest, a /dev of its own,
+    /// the hop's syscall filter.
+    pub contain: Option<Contain>,
+}
+
+/// What `contain` adds to the box, planned in the parent and applied in the
+/// child (see BURN.md, "Rehearsing code you did not write").
+#[cfg(target_os = "linux")]
+pub struct Contain {
+    /// The box's scratch folder, outside the home and every pack root:
+    /// the home layer's upper and work, and the hop's temp.
+    pub scratch: PathBuf,
+    /// The home, and the overlay to mount on it, when no pack root holds
+    /// the home or lies above it.
+    pub home: Option<(std::ffi::CString, std::ffi::CString)>,
+    /// What lives under the home and is put back over the home layer, held
+    /// open before it and bound again after: the pack roots there, the
+    /// state root, mounts that were there. Outermost first.
+    pub rebinds: Vec<std::ffi::CString>,
+    /// The hop's temp, and whether it goes over /tmp (not when anything cig
+    /// needs lives under /tmp).
+    pub tmp: std::ffi::CString,
+    pub tmp_over: bool,
+    /// The key folder (an empty tmpfs over it) and the other ways to the
+    /// key (each covered with /dev/null), in the hop's final view.
+    pub keys: Option<std::ffi::CString>,
+    pub covers: Vec<std::ffi::CString>,
+    /// Mount points made writable again after the whole tree went
+    /// read-only: the pack roots, the home, the temp (each required), and
+    /// /dev and its parts.
+    pub writable: Vec<(std::ffi::CString, bool)>,
+    /// The hop's syscall filter (classic BPF), installed last in the hop.
+    pub filter: Vec<libc::sock_filter>,
+}
+
+#[cfg(target_os = "linux")]
+impl Contain {
+    /// The paths outside the run that the box made for this hop: removed
+    /// when the hop's layer goes (`discard`) or is applied.
+    pub fn scratch_of(layers_dir: &Path) -> Option<PathBuf> {
+        let run = layers_dir.parent()?.parent()?;
+        let uid = unsafe { libc::geteuid() };
+        let name = format!("cig-box-{uid}-{}-{}", dir_name(run), dir_name(layers_dir));
+        scratch_bases()
+            .into_iter()
+            .map(|b| b.join(&name))
+            .find(|p| p.exists())
+    }
+}
+
+/// Where a contained hop's scratch folder may live: `/var/tmp` (on disk on
+/// most machines; a home layer full of package caches should not sit in
+/// memory), else the temporary directory.
+#[cfg(target_os = "linux")]
+fn scratch_bases() -> Vec<PathBuf> {
+    let mut out = vec![PathBuf::from("/var/tmp")];
+    let t = std::env::temp_dir();
+    if !out.contains(&t) {
+        out.push(t);
+    }
+    out
+}
+
+/// The real home: `HOME`, else the password database.
+#[cfg(target_os = "linux")]
+fn real_home() -> Option<PathBuf> {
+    let h = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|h| h.is_absolute() && h.is_dir())?;
+    Some(fs::canonicalize(&h).unwrap_or(h))
+}
+
+/// Mount points under `under` (strictly), from this process's mount table,
+/// decoded (`\040` is a space).
+#[cfg(target_os = "linux")]
+fn mounts_under(under: &Path) -> Vec<PathBuf> {
+    let Ok(text) = fs::read_to_string("/proc/self/mountinfo") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(raw) = line.split(' ').nth(4) else {
+            continue;
+        };
+        let mut bytes = Vec::with_capacity(raw.len());
+        let b = raw.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'\\' && i + 3 < b.len() {
+                if let Ok(n) = u8::from_str_radix(&raw[i + 1..i + 4], 8) {
+                    bytes.push(n);
+                    i += 4;
+                    continue;
+                }
+            }
+            bytes.push(b[i]);
+            i += 1;
+        }
+        let p = PathBuf::from(String::from_utf8_lossy(&bytes).into_owned());
+        if p != under && p.starts_with(under) && !out.contains(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// `mount_setattr(2)` (Linux 5.12): set or clear attributes on a mount, or
+/// on a whole tree with `AT_RECURSIVE`, in one call and without walking
+/// paths. Async-signal-safe (a raw syscall).
+#[cfg(target_os = "linux")]
+unsafe fn mount_setattr(path: &std::ffi::CStr, recursive: bool, set: u64, clear: u64) -> bool {
+    #[repr(C)]
+    struct MountAttr {
+        attr_set: u64,
+        attr_clr: u64,
+        propagation: u64,
+        userns_fd: u64,
+    }
+    const AT_RECURSIVE: libc::c_long = 0x8000;
+    let attr = MountAttr {
+        attr_set: set,
+        attr_clr: clear,
+        propagation: 0,
+        userns_fd: 0,
+    };
+    libc::syscall(
+        libc::SYS_mount_setattr,
+        libc::AT_FDCWD as libc::c_long,
+        path.as_ptr(),
+        if recursive { AT_RECURSIVE } else { 0 },
+        &attr as *const MountAttr,
+        std::mem::size_of::<MountAttr>(),
+    ) == 0
+}
+
+#[cfg(target_os = "linux")]
+const MOUNT_ATTR_RDONLY: u64 = 0x1;
+
+/// Plan `contain` for one hop: the scratch folder, the home layer and what
+/// is put back over it, the temp, the key folder and covers, the mounts made
+/// writable again after the rest goes read-only, and the syscall filter.
+#[cfg(target_os = "linux")]
+fn plan_contain(
+    layers: &Layers,
+    cwd: &Path,
+    run_dir: &Path,
+    sock: Option<&Path>,
+) -> io::Result<Contain> {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let other = |m: &str| io::Error::other(m.to_string());
+    let cstr = |p: &Path| -> io::Result<std::ffi::CString> {
+        std::ffi::CString::new(p.as_os_str().as_bytes())
+            .map_err(|_| io::Error::other("a path holds a NUL byte"))
+    };
+    let euid = unsafe { libc::geteuid() };
+    if euid == 0 {
+        return Err(other("contain runs the hop as you, not as root: a root hop keeps its capabilities in the box and could make the rest writable again"));
+    }
+    let filter = hop_filter().map_err(io::Error::other)?;
+    let roots: Vec<PathBuf> = layers.roots.iter().map(|(r, _, _)| r.clone()).collect();
+    let state =
+        std::path::absolute(super::runs::home_dir()).unwrap_or_else(|_| super::runs::home_dir());
+    let home = real_home();
+    let inside_any = |p: &Path| {
+        home.as_ref().map(|h| p.starts_with(h)).unwrap_or(false)
+            || roots.iter().any(|r| p.starts_with(r))
+    };
+    // The scratch folder: outside the home (an overlay's upper may not sit
+    // in its lower) and outside every pack root; made fresh, the user's
+    // alone, and checked to be so.
+    let seq = dir_name(&layers.dir);
+    let name = format!("cig-box-{euid}-{}-{seq}", dir_name(run_dir));
+    let base = scratch_bases()
+        .into_iter()
+        .find(|b| b.is_dir() && !inside_any(b))
+        .ok_or_else(|| other("no place for the box's scratch folder outside your home and the pack (/var/tmp, or the temporary directory)"))?;
+    let scratch = base.join(&name);
+    if fs::symlink_metadata(&scratch).is_ok() {
+        remove_tree_force(&scratch)?;
+    }
+    fs::create_dir(&scratch)?;
+    fs::set_permissions(&scratch, fs::Permissions::from_mode(0o700))?;
+    let meta = fs::symlink_metadata(&scratch)?;
+    if !meta.is_dir() || meta.uid() != euid {
+        return Err(other("the box's scratch folder is not yours alone"));
+    }
+    for d in ["home-upper", "home-work", "tmp"] {
+        fs::create_dir(scratch.join(d))?;
+    }
+    // The home layer, unless a pack root holds the home (its writes are in
+    // that layer already).
+    let home_mount = match &home {
+        Some(h) if !roots.iter().any(|r| h.starts_with(r)) => {
+            let opts = format!(
+                "lowerdir={},upperdir={},workdir={},userxattr",
+                escape(h),
+                escape(&scratch.join("home-upper")),
+                escape(&scratch.join("home-work"))
+            );
+            Some((
+                cstr(h)?,
+                std::ffi::CString::new(opts).map_err(|_| other("NUL in options"))?,
+            ))
+        }
+        _ => None,
+    };
+    // What lives under the home and goes back over its layer: an overlay's
+    // lower does not cross mounts, so without this the pack roots there
+    // would show their real, unlayered selves and the state root its raw
+    // folder. Outermost only.
+    let mut rebinds: Vec<PathBuf> = Vec::new();
+    if let (Some(h), Some(_)) = (&home, &home_mount) {
+        let mut cands: Vec<PathBuf> = roots
+            .iter()
+            .filter(|r| r.starts_with(h) && *r != h)
+            .cloned()
+            .collect();
+        if state.starts_with(h) && &state != h {
+            cands.push(state.clone());
+        }
+        for m in mounts_under(h) {
+            cands.push(m);
+        }
+        cands.sort_by_key(|p| p.components().count());
+        for c in cands {
+            if !rebinds.iter().any(|r| c.starts_with(r)) {
+                rebinds.push(c);
+            }
+        }
+    }
+    if rebinds.len() > MAX_BINDS {
+        return Err(other(
+            "too many mounts under your home to put back over its layer",
+        ));
+    }
+    // The temp: over /tmp, unless something cig needs lives there (a pack
+    // root, the state root, the working directory, the proxy's socket).
+    let under_tmp = |p: &Path| p.starts_with("/tmp");
+    let tmp_over = !(roots.iter().any(|r| under_tmp(r))
+        || under_tmp(&state)
+        || under_tmp(&scratch)
+        || under_tmp(cwd)
+        || sock.map(under_tmp).unwrap_or(false));
+    let hidden = |p: &Path| tmp_over && under_tmp(p);
+    // The key folder and the other ways to the key, in the final view.
+    let keys = super::seal::keys_dir();
+    fs::create_dir_all(&keys)?;
+    let _ = fs::set_permissions(&keys, fs::Permissions::from_mode(0o700));
+    let keys_c = if hidden(&keys) {
+        None
+    } else {
+        Some(cstr(&keys)?)
+    };
+    let mut covers = Vec::new();
+    for p in key_routes(&keys, true) {
+        if !hidden(&p) {
+            covers.push(cstr(&p)?);
+        }
+    }
+    let tmp = scratch.join("tmp");
+    let mut writable: Vec<(std::ffi::CString, bool)> = Vec::new();
+    for r in &roots {
+        writable.push((cstr(r)?, true));
+    }
+    if let Some((h, _)) = &home_mount {
+        writable.push((h.clone(), true));
+    }
+    writable.push((
+        if tmp_over {
+            std::ffi::CString::new("/tmp").expect("plain")
+        } else {
+            cstr(&tmp)?
+        },
+        true,
+    ));
+    for d in DEV_PARTS {
+        writable.push((std::ffi::CString::new(*d).expect("plain"), false));
+    }
+    Ok(Contain {
+        scratch,
+        home: home_mount,
+        rebinds: rebinds.iter().map(|p| cstr(p)).collect::<io::Result<_>>()?,
+        tmp: cstr(&tmp)?,
+        tmp_over,
+        keys: keys_c,
+        covers,
+        writable,
+        filter,
+    })
+}
+
+/// A contained hop's /dev: these nodes, bound from the machine's, and
+/// nothing else (no input devices, cameras, sound or disks).
+#[cfg(target_os = "linux")]
+const DEV_NODES: &[&str] = &["null", "zero", "full", "random", "urandom", "tty"];
+
+/// The parts of a contained hop's /dev made writable again after the rest
+/// goes read-only.
+#[cfg(target_os = "linux")]
+const DEV_PARTS: &[&str] = &[
+    "/dev",
+    "/dev/shm",
+    "/dev/pts",
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+];
+
+/// The contained hop's syscall filter (classic BPF, for seccomp): only
+/// this machine's own architecture (no 32-bit or x32 entry, whose numbers
+/// differ); `socket` for the internet and netlink alone, so no Unix socket
+/// is opened (a session bus, systemd's manager, docker.sock, an agent),
+/// while `socketpair`, which child pipes use, stays; no new user namespace
+/// (`clone`, `unshare` with `CLONE_NEWUSER`; `clone3`, whose flags a filter
+/// cannot read, says it does not exist and the C library falls back); no
+/// pushing input into a terminal; and nothing that reaches past the
+/// namespaces: io_uring (its operations escape a syscall filter), ptrace,
+/// another process's memory or descriptors, the kernel keyrings, BPF,
+/// performance counters, userfaultfd, the mount calls.
+#[cfg(target_os = "linux")]
+pub fn hop_filter() -> Result<Vec<libc::sock_filter>, String> {
+    #[cfg(target_arch = "x86_64")]
+    const ARCH: u32 = 0xC000_003E;
+    #[cfg(target_arch = "aarch64")]
+    const ARCH: u32 = 0xC000_00B7;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        return Err(
+            "contain needs x86_64 or aarch64; this cig was built for another architecture"
+                .to_string(),
+        );
+    }
+    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
+    {
+        const LD_W_ABS: u16 = 0x20;
+        const JEQ: u16 = 0x15;
+        const JSET: u16 = 0x45;
+        const RET: u16 = 0x06;
+        const ALLOW: u32 = 0x7fff_0000;
+        const KILL: u32 = 0x8000_0000;
+        let errno = |e: i32| 0x0005_0000u32 | (e as u32 & 0xffff);
+        let st = |code: u16, k: u32| libc::sock_filter {
+            code,
+            jt: 0,
+            jf: 0,
+            k,
+        };
+        let jmp = |code: u16, k: u32, jt: u8, jf: u8| libc::sock_filter { code, jt, jf, k };
+        const NR: u32 = 0;
+        const ARCH_OFF: u32 = 4;
+        const ARG0: u32 = 16;
+        const ARG1: u32 = 24;
+        let mut f = vec![
+            st(LD_W_ABS, ARCH_OFF),
+            jmp(JEQ, ARCH, 1, 0),
+            st(RET, KILL),
+            st(LD_W_ABS, NR),
+        ];
+        #[cfg(target_arch = "x86_64")]
+        {
+            const JGE: u16 = 0x35;
+            // x32: the same numbers with this bit set, a way around the rest.
+            f.push(jmp(JGE, 0x4000_0000, 0, 1));
+            f.push(st(RET, KILL));
+        }
+        let denied: Vec<libc::c_long> = vec![
+            libc::SYS_io_uring_setup,
+            libc::SYS_io_uring_enter,
+            libc::SYS_io_uring_register,
+            libc::SYS_ptrace,
+            libc::SYS_process_vm_readv,
+            libc::SYS_process_vm_writev,
+            libc::SYS_pidfd_getfd,
+            libc::SYS_keyctl,
+            libc::SYS_add_key,
+            libc::SYS_request_key,
+            libc::SYS_bpf,
+            libc::SYS_perf_event_open,
+            libc::SYS_userfaultfd,
+            libc::SYS_mount,
+            libc::SYS_umount2,
+            libc::SYS_pivot_root,
+            libc::SYS_move_mount,
+            libc::SYS_open_tree,
+            libc::SYS_fsopen,
+            libc::SYS_fsmount,
+            libc::SYS_fspick,
+            libc::SYS_mount_setattr,
+        ];
+        for nr in denied {
+            f.push(jmp(JEQ, nr as u32, 0, 1));
+            f.push(st(RET, errno(libc::EPERM)));
+        }
+        f.push(jmp(JEQ, libc::SYS_clone3 as u32, 0, 1));
+        f.push(st(RET, errno(libc::ENOSYS)));
+        // socket: the internet and netlink only.
+        f.push(jmp(JEQ, libc::SYS_socket as u32, 0, 6));
+        f.push(st(LD_W_ABS, ARG0));
+        f.push(jmp(JEQ, libc::AF_INET as u32, 3, 0));
+        f.push(jmp(JEQ, libc::AF_INET6 as u32, 2, 0));
+        f.push(jmp(JEQ, libc::AF_NETLINK as u32, 1, 0));
+        f.push(st(RET, errno(libc::EACCES)));
+        f.push(st(RET, ALLOW));
+        // A new user namespace, by clone or unshare.
+        for nr in [libc::SYS_clone, libc::SYS_unshare] {
+            f.push(jmp(JEQ, nr as u32, 0, 4));
+            f.push(st(LD_W_ABS, ARG0));
+            f.push(jmp(JSET, libc::CLONE_NEWUSER as u32, 0, 1));
+            f.push(st(RET, errno(libc::EPERM)));
+            f.push(st(RET, ALLOW));
+        }
+        // Input pushed into a terminal.
+        f.push(jmp(JEQ, libc::SYS_ioctl as u32, 0, 5));
+        f.push(st(LD_W_ABS, ARG1));
+        f.push(jmp(JEQ, libc::TIOCSTI as u32, 2, 0));
+        f.push(jmp(JEQ, 0x541C, 1, 0));
+        f.push(st(RET, ALLOW));
+        f.push(st(RET, errno(libc::EPERM)));
+        f.push(st(RET, ALLOW));
+        Ok(f)
+    }
 }
 
 /// The tin read-only to the hop, and the key out of its sight. The state
@@ -729,6 +1193,9 @@ impl Setup {
             Plan::Boxed(l) => Some(*l),
             Plan::GuardOnly { .. } => None,
         };
+        // `contain`: nothing passes through to the real disk, the guard is
+        // the contained one below, not the setting's.
+        let contained = spec.contain && layers.is_some();
         for (root, upper, work) in layers.map(|l| l.roots.as_slice()).unwrap_or(&[]) {
             let opts = format!(
                 "lowerdir={},upperdir={},workdir={},userxattr",
@@ -742,9 +1209,10 @@ impl Setup {
             ));
             for name in super::tin::SKIPPED_ALWAYS {
                 let dir = root.join(name);
-                if fs::symlink_metadata(&dir)
-                    .map(|m| m.is_dir())
-                    .unwrap_or(false)
+                if !contained
+                    && fs::symlink_metadata(&dir)
+                        .map(|m| m.is_dir())
+                        .unwrap_or(false)
                     && binds.len() < MAX_BINDS
                 {
                     binds.push(cstr(&dir)?);
@@ -755,7 +1223,7 @@ impl Setup {
         let base = plan.base();
         fs::create_dir_all(&base)?;
         let run_dir = plan.run_dir();
-        let guard = if guard_setting() == "off" {
+        let guard = if guard_setting() == "off" || contained {
             None
         } else {
             let home = std::path::absolute(super::runs::home_dir())
@@ -816,6 +1284,15 @@ impl Setup {
                 std::ffi::CString::new(PROXY_PORT.to_string()).expect("digits"),
             ]);
         }
+        let contain = match (contained, layers) {
+            (true, Some(l)) => {
+                let sock = forward
+                    .as_ref()
+                    .map(|f| PathBuf::from(std::ffi::OsStr::from_bytes(f[2].as_bytes())));
+                Some(plan_contain(l, cwd, &run_dir, sock.as_deref())?)
+            }
+            _ => None,
+        };
         Ok(Setup {
             uid_map: format!("{uid} {uid} 1\n").into_bytes(),
             gid_map: format!("{gid} {gid} 1\n").into_bytes(),
@@ -829,6 +1306,7 @@ impl Setup {
             resolv_null: netns,
             sock_dir,
             forward,
+            contain,
         })
     }
 
@@ -847,6 +1325,10 @@ impl Setup {
         }
         if self.netns {
             flags |= libc::CLONE_NEWNET;
+        }
+        if self.contain.is_some() {
+            // System V IPC, the host name and the cgroup view of its own.
+            flags |= libc::CLONE_NEWIPC | libc::CLONE_NEWUTS | libc::CLONE_NEWCGROUP;
         }
         if libc::unshare(flags) != 0 {
             return self.fail(b"unshare(CLONE_NEWUSER|CLONE_NEWNS) refused");
@@ -871,6 +1353,13 @@ impl Setup {
         // among it when one was loaded; non-dumpable, nothing of the user's
         // can trace or read them. The hop's exec makes it dumpable again.
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+        // The forwarder's program, held before any mount changes the view:
+        // under `contain` the box's temp goes over /tmp, and a cig that lives
+        // there (a build tree, a CI runner's tool folder) would be gone.
+        let exe_fd = match &self.forward {
+            Some(f) => libc::open(f[0].as_ptr(), libc::O_PATH | libc::O_CLOEXEC),
+            None => -1,
+        };
         // Nothing mounted here must reach the parent's namespace.
         if libc::mount(
             std::ptr::null(),
@@ -999,6 +1488,11 @@ impl Setup {
             }
             libc::close(fd);
         }
+        // `contain`: the home layer, what goes back over it, the key folder
+        // and the other ways to the key, the temp, a /dev of its own.
+        if let Some(c) = &self.contain {
+            self.contain_mounts(c)?;
+        }
         // The other ways to the key, covered with /dev/null after the
         // overlays, so the cover is in the view the hop has: a key file read
         // gives nothing, a socket refuses the connection. The hop keeps its
@@ -1071,6 +1565,20 @@ impl Setup {
                 }
             }
         }
+        // `contain`: the whole tree read-only in one call, then the places
+        // whose writes are layers (or scratch) writable again. Overlayfs
+        // writes its upper through a private clone of the upper's mount,
+        // taken when it was mounted above, so the layers keep working.
+        if let Some(c) = &self.contain {
+            if !mount_setattr(c"/", true, MOUNT_ATTR_RDONLY, 0) {
+                return self.fail(b"making the rest of the machine read-only refused (mount_setattr needs Linux 5.12)");
+            }
+            for (w, required) in &c.writable {
+                if !mount_setattr(w, false, 0, MOUNT_ATTR_RDONLY) && *required {
+                    return self.fail(b"making a layer writable again refused");
+                }
+            }
+        }
         // The PID namespace: unshare(CLONE_NEWPID) puts only children in
         // it, so this process (R) stays outside as a relay, forks the
         // namespace's init (A, pid 1 inside), which forks the hop (B) and
@@ -1131,6 +1639,12 @@ impl Setup {
                         f[3].as_ptr(),
                         std::ptr::null(),
                     ];
+                    // Through the descriptor held above, whatever covers
+                    // the path now; by the path where none could be held.
+                    if exe_fd >= 0 {
+                        let from = fd_path(exe_fd);
+                        libc::execv(from.as_ptr() as *const libc::c_char, argv.as_ptr());
+                    }
                     libc::execv(f[0].as_ptr(), argv.as_ptr());
                     libc::_exit(127);
                 }
@@ -1166,6 +1680,193 @@ impl Setup {
         // never cig's own) is closed by the exec: one that named a folder
         // before the mounts above would still write through the old view.
         cloexec_from_3();
+        // `contain`, last of all in the hop itself: a session of its own (no
+        // controlling terminal to push input into), no gaining privileges
+        // through a setuid program, and the syscall filter.
+        if let Some(c) = &self.contain {
+            libc::setsid();
+            if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+                return self.fail(b"setting no_new_privs refused");
+            }
+            let prog = libc::sock_fprog {
+                len: c.filter.len() as libc::c_ushort,
+                filter: c.filter.as_ptr() as *mut libc::sock_filter,
+            };
+            if libc::prctl(
+                libc::PR_SET_SECCOMP,
+                libc::SECCOMP_MODE_FILTER,
+                &prog as *const libc::sock_fprog,
+                0,
+                0,
+            ) != 0
+            {
+                return self.fail(b"installing the hop's syscall filter refused");
+            }
+        }
+        Ok(())
+    }
+
+    /// `contain`'s mounts, after the pack's overlays (see `Contain`).
+    ///
+    /// # Safety
+    ///
+    /// Called from `apply`, between fork and exec: only async-signal-safe
+    /// calls, on data planned in the parent.
+    unsafe fn contain_mounts(&self, c: &Contain) -> io::Result<()> {
+        let null = std::ptr::null::<libc::c_char>();
+        // What lives under the home, held before the home layer hides it.
+        let mut held: [libc::c_int; MAX_BINDS] = [-1; MAX_BINDS];
+        for (i, at) in c.rebinds.iter().enumerate() {
+            held[i] = libc::open(
+                at.as_ptr(),
+                libc::O_PATH | libc::O_DIRECTORY | libc::O_CLOEXEC,
+            );
+            if held[i] < 0 {
+                return self.fail(b"holding what lives under the home refused");
+            }
+        }
+        if let Some((home, opts)) = &c.home {
+            if libc::mount(
+                c"overlay".as_ptr(),
+                home.as_ptr(),
+                c"overlay".as_ptr(),
+                0,
+                opts.as_ptr() as *const libc::c_void,
+            ) != 0
+            {
+                return self.fail(b"mounting the home layer refused");
+            }
+        }
+        for (i, at) in c.rebinds.iter().enumerate() {
+            let from = fd_path(held[i]);
+            if libc::mount(
+                from.as_ptr() as *const libc::c_char,
+                at.as_ptr(),
+                null,
+                libc::MS_BIND | libc::MS_REC,
+                std::ptr::null(),
+            ) != 0
+            {
+                return self.fail(b"putting back what lives under the home refused");
+            }
+            libc::close(held[i]);
+        }
+        if let Some(keys) = &c.keys {
+            if libc::mount(
+                c"tmpfs".as_ptr(),
+                keys.as_ptr(),
+                c"tmpfs".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV,
+                c"mode=0700,size=16k".as_ptr() as *const libc::c_void,
+            ) != 0
+            {
+                return self.fail(b"hiding the key folder refused");
+            }
+        }
+        for cover in &c.covers {
+            if libc::mount(
+                c"/dev/null".as_ptr(),
+                cover.as_ptr(),
+                null,
+                libc::MS_BIND,
+                std::ptr::null(),
+            ) != 0
+            {
+                return self.fail(b"covering a way to the key refused");
+            }
+        }
+        let tmp_at = if c.tmp_over {
+            c"/tmp"
+        } else {
+            c.tmp.as_c_str()
+        };
+        if libc::mount(
+            c.tmp.as_ptr(),
+            tmp_at.as_ptr(),
+            null,
+            libc::MS_BIND,
+            std::ptr::null(),
+        ) != 0
+        {
+            return self.fail(b"binding the box's temp refused");
+        }
+        // A /dev of its own: an empty tmpfs, the plain nodes bound in from
+        // the machine's, a pty instance of its own, a fresh /dev/shm.
+        let mut nodes: [libc::c_int; 8] = [-1; 8];
+        for (i, n) in DEV_NODES.iter().enumerate() {
+            let mut path = [0u8; 32];
+            let pre = b"/dev/";
+            path[..pre.len()].copy_from_slice(pre);
+            path[pre.len()..pre.len() + n.len()].copy_from_slice(n.as_bytes());
+            nodes[i] = libc::open(
+                path.as_ptr() as *const libc::c_char,
+                libc::O_PATH | libc::O_CLOEXEC,
+            );
+        }
+        if libc::mount(
+            c"tmpfs".as_ptr(),
+            c"/dev".as_ptr(),
+            c"tmpfs".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NOEXEC,
+            c"mode=0755,size=64k".as_ptr() as *const libc::c_void,
+        ) != 0
+        {
+            return self.fail(b"giving the hop a /dev of its own refused");
+        }
+        for (i, n) in DEV_NODES.iter().enumerate() {
+            if nodes[i] < 0 {
+                continue;
+            }
+            let mut path = [0u8; 32];
+            let pre = b"/dev/";
+            path[..pre.len()].copy_from_slice(pre);
+            path[pre.len()..pre.len() + n.len()].copy_from_slice(n.as_bytes());
+            let at = path.as_ptr() as *const libc::c_char;
+            let made = libc::open(at, libc::O_WRONLY | libc::O_CREAT | libc::O_CLOEXEC, 0o666);
+            if made >= 0 {
+                libc::close(made);
+            }
+            let from = fd_path(nodes[i]);
+            if libc::mount(
+                from.as_ptr() as *const libc::c_char,
+                at,
+                null,
+                libc::MS_BIND,
+                std::ptr::null(),
+            ) != 0
+            {
+                return self.fail(b"binding a device into the hop's /dev refused");
+            }
+            libc::close(nodes[i]);
+        }
+        libc::mkdir(c"/dev/pts".as_ptr(), 0o755);
+        libc::mkdir(c"/dev/shm".as_ptr(), 0o1777);
+        // A pty instance of its own, best effort (some kernels refuse it to a
+        // user namespace; the hop then has no pseudo-terminals).
+        if libc::mount(
+            c"devpts".as_ptr(),
+            c"/dev/pts".as_ptr(),
+            c"devpts".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NOEXEC,
+            c"newinstance,ptmxmode=0666,mode=0620".as_ptr() as *const libc::c_void,
+        ) == 0
+        {
+            libc::symlink(c"pts/ptmx".as_ptr(), c"/dev/ptmx".as_ptr());
+        }
+        if libc::mount(
+            c"tmpfs".as_ptr(),
+            c"/dev/shm".as_ptr(),
+            c"tmpfs".as_ptr(),
+            libc::MS_NOSUID | libc::MS_NODEV,
+            c"mode=1777,size=256m".as_ptr() as *const libc::c_void,
+        ) != 0
+        {
+            return self.fail(b"giving the hop a /dev/shm of its own refused");
+        }
+        libc::symlink(c"/proc/self/fd".as_ptr(), c"/dev/fd".as_ptr());
+        libc::symlink(c"/proc/self/fd/0".as_ptr(), c"/dev/stdin".as_ptr());
+        libc::symlink(c"/proc/self/fd/1".as_ptr(), c"/dev/stdout".as_ptr());
+        libc::symlink(c"/proc/self/fd/2".as_ptr(), c"/dev/stderr".as_ptr());
         Ok(())
     }
 
@@ -1224,6 +1925,18 @@ unsafe fn close_from_3() {
             libc::close(fd);
         }
     }
+}
+
+/// `/proc/self/fd/<fd>`, NUL-terminated, built without allocating.
+#[cfg(target_os = "linux")]
+fn fd_path(fd: libc::c_int) -> [u8; 48] {
+    let prefix = b"/proc/self/fd/";
+    let mut from = [0u8; 48];
+    from[..prefix.len()].copy_from_slice(prefix);
+    let mut digits = [0u8; 32];
+    let k = itoa(fd, &mut digits);
+    from[prefix.len()..prefix.len() + k].copy_from_slice(&digits[..k]);
+    from
 }
 
 /// Mark every descriptor above stderr close-on-exec (`close_range` with
@@ -1483,9 +2196,439 @@ fn mode_of(meta: &fs::Metadata) -> u32 {
     }
 }
 
+/// A path a hop chose, fit to print: control characters and the invisible
+/// ones that reorder or hide text (bidi controls, zero-widths) shown as `?`,
+/// and capped, so a file name cannot move the cursor or disguise itself.
+pub fn printable_path(p: &str) -> String {
+    let mut out: String = p
+        .chars()
+        .take(200)
+        .map(|c| {
+            let hidden = c.is_control()
+                || matches!(c as u32, 0x200B..=0x200F | 0x202A..=0x202E | 0x2060..=0x2069 | 0xFEFF | 0xE0000..=0xE007F);
+            if hidden {
+                '?'
+            } else {
+                c
+            }
+        })
+        .collect();
+    if p.chars().count() > 200 {
+        out.push('…');
+    }
+    out
+}
+
+/// The home layer of a contained hop: the real home and the layer's upper,
+/// when the box made one.
+#[cfg(target_os = "linux")]
+pub fn home_layer_of(layers_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    let upper = Contain::scratch_of(layers_dir)?.join("home-upper");
+    let home = real_home()?;
+    upper.is_dir().then_some((home, upper))
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn home_layer_of(_layers_dir: &Path) -> Option<(PathBuf, PathBuf)> {
+    None
+}
+
+/// A contained hop's scratch folder, when it has one.
+#[cfg(target_os = "linux")]
+pub fn scratch_of(layers_dir: &Path) -> Option<PathBuf> {
+    Contain::scratch_of(layers_dir)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn scratch_of(_layers_dir: &Path) -> Option<PathBuf> {
+    None
+}
+
+/// A change a hop's layer holds that it was not expected to make.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unexpected {
+    /// Relative to its pack root, or `~/...` for the home.
+    pub path: String,
+    /// `write`, `link`, `delete`, `replace`; `link-out` for a link that
+    /// leaves every pack root, `setuid` for a set-id file, `unreadable` for
+    /// a folder the hop made that cannot be read (and so cannot be judged).
+    pub kind: &'static str,
+}
+
+/// What a hop's layers changed, judged against `expect`.
+#[derive(Clone, Debug, Default)]
+pub struct Judged {
+    pub outside: Vec<Unexpected>,
+    pub written: usize,
+    pub removed: usize,
+    pub home_written: usize,
+    pub home_removed: usize,
+}
+
+/// Judge a hop's layers against `expect` (globs relative to a pack root, or
+/// `~/` for the home; `*` stays within one folder, `**` crosses them), and,
+/// when there is one, the home layer (`home`: the real home and the layer's
+/// upper). A link that leaves every pack root and a set-id file are reported
+/// whatever `expect` says; a folder that cannot be read is reported, never
+/// skipped, so a hop cannot hide its writes behind its own modes.
+pub fn judge(layers: &Layers, home: Option<(&Path, &Path)>, expect: &[String]) -> Judged {
+    let build = |pats: Vec<&str>| {
+        let mut b = globset::GlobSetBuilder::new();
+        for p in pats {
+            if let Ok(g) = globset::GlobBuilder::new(p.trim_start_matches("./"))
+                .literal_separator(true)
+                .build()
+            {
+                b.add(g);
+            }
+        }
+        b.build().unwrap_or_else(|_| globset::GlobSet::empty())
+    };
+    let pack = build(
+        expect
+            .iter()
+            .filter(|e| !e.starts_with("~/"))
+            .map(String::as_str)
+            .collect(),
+    );
+    let home_set = build(expect.iter().filter_map(|e| e.strip_prefix("~/")).collect());
+    let roots: Vec<PathBuf> = layers.roots.iter().map(|(r, _, _)| r.clone()).collect();
+    let home_dir: Option<PathBuf> = home
+        .map(|(h, _)| h.to_path_buf())
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
+    let mut j = Judged::default();
+    let look =
+        |root: &Path, upper: &Path, set: &globset::GlobSet, in_home: bool, j: &mut Judged| {
+            // A link may land in this tree, in any pack root, in the home
+            // where `expect` names (a package manager's store), or outside
+            // the home altogether (a venv's python, a toolchain): what it
+            // must not do is point into the rest of your home, where the
+            // secrets are.
+            let fine = |p: &Path| {
+                if p.starts_with(root) || roots.iter().any(|r| p.starts_with(r)) {
+                    return true;
+                }
+                match &home_dir {
+                    Some(h) if p.starts_with(h) => p
+                        .strip_prefix(h)
+                        .map(|rel| home_set.is_match(rel))
+                        .unwrap_or(false),
+                    _ => true,
+                }
+            };
+            let mut entries = Vec::new();
+            walk_tolerant(root, upper, upper, &fine, &mut entries);
+            for (real, kind) in entries {
+                let rel = real.strip_prefix(root).unwrap_or(&real).to_path_buf();
+                let shown = if in_home {
+                    format!("~/{}", rel.display())
+                } else {
+                    rel.display().to_string()
+                };
+                match kind {
+                    "dir" => continue,
+                    "delete" => {
+                        if in_home {
+                            j.home_removed += 1
+                        } else {
+                            j.removed += 1
+                        }
+                    }
+                    _ => {
+                        if in_home {
+                            j.home_written += 1
+                        } else {
+                            j.written += 1
+                        }
+                    }
+                }
+                let always = matches!(kind, "link-out" | "setuid" | "unreadable");
+                if always || !set.is_match(&rel) {
+                    j.outside.push(Unexpected { path: shown, kind });
+                }
+            }
+        };
+    for (root, upper, _) in &layers.roots {
+        look(root, upper, &pack, false, &mut j);
+    }
+    if let Some((h, upper)) = home {
+        look(h, upper, &home_set, true, &mut j);
+    }
+    j
+}
+
+/// Walk an upper layer into (real path, kind), never stopping at a folder
+/// it cannot read: that folder is itself the finding.
+fn walk_tolerant(
+    root: &Path,
+    upper: &Path,
+    dir: &Path,
+    fine: &dyn Fn(&Path) -> bool,
+    out: &mut Vec<(PathBuf, &'static str)>,
+) {
+    let rel = dir.strip_prefix(upper).unwrap_or(dir);
+    let Ok(rd) = fs::read_dir(dir) else {
+        out.push((root.join(rel), "unreadable"));
+        return;
+    };
+    let mut entries: Vec<fs::DirEntry> = rd.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let p = e.path();
+        let rel = p.strip_prefix(upper).unwrap_or(&p);
+        let real = root.join(rel);
+        let Ok(meta) = fs::symlink_metadata(&p) else {
+            out.push((real, "unreadable"));
+            continue;
+        };
+        #[cfg(target_os = "linux")]
+        if is_whiteout(&meta) {
+            out.push((real, "delete"));
+            continue;
+        }
+        if meta.file_type().is_symlink() {
+            let target = fs::read_link(&p).unwrap_or_default();
+            let lands = if target.is_absolute() {
+                lexical(&target)
+            } else {
+                lexical(&real.parent().unwrap_or(root).join(&target))
+            };
+            out.push((real, if fine(&lands) { "link" } else { "link-out" }));
+        } else if meta.is_dir() {
+            #[cfg(target_os = "linux")]
+            if is_opaque(&p) {
+                out.push((real.clone(), "replace"));
+            }
+            out.push((real, "dir"));
+            walk_tolerant(root, upper, &p, fine, out);
+        } else if meta.is_file() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if meta.permissions().mode() & 0o6000 != 0 {
+                    out.push((real, "setuid"));
+                    continue;
+                }
+            }
+            out.push((real, "write"));
+        }
+    }
+}
+
+/// A path with `.` and `..` worked out, without touching the disk.
+fn lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// What a layer holds, as one SHA-256: each change's kind, path, and its
+/// bytes, link target or mode, in path order. A kept layer is applied only
+/// while it still holds exactly what was judged.
+pub fn layer_digest(layers: &Layers) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    for (i, (root, upper, _)) in layers.roots.iter().enumerate() {
+        let mut entries = Vec::new();
+        let fine = |p: &Path| layers.roots.iter().any(|(r, _, _)| p.starts_with(r));
+        walk_tolerant(root, upper, upper, &fine, &mut entries);
+        for (real, kind) in entries {
+            if kind == "unreadable" {
+                return Err(io::Error::other(format!(
+                    "{} cannot be read, so the layer cannot be judged",
+                    real.display()
+                )));
+            }
+            let rel = real.strip_prefix(root).unwrap_or(&real);
+            h.update(format!("{i}\0{kind}\0{}\0", rel.display()).as_bytes());
+            let up = upper.join(rel);
+            match kind {
+                "write" | "setuid" => {
+                    let mut f = fs::File::open(&up)?;
+                    io::copy(&mut f, &mut h)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        h.update(
+                            fs::symlink_metadata(&up)?
+                                .permissions()
+                                .mode()
+                                .to_le_bytes(),
+                        );
+                    }
+                }
+                "link" | "link-out" => {
+                    h.update(fs::read_link(&up)?.as_os_str().as_encoded_bytes());
+                }
+                _ => {}
+            }
+            h.update(b"\n");
+        }
+    }
+    Ok(hex::encode(h.finalize()))
+}
+
+/// Remove the scratch folders of a run's contained hops whose layers are
+/// not kept (the hop is over, or its cig died).
+#[cfg(target_os = "linux")]
+pub fn sweep_scratch(run_dir: &Path) {
+    let uid = unsafe { libc::geteuid() };
+    let prefix = format!("cig-box-{uid}-{}-", dir_name(run_dir));
+    for base in scratch_bases() {
+        let Ok(rd) = fs::read_dir(&base) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if let Some(seq) = name.strip_prefix(&prefix) {
+                if !is_kept(&run_dir.join("box").join(seq)) {
+                    let _ = remove_tree_force(&e.path());
+                }
+            }
+        }
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_layer_is_judged_against_its_footprint() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("p");
+        let upper = t.path().join("upper");
+        let home = t.path().join("h");
+        let hup = t.path().join("hup");
+        for d in [&root, &upper, &home, &hup] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::create_dir_all(upper.join("node_modules/x")).unwrap();
+        fs::write(upper.join("node_modules/x/index.js"), "m").unwrap();
+        fs::create_dir_all(upper.join(".git/hooks")).unwrap();
+        fs::write(upper.join(".git/hooks/pre-commit"), "evil").unwrap();
+        fs::write(upper.join("a.json"), "{}").unwrap();
+        fs::create_dir_all(upper.join("sub")).unwrap();
+        fs::write(upper.join("sub/b.json"), "{}").unwrap();
+        symlink(
+            home.join(".ssh/id_ed25519"),
+            upper.join("node_modules/escape"),
+        )
+        .unwrap();
+        symlink("/usr/bin/python3", upper.join("node_modules/venv-python")).unwrap();
+        symlink(
+            home.join(".npm/_cacache/x"),
+            upper.join("node_modules/store"),
+        )
+        .unwrap();
+        symlink("x/index.js", upper.join("node_modules/inside")).unwrap();
+        fs::write(upper.join("node_modules/suid"), "s").unwrap();
+        fs::set_permissions(
+            upper.join("node_modules/suid"),
+            fs::Permissions::from_mode(0o4755),
+        )
+        .unwrap();
+        fs::write(hup.join(".bashrc"), "evil").unwrap();
+        fs::create_dir_all(hup.join(".npm")).unwrap();
+        fs::write(hup.join(".npm/cache"), "c").unwrap();
+        let layers = Layers {
+            dir: t.path().join("box/1"),
+            roots: vec![(root.clone(), upper.clone(), t.path().join("work"))],
+        };
+        let expect: Vec<String> = ["node_modules/**", "*.json", "~/.npm/**"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let j = judge(&layers, Some((&home, &hup)), &expect);
+        let got: Vec<(String, &str)> = j.outside.iter().map(|u| (u.path.clone(), u.kind)).collect();
+        assert!(
+            got.contains(&(".git/hooks/pre-commit".to_string(), "write")),
+            "{got:?}"
+        );
+        assert!(got.contains(&("~/.bashrc".to_string(), "write")), "{got:?}");
+        assert!(
+            got.contains(&("node_modules/escape".to_string(), "link-out")),
+            "{got:?}"
+        );
+        assert!(
+            got.contains(&("node_modules/suid".to_string(), "setuid")),
+            "{got:?}"
+        );
+        // `*` stays in one folder: sub/b.json is not `*.json`.
+        assert!(
+            got.contains(&("sub/b.json".to_string(), "write")),
+            "{got:?}"
+        );
+        assert!(
+            !got.iter()
+                .any(|(p, _)| p == "a.json" || p == "node_modules/inside" || p == "~/.npm/cache"),
+            "{got:?}"
+        );
+        // A link to a system path (a venv's python) or into an expected store is fine.
+        assert!(
+            !got.iter()
+                .any(|(p, _)| p == "node_modules/venv-python" || p == "node_modules/store"),
+            "{got:?}"
+        );
+        assert_eq!(j.home_written, 2);
+    }
+
+    #[test]
+    fn a_layer_digest_changes_with_its_contents() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("p");
+        let upper = t.path().join("upper");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&upper).unwrap();
+        fs::write(upper.join("a.txt"), "one").unwrap();
+        let layers = Layers {
+            dir: t.path().join("box/1"),
+            roots: vec![(root, upper.clone(), t.path().join("work"))],
+        };
+        let first = layer_digest(&layers).unwrap();
+        assert_eq!(first, layer_digest(&layers).unwrap());
+        fs::write(upper.join("a.txt"), "two").unwrap();
+        assert_ne!(first, layer_digest(&layers).unwrap());
+    }
+
+    #[test]
+    fn a_hop_chosen_path_prints_plainly() {
+        assert_eq!(
+            printable_path("node_modules/@scope/pkg/a b.js"),
+            "node_modules/@scope/pkg/a b.js"
+        );
+        assert_eq!(printable_path("x\u{1b}[2Jy"), "x?[2Jy");
+        assert_eq!(printable_path("evil\u{202E}gpj.exe"), "evil?gpj.exe");
+    }
+
+    #[test]
+    fn the_hops_filter_checks_the_architecture_first() {
+        let f = hop_filter().expect("a filter on this architecture");
+        // Load the architecture, compare it, kill on a mismatch.
+        assert_eq!(f[0].code, 0x20);
+        assert_eq!(f[0].k, 4);
+        assert_eq!(f[1].code, 0x15);
+        assert_eq!(f[2].k, 0x8000_0000);
+        // Every jump lands inside the program.
+        for (i, ins) in f.iter().enumerate() {
+            if ins.code & 0x07 == 0x05 {
+                assert!(
+                    i + 1 + (ins.jt.max(ins.jf) as usize) < f.len(),
+                    "jump {i} leaves the program"
+                );
+            }
+        }
+        assert!(f.len() < 255);
+    }
 
     #[test]
     fn the_bus_paths_come_out_of_an_address() {

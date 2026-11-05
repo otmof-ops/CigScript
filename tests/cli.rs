@@ -15,6 +15,41 @@ struct Sandbox {
     dir: tempfile::TempDir,
 }
 
+/// A contained hop's scratch folder lives outside the sandbox (in /var/tmp
+/// or the temporary directory, never inside the home or a pack), and a kept
+/// layer keeps it: the sandbox takes its runs' folders with it.
+#[cfg(target_os = "linux")]
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let Ok(runs) = fs::read_dir(self.home().join("runs")) else {
+            return;
+        };
+        let uid = unsafe { libc::geteuid() };
+        let ids: Vec<String> = runs
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        for base in [PathBuf::from("/var/tmp"), std::env::temp_dir()] {
+            let Ok(rd) = fs::read_dir(&base) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if ids
+                    .iter()
+                    .any(|id| name.starts_with(&format!("cig-box-{uid}-{id}-")))
+                {
+                    let _ = Command::new("chmod")
+                        .args(["-R", "u+rwx"])
+                        .arg(e.path())
+                        .status();
+                    let _ = fs::remove_dir_all(e.path());
+                }
+            }
+        }
+    }
+}
+
 impl Sandbox {
     fn new() -> Self {
         Self {
@@ -54,6 +89,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             // A runner's CI must not reach the sandbox: the one test that
             // wants it sets it itself.
             .env_remove("CI")
@@ -98,6 +136,9 @@ impl Sandbox {
             .env("HOME", self.path())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .env_remove("CI")
             .envs(envs.iter().copied())
@@ -112,6 +153,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .env_remove("CI")
             .envs(envs.iter().copied())
@@ -133,6 +177,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .env_remove("CI")
             .stdin(std::process::Stdio::null())
@@ -589,6 +636,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .env("CIGSCRIPT_HOME", sb.home())
         .env("NO_COLOR", "1")
         .env("CIG_SEAL_KEY", "file")
+        .env("CIG_INTERNAL_TRACKER_DIR", sb.path().join("tracker"))
         .env("CIG_INTERNAL_PANIC", "1")
         .env_remove("CI")
         .output()
@@ -621,6 +669,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .args(["run", "s.cig"])
         .current_dir(sb.path())
         .env("CIGSCRIPT_HOME", sb.home())
+        .env("CIG_INTERNAL_TRACKER_DIR", sb.path().join("tracker"))
         .env("CIG_INTERNAL_PANIC", "1")
         .env_remove("CI")
         .output()
@@ -5190,6 +5239,23 @@ fn a_kept_layer_applies_later() {
         "no record under kept/"
     );
     assert!(!run_dir.join("box").join(seq).join("kept.json").exists());
+    // Every folder under the run can be read: the overlay's work folder,
+    // which overlayfs leaves unreadable, went with the hop.
+    fn walk(d: &Path) {
+        for e in fs::read_dir(d).unwrap_or_else(|e| panic!("{}: {e}", d.display())) {
+            let p = e.unwrap().path();
+            if fs::symlink_metadata(&p).unwrap().is_dir() {
+                walk(&p);
+            }
+        }
+    }
+    walk(&run_dir);
+    assert!(!run_dir
+        .join("box")
+        .join(seq)
+        .join("0")
+        .join("work")
+        .exists());
     let list = sb.run_ok(&["box", "list"]);
     assert!(list.contains(run) && list.contains("rm keep.txt"), "{list}");
     let out = sb.run_ok(&["box", "apply", &run[..12], seq]);
@@ -5358,6 +5424,337 @@ fn an_isolated_hop_has_no_burn_protocol() {
         !marker.exists(),
         "the unburn ran an undo the isolated hop declared"
     );
+}
+
+/// `contain`: everything the hop can write is a layer cig reads afterwards.
+/// A home file, a git hook and a temp file all land in layers; a write
+/// anywhere else is refused; what the hop was not expected to write is
+/// reported; and the real home, project and /var/tmp are untouched.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_hop_writes_only_its_layers() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    fs::create_dir_all(sb.path().join("p/.git/hooks")).unwrap();
+    let tag = format!("cig-contain-test-{}", std::process::id());
+    sb.write(
+        "p/probe.sh",
+        &format!(
+            "echo evil >> \"$HOME/.{tag}-rc\"\necho hook > .git/hooks/pre-commit\nmkdir -p node_modules/x && echo m > node_modules/x/index.js\necho t > \"$TMPDIR/{tag}\" && echo temp=ok >> probe.txt\n{{ echo v > /var/tmp/{tag}; }} 2>/dev/null && echo var=written >> probe.txt || echo var=refused >> probe.txt\n"
+        ),
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  stick r = proc.run(\"sh\", [\"probe.sh\"], {cwd: \"p\", box: {network: \"off\", contain: true, apply: \"never\", expect: [\"node_modules/**\", \"probe.txt\"]}})\n  stick seen = r.outside.map(pack(u) => u.path + \" \" + u.kind).join(\"\\n\")\n  fs.write_text(\"p/outside.txt\", seen)\n  fs.write_text(\"p/layer.txt\", r.layer)\n}\n",
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("note[E781 burn]"), "{err}");
+    let outside = sb.read("p/outside.txt");
+    assert!(outside.contains(".git/hooks/pre-commit write"), "{outside}");
+    assert!(outside.contains(&format!("~/.{tag}-rc write")), "{outside}");
+    assert!(!outside.contains("node_modules"), "{outside}");
+    // Nothing reached the real world.
+    let home = PathBuf::from(std::env::var("HOME").unwrap());
+    assert!(!home.join(format!(".{tag}-rc")).exists());
+    assert!(!sb.exists("p/.git/hooks/pre-commit"));
+    assert!(!sb.exists("p/node_modules"));
+    assert!(!Path::new(&format!("/var/tmp/{tag}")).exists());
+    // The layer is kept, the hop's own temp worked, /var/tmp did not.
+    let list = sb.run_ok(&["box", "list"]);
+    assert!(list.contains("sh probe.sh"), "{list}");
+    let layer = sb.read("p/layer.txt");
+    let (run, seq) = layer.trim().split_once('/').unwrap();
+    let shown = sb.run_ok(&["box", "discard", run, seq]);
+    assert!(shown.contains("discarded"), "{shown}");
+    assert!(
+        !fs::read_dir("/var/tmp")
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().contains(run)),
+        "the box's scratch folder outlived its layer"
+    );
+}
+
+/// A contained hop opens no Unix socket (a session bus, systemd's manager,
+/// docker.sock, an agent), while socketpair, which child pipes use, works;
+/// its /dev holds the plain devices alone; the key folder is empty and the
+/// tin read-only.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_hop_reaches_no_socket_device_key_or_tin() {
+    if Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("no python3 here; skipped");
+        return;
+    }
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let home = sb.home().display().to_string();
+    let keys = sb.path().join(".cigscript-keys").display().to_string();
+    sb.write(
+        "p/probe.py",
+        "import socket\ntry:\n    socket.socket(socket.AF_UNIX)\n    print('unix=open')\nexcept OSError as e:\n    print('unix=refused', e.errno)\na, b = socket.socketpair()\nprint('pair=ok')\n",
+    );
+    sb.write(
+        "p/probe.sh",
+        &format!(
+            "python3 probe.py > probe.txt 2>&1\necho \"dev=$(ls /dev | tr '\\n' ' ')\" >> probe.txt\necho \"keys=$(ls -A {keys} 2>/dev/null | wc -l)\" >> probe.txt\n{{ echo x > {home}/probe; }} 2>/dev/null && echo tin=written >> probe.txt || echo tin=refused >> probe.txt\n"
+        ),
+    );
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"probe.sh\"], {cwd: \"p\", box: {network: \"off\", contain: true, expect: [\"probe.txt\"]}})\n}\n",
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    let seen = sb.read("p/probe.txt");
+    assert!(seen.contains("unix=refused 13"), "{seen}");
+    assert!(seen.contains("pair=ok"), "{seen}");
+    assert!(seen.contains("keys=0"), "{seen}");
+    assert!(seen.contains("tin=refused"), "{seen}");
+    let dev = seen.lines().find(|l| l.starts_with("dev=")).unwrap();
+    for name in dev.trim_start_matches("dev=").split_whitespace() {
+        assert!(
+            [
+                "fd", "full", "null", "ptmx", "pts", "random", "shm", "stderr", "stdin", "stdout",
+                "tty", "urandom", "zero"
+            ]
+            .contains(&name),
+            "the hop's /dev holds {name}: {dev}"
+        );
+    }
+}
+
+/// With `contain` and the default `apply`, a layer that stays inside its
+/// footprint is applied; one that leaves it is held back, the pack untouched.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_hop_off_its_footprint_is_held_back() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo a > made.txt\"], {cwd: \"p\", box: {network: \"off\", contain: true, expect: [\"made.txt\"]}})\n  proc.run(\"sh\", [\"-c\", \"echo b > stray.txt\"], {cwd: \"p\", box: {network: \"off\", contain: true, expect: [\"made.txt\"]}})\n}\n",
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    assert_eq!(sb.read("p/made.txt"), "a\n", "{err}");
+    assert!(!sb.exists("p/stray.txt"), "{err}");
+    assert!(
+        err.contains("note[E781 burn]") && err.contains("stray.txt"),
+        "{err}"
+    );
+    assert!(err.contains("held back"), "{err}");
+}
+
+/// A rehearsal (`apply: "never"`) applies in the same run with
+/// `proc.apply_layer`, journaled, so the run's unburn takes it back out; a
+/// layer changed after it was judged is not applied (E782).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rehearsed_layer_applies_in_the_same_run_and_only_as_judged() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  stick r = proc.run(\"sh\", [\"-c\", \"echo new > made.txt; echo v2 > keep.txt\"], {cwd: \"p\", box: {network: \"off\", contain: true, apply: \"never\", expect: [\"made.txt\", \"keep.txt\"]}})\n  stick done = proc.apply_layer(r.layer)\n  fs.write_text(\"p/applied.txt\", str(done.written))\n}\n",
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    assert_eq!(sb.read("p/made.txt"), "new\n", "{err}");
+    assert_eq!(sb.read("p/keep.txt"), "v2\n");
+    assert_eq!(sb.read("p/applied.txt"), "2");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert!(!sb.exists("p/made.txt") && sb.read("p/keep.txt") == "v1\n");
+
+    // A layer someone changed between the judgement and the apply.
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    let home = sb.home().display().to_string();
+    sb.write(
+        "s.cig",
+        &format!(
+            "pack {{ \"./p\" }}\nburn {{\n  stick r = proc.run(\"sh\", [\"-c\", \"echo new > made.txt\"], {{cwd: \"p\", box: {{network: \"off\", contain: true, apply: \"never\", expect: [\"made.txt\"]}}}})\n  stick up = \"{home}/runs/\" + r.layer.replace(\"/\", \"/box/\") + \"/0/upper/made.txt\"\n  proc.run(\"sh\", [\"-c\", \"echo tampered >> \" + up])\n  try {{\n    proc.apply_layer(r.layer)\n  }} ashtray e {{\n    fs.write_text(\"p/refused.txt\", e.message)\n  }}\n}}\n"
+        ),
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    assert!(
+        sb.read("p/refused.txt")
+            .contains("changed since it was judged"),
+        "{}",
+        sb.read("p/refused.txt")
+    );
+    assert!(!sb.exists("p/made.txt"));
+}
+
+/// A contained hop that fails keeps its layer, so what it did can be read:
+/// the error's value carries the layer and what it changed off its footprint.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_hop_that_fails_keeps_its_layer_as_evidence() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  try {\n    proc.run(\"sh\", [\"-c\", \"echo x > stray.txt; exit 3\"], {cwd: \"p\", ok: [0], box: {network: \"off\", contain: true, expect: []}})\n  } ashtray e {\n    fs.write_text(\"p/evidence.txt\", str(e.get(\"layer\", \"none\")) + \" \" + e.get(\"outside\", []).map(pack(u) => u.path).join(\",\"))\n  }\n}\n",
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    let ev = sb.read("p/evidence.txt");
+    assert!(ev.contains("/") && ev.contains("stray.txt"), "{ev}\n{err}");
+    assert!(!sb.exists("p/stray.txt"));
+    let list = sb.run_ok(&["box", "list"]);
+    assert!(list.contains("exit 3"), "{list}");
+}
+
+/// `proc.shell` gives back what `proc.run` does for a boxed hop: the layer
+/// it kept and its judgement.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_shell_hop_returns_its_layer_and_judgement() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  stick r = proc.shell(\"echo x > stray.txt\", {cwd: \"p\", box: {apply: \"never\", expect: [\"made.txt\"]}})\n  fs.write_text(\"p/shell.txt\", str(r.layer != null) + \" \" + r.outside.map(pack(u) => u.path).join(\",\"))\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    assert_eq!(sb.read("p/shell.txt"), "true stray.txt", "{err}");
+}
+
+/// A contained hop's way out works when cig itself lives under /tmp, which
+/// the box's own temp covers: the forwarder is started through a handle
+/// held before the mounts, not by its path (found rehearsing npm with a cig
+/// built under /tmp: the hop had no network and npm fell back to a stale
+/// cache after a minute of retries).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_hops_network_works_with_cig_under_tmp() {
+    if !contain_expected_here() || Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("contain or python3 not here; skipped");
+        return;
+    }
+    let bin = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    if !bin.path().starts_with("/tmp") || proj.path().starts_with("/tmp") {
+        eprintln!("needs the system temp at /tmp and the build tree elsewhere; skipped");
+        return;
+    }
+    let cig = bin.path().join("cig");
+    fs::copy(env!("CARGO_BIN_EXE_cig"), &cig).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for conn in listener.incoming() {
+            let Ok(mut c) = conn else { break };
+            let mut buf = [0u8; 4096];
+            let _ = c.read(&mut buf);
+            let body = "hello from the registry";
+            let _ = c.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    let root = proj.path();
+    fs::create_dir_all(root.join("p")).unwrap();
+    fs::write(root.join("p/keep.txt"), "v1\n").unwrap();
+    fs::write(
+        root.join("p/probe.py"),
+        format!("import http.client\nc = http.client.HTTPConnection('127.0.0.1', 38080, timeout=5)\nc.set_tunnel('127.0.0.1', {port})\nc.request('GET', '/')\nr = c.getresponse()\nopen('reg.txt', 'w').write(str(r.status) + ' ' + r.read().decode())\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("s.cig"),
+        format!("pack {{ \"./p\" }}\nburn {{\n  proc.run(\"python3\", [\"probe.py\"], {{cwd: \"p\", box: {{network: \"registry\", allow_hosts: [\"127.0.0.1:{port}\"], contain: true, expect: [\"reg.txt\"]}}}})\n}}\n"),
+    )
+    .unwrap();
+    let out = Command::new(&cig)
+        .args(["run", "s.cig"])
+        .current_dir(root)
+        .env("CIGSCRIPT_HOME", root.join("home"))
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .env("CIG_UPDATE_MANIFEST", root.join("no-releases.json"))
+        .env_remove("CI")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    let got = fs::read_to_string(root.join("p/reg.txt")).unwrap_or_default();
+    assert_eq!(got, "200 hello from the registry", "{err}");
+}
+
+/// `contain` asks for a network of the hop's own and its own PID namespace:
+/// the machine's network would reach services on this machine.
+#[cfg(target_os = "linux")]
+#[test]
+fn contain_needs_its_own_network_and_pid_namespace() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "a.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"true\", [], {cwd: \"p\", box: {contain: true}})\n}\n",
+    );
+    let err = String::from_utf8_lossy(&sb.cig(&["run", "a.cig"]).stderr).to_string();
+    assert!(err.contains("box.contain needs network"), "{err}");
+    sb.write(
+        "b.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"true\", [], {cwd: \"p\", box: {contain: true, network: \"off\", pidns: false}})\n}\n",
+    );
+    let err = String::from_utf8_lossy(&sb.cig(&["run", "b.cig"]).stderr).to_string();
+    assert!(err.contains("box.contain needs pidns"), "{err}");
+}
+
+/// A cig inside a contained hop keeps a throwaway state in the box's temp:
+/// nothing of it is taken in as a child run.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cig_inside_a_contained_hop_is_not_taken_in() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "p/inner.cig",
+        "burn {\n  fs.write_text(\"inner.txt\", \"from inside\")\n}\n",
+    );
+    let cig = env!("CARGO_BIN_EXE_cig");
+    sb.write(
+        "s.cig",
+        &format!(
+            "pack {{ \"./p\" }}\nburn {{\n  proc.run(\"{cig}\", [\"run\", \"inner.cig\"], {{cwd: \"p\", box: {{network: \"off\", contain: true, expect: [\"inner.txt\"]}}}})\n}}\n"
+        ),
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    assert_eq!(sb.read("p/inner.txt"), "from inside", "{err}");
+    let runs = sb.runs();
+    assert_eq!(runs.len(), 1, "a child run was taken in: {runs:?}");
 }
 
 /// A kept layer waits for `cig box apply` across other runs: the sweep a
@@ -7600,6 +7997,33 @@ fn box_expected_here() -> bool {
         .unwrap_or(false)
 }
 
+/// Can `contain` be had here? The box, a user that is not root (a root hop
+/// would keep its capabilities), and an architecture the hop's syscall
+/// filter is written for.
+#[cfg(target_os = "linux")]
+fn contain_expected_here() -> bool {
+    box_expected_here()
+        && unsafe { libc::geteuid() } != 0
+        && (cfg!(target_arch = "x86_64") || cfg!(target_arch = "aarch64"))
+}
+
+/// Run a script whose hop asks for `contain`; `None` where contain cannot be
+/// had here and the run said so (E777), which is the only right answer
+/// there.
+#[cfg(target_os = "linux")]
+fn run_contained(sb: &Sandbox, script: &str) -> Option<(Output, String)> {
+    let out = sb.cig(&["run", script]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if !contain_expected_here() {
+        assert!(
+            err.contains("E777") || out.status.success(),
+            "contain where it cannot be had must be refused with E777: {err}"
+        );
+        return None;
+    }
+    Some((out, err))
+}
+
 /// The fallback ran: allowed only where the box could not have worked.
 #[cfg(target_os = "linux")]
 fn allow_fallback(err: &str) {
@@ -8901,6 +9325,65 @@ fn assert_no_marker(text: &str, what: &str) {
         !text.to_ascii_lowercase().contains("zqx"),
         "{what} carries a name of the person's:\n{text}"
     );
+}
+
+/// One sender at a time, really: a send waits while another cig holds the
+/// ashtray, and files only once it is let go. (Before 1.12.0 a send gave
+/// up waiting after five seconds and filed alongside the holder, so two
+/// senders could file at once: on the test tracker two issues took one
+/// number, against GitHub the same report could be filed twice.)
+#[cfg(unix)]
+#[test]
+fn a_send_waits_for_the_sender_that_holds_the_ashtray() {
+    let sb = Sandbox::new();
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    sb.write(
+        "tool.json",
+        r#"{"kind":"crash","panic_message":"map has no key","panic_location":"orchestrate.cig:12","version":"1.1.0","cwd":"~/w","command":["cigo","run","t"],"active_run_id":null}"#,
+    );
+    // Another sender holds the ashtray (a live lock, by another process).
+    fs::create_dir_all(sb.home().join("ashtray")).unwrap();
+    let held = sb.home().join("ashtray").join(".flush.lock");
+    fs::write(&held, "999999\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args([
+            "crash",
+            "submit",
+            "--origin",
+            "cig-orchestrator",
+            "--repo",
+            "otmof-ops/cig-orchestrator",
+            "--file",
+            &sb.path().join("tool.json").to_string_lossy(),
+            "--now",
+        ])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .env("CIG_UPDATE_MANIFEST", sb.path().join("no-releases.json"))
+        .env("CIG_INTERNAL_TRACKER_DIR", &tracker)
+        .env_remove("CI")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Past the five seconds the old send waited before going ahead anyway.
+    std::thread::sleep(std::time::Duration::from_millis(6500));
+    let early = files_under(&tracker);
+    let still = child.try_wait().unwrap().is_none();
+    fs::remove_file(&held).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        early.is_empty(),
+        "filed while another sender held the ashtray: {early:?}\n{err}"
+    );
+    assert!(still, "the send did not wait for the holder: {err}");
+    assert!(out.status.success(), "{err}");
+    assert_eq!(files_under(&tracker).len(), 1, "{err}");
 }
 
 #[cfg(unix)]

@@ -286,8 +286,8 @@ pub fn install_hook() {
             .map(|l| format!("{}:{}:{}", crate_relative(l.file()), l.line(), l.column()))
             .unwrap_or_else(|| "unknown".to_string());
         let backtrace = std::backtrace::Backtrace::force_capture().to_string();
-        let report = build(&message, &location, &backtrace);
-        match write(&report) {
+        let mut report = build(&message, &location, &backtrace);
+        match write_new(&mut report) {
             Ok(path) => {
                 if let Some(m) = LAST.get() {
                     if let Ok(mut g) = m.lock() {
@@ -374,6 +374,52 @@ pub fn write(report: &CrashReport) -> io::Result<PathBuf> {
     fs::write(&tmp, json)?;
     fs::rename(&tmp, &path)?;
     Ok(path)
+}
+
+/// Save a new report under a name of its own. A report's id comes from the
+/// time to the second and its fingerprint, so the same failure twice in one
+/// second would share it and the second would overwrite the first (its count
+/// lost). The name is claimed by linking the written file into place, which
+/// fails when it is taken, and the next suffix is tried; where the
+/// filesystem has no links, a name that is free is taken by a rename.
+pub fn write_new(report: &mut CrashReport) -> io::Result<PathBuf> {
+    let base = report.id.clone();
+    let mut n = 1u32;
+    loop {
+        if n > 1 {
+            report.id = format!("{base}-{n}");
+        }
+        let path = path_of(report);
+        let dir = path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(ashtray_dir);
+        fs::create_dir_all(&dir)?;
+        let json = serde_json::to_string_pretty(report)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let tmp = dir.join(format!(".{}.{}.new", report.id, std::process::id()));
+        fs::write(&tmp, json)?;
+        match fs::hard_link(&tmp, &path) {
+            Ok(()) => {
+                let _ = fs::remove_file(&tmp);
+                return Ok(path);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&tmp);
+            }
+            Err(_) if !path.exists() => {
+                fs::rename(&tmp, &path)?;
+                return Ok(path);
+            }
+            Err(_) => {
+                let _ = fs::remove_file(&tmp);
+            }
+        }
+        if n >= 1000 {
+            return Err(io::Error::other("no free name for the report"));
+        }
+        n += 1;
+    }
 }
 
 pub fn load(path: &Path) -> io::Result<CrashReport> {
