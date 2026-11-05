@@ -37,10 +37,8 @@ pub fn box_cmd(ctx: &Ctx, cmd: Option<BoxCommand>) -> i32 {
         },
         BoxCommand::Discard { run, seq } => match find(ctx, &run, seq) {
             Some(k) => {
-                let _ = overlay::remove_tree_force(&k.dir);
-                if let Some(parent) = k.dir.parent() {
-                    let _ = std::fs::remove_dir(parent);
-                }
+                // The layer, its record, and a contained hop's scratch folder.
+                overlay::discard(&overlay::layers_of(&k));
                 outln!("discarded the layer of {}/{} ({})", k.run, k.seq, k.label);
                 exit::OK
             }

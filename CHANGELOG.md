@@ -3,6 +3,39 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.12.0 — 2026-11-05
+
+The rehearsal box: a hop whose code you did not write runs so that
+everything it writes is a layer cig reads afterwards, and nothing else on
+the machine can be written (#106; for cig-orchestrator's rehearsal, its
+#55 and #56). Linux.
+
+- **`box: {contain: true}`.** The pack's roots layered with nothing passed
+  through; a layer on your home itself, so `~/.bashrc` lands in it by any
+  name; the box's own temp; then the whole tree read-only in one call and
+  only the layers writable again. A `/dev` of its own (no input devices,
+  cameras, sound or disks), its own IPC, host name, cgroup view and
+  session, `no_new_privs`, and a syscall filter: no Unix socket, no new user
+  namespace, no io_uring, ptrace, keyrings, BPF or mount calls, only this
+  machine's architecture. Needs Linux 5.12, x86_64 or aarch64, a user that
+  is not root, a network of its own and the PID namespace; refused (`E777`)
+  where it cannot be had.
+- **`box: {expect: [...]}`.** The hop's footprint as globs (`~/` for the
+  home). What the layers hold outside it comes back as `r.outside` (with
+  links that leave the pack, set-id files and unreadable folders reported
+  whatever it says), with `r.changed` and `r.refused`, and one note
+  (`E781`). Under `contain`, a hop off its footprint is held back.
+- **Evidence.** A rehearsal or a contained hop that fails keeps its layer;
+  the error's value carries it and the judgement.
+- **`proc.apply_layer(layer)` and `proc.discard_layer(layer)`.** Apply a
+  layer this run kept, journaled, only while it holds exactly what was
+  judged (`E782`), or drop it.
+- **A cig inside a contained hop** keeps a throwaway state; nothing of it is
+  taken in.
+- **`cig box discard`** now takes the layer's record and scratch folder with
+  it; `cig runs --prune` and an unburn take a contained hop's scratch folder
+  too.
+
 ## 1.11.2 — 2026-11-05
 
 The box and the guard, hardened after a review of 1.11.1. The keyring

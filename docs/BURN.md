@@ -592,6 +592,90 @@ proc.run("npm", ["ci"], {box: {
   key, because the key folder is empty there, so an approval a script
   writes for itself verifies nowhere.
 
+### Rehearsing code you did not write: `contain` and `expect`
+
+From 1.12.0 a hop can be run so that everything it writes is a layer cig
+reads afterwards, and nothing else on the machine can be written at all:
+
+```cig
+stick r = proc.run("npm", ["ci"], {box: {
+  network: "registry", allow_hosts: ["registry.npmjs.org"],
+  contain: true,                       # everything it writes is a layer
+  expect: ["node_modules/**", "package-lock.json", "~/.npm/**"],
+  apply: "never",                      # a rehearsal: judge it, then decide
+}})
+for u in r.outside { exhale u.path + " (" + u.kind + ")" }
+if r.outside.is_empty() { proc.apply_layer(r.layer) } else { proc.discard_layer(r.layer) }
+```
+
+- **What `contain` does.** The pack's roots are layered as in any box, and
+  nothing passes through to the real disk (`.git`, `node_modules` and the
+  rest are layered too). Your home gets a layer of its own, mounted on the
+  home itself, so a write to `~/.bashrc` lands in the layer whether the hop
+  names it through `$HOME` or by its full path; the pack's roots and the
+  state directory are put back over it. The hop's temp is the box's
+  (`TMPDIR`, and `/tmp` itself unless something cig needs lives there).
+  Then the whole tree goes read-only in one call (`mount_setattr`), and
+  only the layers and the temp are made writable again: a write anywhere
+  else fails (`EROFS`). The hop gets a `/dev` of its own (the plain devices,
+  a pty instance of its own, a fresh `/dev/shm`; no input devices, cameras,
+  sound or disks), System V IPC, a host name and a cgroup view of its own,
+  a session of its own (no controlling terminal), `no_new_privs`, and a
+  syscall filter: `socket` for the internet and netlink only, so no Unix
+  socket is opened (no session bus, no systemd manager, no `docker.sock`,
+  no agent), while `socketpair`, which child pipes use, works; no new user
+  namespace; no io_uring, ptrace, other processes' memory or descriptors,
+  kernel keyrings, BPF, performance counters, userfaultfd or mount calls;
+  only this machine's own architecture. The key folder is empty and the
+  state directory read-only in the hop's view, as with the guard, which
+  `contain` brings with it whatever `tin_guard` says.
+- **What it asks for.** Linux 5.12 or later, x86_64 or aarch64, a user that
+  is not root (a root hop would keep its capabilities and could make the
+  rest writable again), `network: "off"` or `"registry"` (the machine's
+  network would reach services on this machine) and the PID namespace.
+  Where any of it cannot be had the hop is refused (`E777`), never run
+  unprotected.
+- **`expect`.** Globs under the pack root, or starting `~/` for the home;
+  `*` stays within one folder, `**` crosses them. After the hop, cig reads
+  its layers and reports every change no glob names (`r.outside`, each
+  `{path, kind}`: `write`, `link`, `delete`, `replace`), and whatever
+  `expect` says, a link that leaves the pack (`link-out`), a set-id file
+  (`setuid`) and a folder that cannot be read (`unreadable`; a hop cannot
+  hide its writes behind its own modes). One note names the first few
+  (`E781`). `r.changed` counts what was written and removed, in the pack and
+  in the home; `r.refused` lists the hosts the proxy refused. Under
+  `contain` a hop that changed what it was not expected to is held back
+  rather than applied, whatever `apply` says.
+- **Evidence.** A rehearsal (`apply: "never"`) or a contained hop keeps its
+  layer even when the hop fails (a non-zero exit outside its contract, a
+  timeout): the error's value carries `layer`, `outside`, `refused` and
+  `changed`, so what it did can be read.
+- **Applying in the same run.** `proc.apply_layer(r.layer)` applies a layer
+  this run kept, as native burns journaled with their before-states, so
+  the run unburns it like any other; only while the layer still holds
+  exactly what it held when it was judged (a digest of every change is
+  kept with it), and `E782` otherwise. `proc.discard_layer(r.layer)` drops
+  one. The home layer is never applied: it goes with the rest.
+- **A cig inside.** A cig started in a contained hop keeps a throwaway state
+  in the box's temp; nothing of it is taken in as a child run (its records
+  could name any path with any before-image), and it could not have
+  written outside the layers anyway.
+- **Where it lives.** The home layer and the temp sit in a scratch folder
+  outside your home and the pack (`/var/tmp/cig-box-<uid>-<run>-<hop>`, the
+  temporary directory where there is no `/var/tmp`), made fresh and yours
+  alone. It goes when the layer is applied or discarded, with an unburn of
+  the run, with `cig runs --prune`, and for a cig that died, with the next
+  sweep.
+- **What it does not do.** `contain` stops writes, not reads: the hop can
+  read every file you can, secrets included, and with `network: "registry"`
+  its way out is the registries you allowed (publishing to one with a token
+  of its own is still a way out). A mount under your home other than the
+  pack's roots and the state directory is read-only to the hop, not
+  layered. The temp and `/dev/shm` are scratch, not evidence. A stage that
+  hands its work to a daemon (a container build) does that work outside
+  the box, where nothing here sees it. Kernel exploits and root escape
+  namespaces.
+
 ## The parcel
 
 A run's undo lives on the machine that ran it: the record under

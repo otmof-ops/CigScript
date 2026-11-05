@@ -1706,6 +1706,8 @@ the box for untrusted code: its network, the watch, kept layers, the kill switch
 | [`E771`](#e771-a-host-outside-the-allow-list) | a host outside the allow list | these are MY ciggies | if the host is legitimate, add it to box.allow_hosts (a name or *.suffix, on 443, or host:port); if not, that is the finding |
 | [`E777`](#e777-no-isolation-for-untrusted-code) | no isolation for untrusted code | these are MY ciggies | on Linux, allow unprivileged user namespaces and have overlayfs; otherwise run it on a machine that has the box, or drop the isolation knowing what that means |
 | [`E780`](#e780-a-layer-was-kept,-not-applied) | a layer was kept, not applied | can't see any ciggies bro | cig box list, then cig box apply <run> <hop> or cig box discard <run> <hop> |
+| [`E781`](#e781-a-hop-changed-what-it-was-not-expected-to) | a hop changed what it was not expected to | these are MY ciggies | read the paths: add one to box.expect if the tool meant it, or treat it as the finding it is |
+| [`E782`](#e782-not-a-layer-this-run-can-apply) | not a layer this run can apply | can't see any ciggies bro | pass the layer a boxed hop of this run returned; a layer that changed is not applied: run the hop again |
 
 ### E771 a host outside the allow list
 
@@ -1756,6 +1758,40 @@ The hop ran in the box and its layer was held back: apply: never asked for exact
 1. the script asked for a rehearsal (apply: never), or asked and nobody was there to say yes (no probe; a suggestion, not a finding). **Remedy:** apply or discard the kept layer by hand
 
 Related: `E763`.
+
+
+### E781 a hop changed what it was not expected to
+
+*burn · since 1.12.0 · arises in run*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+A boxed hop with box.expect wrote, linked, replaced or removed something its expected footprint does not name, or left a link that leaves the pack, a set-id file, or a folder that cannot be read. The note lists the first few paths; the hop's result carries them all (outside). Under box.contain the layer is held back rather than applied.
+
+**What to type next:** read the paths: add one to box.expect if the tool meant it, or treat it as the finding it is
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the tool writes somewhere its footprint does not name yet (a new cache folder, a lockfile it updates), or code it runs is doing what it should not (no probe; a suggestion, not a finding). **Remedy:** compare the path with the tool's documented footprint; widen box.expect only for what the tool itself does
+
+Related: `E780`, `E771`, `E782`.
+
+
+### E782 not a layer this run can apply
+
+*burn · since 1.12.0 · arises in run*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+proc.apply_layer or proc.discard_layer was given something other than a layer this run kept, or the kept layer no longer holds exactly what it held when the hop was judged (something changed it in between), so applying it would apply what nobody judged.
+
+**What to type next:** pass the layer a boxed hop of this run returned; a layer that changed is not applied: run the hop again
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the layer belongs to another run, was applied or dropped already, or was changed after the hop was judged (no probe; a suggestion, not a finding). **Remedy:** cig box list shows the kept layers; cig box apply <run> <hop> applies another run's
+
+Related: `E780`, `E781`.
 
 
 ## usage (`E800`–`E849`)

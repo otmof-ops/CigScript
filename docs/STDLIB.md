@@ -1,6 +1,6 @@
 # Standard library reference
 
-Generated from `cig --json language` (CigScript 1.6.0) by `scripts/gen-stdlib-doc.py`. Do not edit by hand.
+Generated from `cig --json language` (CigScript 1.12.0) by `scripts/gen-stdlib-doc.py`. Do not edit by hand.
 
 Functions marked **burn** change the world and can only be called inside a `burn { }` block. `read` functions look at the world without changing it; `pure` functions touch nothing.
 
@@ -101,6 +101,8 @@ Reads are free; anything that changes a file is a **burn**, snapshotted before a
 | `proc.pipe` | 1-2 | **burn** |
 | `proc.shell` | 1-2 | **burn** |
 | `proc.which` | 1 | read |
+| `proc.apply_layer` | 1 | **burn** |
+| `proc.discard_layer` | 1 | **burn** |
 
 ## time
 

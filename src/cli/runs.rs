@@ -670,6 +670,11 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
                 cigscript::burn::git::unpin(std::path::Path::new(wt.trim()), &r.id);
             }
         }
+        #[cfg(target_os = "linux")]
+        {
+            let _ = cigscript::burn::overlay::remove_tree_force(&r.dir().join("box"));
+            cigscript::burn::overlay::sweep_scratch(&r.dir());
+        }
         if cigscript::burn::overlay::remove_tree_force(&r.dir()).is_ok() {
             removed += 1;
             // Recorded, so the missing-run note never fires for it.
@@ -1113,6 +1118,8 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     // The layers of a boxed hop the run never got to apply (it died in the
     // hop) were never the pack's: they go with the rollback.
     let _ = cigscript::burn::overlay::remove_tree_force(&rec.dir().join("box"));
+    #[cfg(target_os = "linux")]
+    cigscript::burn::overlay::sweep_scratch(&rec.dir());
     let _ = cigscript::burn::overlay::remove_tree_force(&cigscript::burn::overlay::inbox_dir(
         &rec.dir(),
     ));
