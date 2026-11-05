@@ -12,6 +12,13 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::Path;
 
 pub fn forward(sock: &Path, port: u16) -> i32 {
+    // Non-dumpable: the hop beside it in the namespace, the same user with
+    // the same (no) capabilities, must not trace it into connecting
+    // somewhere else.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     let listener = match TcpListener::bind(("127.0.0.1", port)) {
         Ok(l) => l,
         Err(_) => return 1,

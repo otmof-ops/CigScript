@@ -495,7 +495,9 @@ pub fn sweep_dead_layers() {
             })
             .unwrap_or(false);
         if !alive {
-            let _ = super::overlay::remove_tree_force(&layers);
+            // Only what the run never got to apply: a layer kept on purpose
+            // (`apply: "never"`, an `ask` declined) waits for `cig box apply`.
+            super::overlay::drop_unapplied(&dir);
         }
     }
 }

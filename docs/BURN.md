@@ -450,6 +450,28 @@ out of reach of what cig runs.
   off for one run. Outside Linux, and where user namespaces are not
   allowed, the tin is checked (the ledger, the hashes, `cig tin verify`)
   rather than protected, and `cig doctor` says which.
+  From 1.11.2 the guard also closes the other ways to the key. A key file
+  named outright (`CIG_SEAL_KEY_FILE`, the CI setup) is covered with
+  `/dev/null` and the variable is not passed on. While the key may be in
+  the OS keyring (`seal_key` is not `file`), a guarded hop gets no session
+  bus: `DBUS_SESSION_BUS_ADDRESS` is not passed on, and the bus and
+  systemd's private socket (named by the variable, by `XDG_RUNTIME_DIR` or
+  by your uid's runtime folder) are covered. On Linux that keyring is the
+  Secret Service on the session bus, which hands a secret to any process of
+  yours that asks for it, and systemd's user manager on the same bus would
+  start a process outside the box that could ask. A credential helper that
+  needs the session bus (libsecret, `gh`'s keyring) does not work in a
+  guarded hop; `cig config seal_key file` keeps the key in a file the guard
+  hides and leaves hops the bus. A process in the hop's user namespace
+  cannot open `/proc/<pid>/root` or `/proc/<pid>/environ` of your other
+  processes (the kernel asks for a capability in theirs), so those are no
+  way around a cover. What the guard does not do is confine the hop: it
+  keeps the tin read-only and the key out of reach, and the box keeps the
+  pack, but a hop that reaches other services you run (an X11 display,
+  `docker.sock`, an ssh-agent, systemd's user manager while the key is a
+  file, an abstract socket while it shares your network) can act through
+  them. Neither the guard nor the box is a sandbox for the rest of the
+  machine.
 - **A record scripts cannot rewrite.** From 1.9.0 the journal is signed:
   each line's `prev` is an HMAC under a subkey of the tin's key, so a
   recomputed chain does not verify (`E760`); a journal under another
@@ -517,7 +539,7 @@ From 1.11.0 `box` also takes a map, for a hop whose code you did not write:
 ```cig
 proc.run("npm", ["ci"], {box: {
   network: "registry",                 # "on" (the default), "off", "registry"
-  allow_hosts: ["registry.npmjs.org"], # a name, "*.suffix", or "host:port"
+  allow_hosts: ["registry.npmjs.org"], # a name or "*.suffix" (on 443), or "host:port"
   pidns: true,                         # its own PID namespace (the default with the box)
   apply: "on_success",                 # "on_success" (the default), "ask", "never"
 }})
@@ -537,10 +559,22 @@ proc.run("npm", ["ci"], {box: {
   it) relays to cig's CONNECT proxy outside, which allows `allow_hosts`,
   resolves them itself, counts the bytes, and refuses and records the rest
   (`E771`, one note per host; the events in `runs/<id>/events/<hop>.jsonl`).
-  A tool that ignores proxies has no network at all. A network of its own
-  asked for where the box cannot be made is a refusal (`E777`), not a
-  fallback: running code you do not trust unprotected to check it defeats
-  the point.
+  An entry is `host:port` exactly, or a name (or address) alone or
+  `*.suffix`, which mean port 443; a name admitted by a wildcard that
+  resolves to an address on this machine or its network (loopback, private,
+  link-local) is refused, so a name someone else controls cannot turn the
+  proxy on a service here, while an entry that names a host or address
+  exactly is taken as given. The proxy's socket sits in a folder the hop
+  cannot write (`proxy/` under the run, read-only inside the box whatever
+  the guard manages), since the forwarder connects to it by path. A tool
+  that ignores proxies has no network at all. A network of its own asked
+  for where the box cannot be made is a refusal (`E777`), not a fallback:
+  running code you do not trust unprotected to check it defeats the point.
+- **No burn protocol for an isolated hop.** A hop with a network of its own
+  is code its caller does not trust, so it is given no `CIG_JOURNAL`: an
+  undo it declared there would be a command cig runs later, outside every
+  namespace, as you. Its changes come back with its layer, which is exact
+  anyway.
 - **Kept layers.** `apply: "never"` runs the hop and holds its layer back:
   nothing reaches the pack, the hop's result carries `layer: "<run>/<hop>"`,
   and the run says so (`E780`). `apply: "ask"` shows what the layer would
@@ -549,7 +583,8 @@ proc.run("npm", ["ci"], {box: {
   own, journaled with its before-images, so `cig unburn <that run>` takes
   it out again; `cig box discard <run> <hop>` drops one. An unburn of the
   run a kept layer belongs to drops it too: the base it was made against is
-  gone.
+  gone. The record that keeps a layer lives under the run's `kept/`, not
+  beside the layer, where the hop could have planted one.
 - **A key for another tool's records.** `cig tin mac <file> --label <l>`
   prints a MAC over the file under a subkey of the tin's key derived for
   that label; `--check <hex>` verifies one. cig-orchestrator signs its trust

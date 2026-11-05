@@ -1500,7 +1500,7 @@ E771 a host outside the allow list  (burn, guard family, since 1.11.0)
 
   A boxed hop with network: registry tried to connect somewhere its allow_hosts does not name. The box's only way out is cig's proxy, which refused the connection and recorded it; the hop saw the refusal and nothing left the machine.
 
-  what to type next: if the host is legitimate, add it to box.allow_hosts (a name, *.suffix, or host:port); if not, that is the finding
+  what to type next: if the host is legitimate, add it to box.allow_hosts (a name or *.suffix, on 443, or host:port); if not, that is the finding
 
   known causes, ranked; doctor checks them in this order
   1. the tool reached for a host the toolchain's footprint does not name (a mirror, a telemetry endpoint, or an exfiltration attempt)

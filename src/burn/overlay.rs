@@ -56,6 +56,7 @@ pub fn why(layers: &Layers) -> Option<String> {
 
 /// Throw the layers away: nothing of the hop lands.
 pub fn discard(layers: &Layers) {
+    let _ = fs::remove_file(kept_record(&layers.dir));
     let _ = remove_tree_force(&layers.dir);
     // The `box` directory itself, once no hop's layers are left in it.
     if let Some(parent) = layers.dir.parent() {
@@ -221,14 +222,24 @@ pub enum Apply {
 /// listens (the namespace is the hop's own, so nothing else can hold it).
 pub const PROXY_PORT: u16 = 38080;
 
-/// Where the proxy's Unix socket for a hop lives: under the run's `hops`
-/// (which the guard leaves writable and the hop can reach), or, when that
-/// path is too long for a socket address, under a private folder in the
-/// temporary directory.
+/// Where the proxy's Unix socket for a hop lives: under the run's `proxy`,
+/// a folder no hop may write (the guard leaves only `hops` and the inbox
+/// writable, and the box binds this one read-only besides), so a hop cannot
+/// put a link in the socket's place for the forwarder to follow; or, when
+/// that path is too long for a socket address, under a private folder in
+/// the temporary directory, bound read-only the same way. A socket on a
+/// read-only mount still takes connections.
 pub fn proxy_sock_path(run_dir: &Path, seq: u64) -> PathBuf {
-    let under_hops = run_dir.join("hops").join(format!("{seq}.sock"));
-    if under_hops.as_os_str().len() < 100 {
-        return under_hops;
+    let dir = run_dir.join("proxy");
+    let under = dir.join(format!("{seq}.sock"));
+    if under.as_os_str().len() < 100 {
+        let _ = fs::create_dir_all(&dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&dir, fs::Permissions::from_mode(0o700));
+        }
+        return under;
     }
     let dir =
         std::env::temp_dir().join(format!("cig-{}-{}", dir_name(run_dir), std::process::id()));
@@ -271,7 +282,21 @@ pub struct Kept {
     pub dir: PathBuf,
 }
 
-const KEPT: &str = "kept.json";
+/// Where a kept layer's record lives: `kept/<seq>.json` under the run, not
+/// beside the layer. The layers directory is the hop's own while it runs, so
+/// a record there could be planted (a "kept" layer naming roots of the hop's
+/// choosing) or turned into a link that cig's write would follow; under the
+/// guard `kept/` is read-only to every hop.
+pub fn kept_record(layers_dir: &Path) -> PathBuf {
+    let run_dir = layers_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| layers_dir.to_path_buf());
+    run_dir
+        .join("kept")
+        .join(format!("{}.json", dir_name(layers_dir)))
+}
 
 /// Count what a layer would change: paths written (made or replaced) and
 /// removed.
@@ -311,13 +336,28 @@ pub fn keep(
         dir: layers.dir.clone(),
     };
     let text = serde_json::to_string_pretty(&kept).map_err(io::Error::other)?;
-    fs::write(layers.dir.join(KEPT), text)?;
+    let record = kept_record(&layers.dir);
+    let dir = record.parent().map(Path::to_path_buf).unwrap_or_default();
+    fs::create_dir_all(&dir)?;
+    // Written beside its final name and renamed in: a link planted at the
+    // temporary name is replaced by the rename, never written through.
+    let tmp = dir.join(format!(".{}.tmp", dir_name(&layers.dir)));
+    let _ = fs::remove_file(&tmp);
+    {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(text.as_bytes())?;
+    }
+    fs::rename(&tmp, &record)?;
     Ok(kept)
 }
 
 /// Is this layers directory a kept layer?
 pub fn is_kept(dir: &Path) -> bool {
-    dir.join(KEPT).is_file()
+    kept_record(dir).is_file()
 }
 
 /// Every kept layer under every run, oldest first.
@@ -335,10 +375,14 @@ pub fn kept_layers() -> Vec<Kept> {
         let mut dirs: Vec<PathBuf> = seqs.flatten().map(|e| e.path()).collect();
         dirs.sort_by_key(|d| dir_name(d).parse::<u64>().unwrap_or(0));
         for dir in dirs {
-            if let Ok(text) = fs::read_to_string(dir.join(KEPT)) {
+            if let Ok(text) = fs::read_to_string(kept_record(&dir)) {
                 if let Ok(mut k) = serde_json::from_str::<Kept>(&text) {
-                    k.dir = dir.clone();
-                    out.push(k);
+                    // The record names its own layer; one that names another
+                    // run's or another hop's is not this layer's record.
+                    if k.run == dir_name(&run) && k.seq.to_string() == dir_name(&dir) {
+                        k.dir = dir.clone();
+                        out.push(k);
+                    }
                 }
             }
         }
@@ -379,6 +423,20 @@ pub fn drop_unapplied(run_dir: &Path) -> usize {
         }
     }
     let _ = fs::remove_dir(run_dir.join("box"));
+    // A record whose layer is gone keeps nothing.
+    if let Ok(rd) = fs::read_dir(run_dir.join("kept")) {
+        for e in rd.flatten() {
+            let seq = e
+                .path()
+                .file_stem()
+                .map(|x| x.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if !run_dir.join("box").join(&seq).is_dir() {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    let _ = fs::remove_dir(run_dir.join("kept"));
     n
 }
 
@@ -403,8 +461,11 @@ pub struct Setup {
     pub pidns: bool,
     /// A network namespace of its own, with `lo` alone.
     pub netns: bool,
-    /// An empty file to bind over `/etc/resolv.conf` inside: no resolver.
-    pub resolv_empty: Option<std::ffi::CString>,
+    /// `/dev/null` over `/etc/resolv.conf` inside: no resolver.
+    pub resolv_null: bool,
+    /// The folder of the proxy's socket, bound read-only inside, with the
+    /// flags its mount must keep on a remount.
+    pub sock_dir: Option<(std::ffi::CString, libc::c_ulong)>,
     /// The forwarder to start inside the namespace (`cig internal-forward
     /// <sock> <port>`), as the argv to exec.
     pub forward: Option<[std::ffi::CString; 4]>,
@@ -420,6 +481,9 @@ pub struct Setup {
 #[cfg(target_os = "linux")]
 pub struct Guard {
     pub home: std::ffi::CString,
+    /// The flags the state root's mount must keep when it is remounted
+    /// read-only (`locked_flags`).
+    pub home_flags: libc::c_ulong,
     pub keys: std::ffi::CString,
     pub writable: Vec<std::ffi::CString>,
     pub why: std::ffi::CString,
@@ -430,6 +494,13 @@ pub struct Guard {
     pub inbox: PathBuf,
     /// `CIG_INTERNAL_NO_GUARD`: behave as if the mounts were refused.
     pub pretend_unavailable: bool,
+    /// The other ways to the key, each covered with `/dev/null`: a key file
+    /// named outright (`CIG_SEAL_KEY_FILE`) outside the key folder, and,
+    /// while the key may be in the OS keyring, the session bus and systemd's
+    /// private socket (see `key_routes`).
+    pub covers: Vec<std::ffi::CString>,
+    /// The session bus is cut: the hop's environment does not name it.
+    pub bus_cut: bool,
 }
 
 /// What confines a hop: the box (an overlay over each pack root, with the
@@ -520,6 +591,109 @@ pub fn prepare_inbox(run_dir: &Path) -> io::Result<PathBuf> {
     Ok(inbox)
 }
 
+/// Is the session bus cut from guarded hops? While the key may be in the OS
+/// keyring (`seal_key` is not `file`): on Linux that keyring is the Secret
+/// Service on the session bus, which hands a secret to any process of the
+/// user's that asks for it, and systemd's user manager on the same bus would
+/// start a process outside the box that could ask.
+pub fn bus_cut() -> bool {
+    crate::config::Config::load().get("seal_key") != "file"
+}
+
+/// The ways to the key a guarded hop must not have, beyond the key folder
+/// the tmpfs hides: a key file named outright by `CIG_SEAL_KEY_FILE` that
+/// lies outside that folder, and, when `bus_cut`, the session bus (the
+/// `path=` of `DBUS_SESSION_BUS_ADDRESS`, `$XDG_RUNTIME_DIR/bus`) and
+/// systemd's private socket. Each is real (canonical), present and not a
+/// directory; an abstract socket has no path to cover, and is out of reach
+/// only in a network namespace of the hop's own.
+#[cfg(target_os = "linux")]
+pub fn key_routes(keys: &Path, bus_cut: bool) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut add = |p: PathBuf| {
+        let Ok(meta) = fs::symlink_metadata(&p) else {
+            return;
+        };
+        let real = fs::canonicalize(&p).unwrap_or(p);
+        let is_dir = if meta.file_type().is_symlink() {
+            real.is_dir()
+        } else {
+            meta.is_dir()
+        };
+        if !is_dir && !found.contains(&real) {
+            found.push(real);
+        }
+    };
+    if let Some(f) = std::env::var_os("CIG_SEAL_KEY_FILE") {
+        let f = PathBuf::from(f);
+        let f = std::path::absolute(&f).unwrap_or(f);
+        let keys = fs::canonicalize(keys).unwrap_or_else(|_| keys.to_path_buf());
+        let real = fs::canonicalize(&f).unwrap_or_else(|_| f.clone());
+        if !real.starts_with(&keys) {
+            add(f);
+        }
+    }
+    if bus_cut {
+        if let Some(addr) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") {
+            for p in bus_paths(&addr.to_string_lossy()) {
+                add(p);
+            }
+        }
+        // The runtime folder named, and the uid's own whether named or not:
+        // the bus sits at a fixed path, so a hop needs no variable to find it.
+        let mut runtime: Vec<PathBuf> = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .into_iter()
+            .collect();
+        runtime.push(PathBuf::from(format!("/run/user/{}", unsafe {
+            libc::geteuid()
+        })));
+        for rt in runtime {
+            add(rt.join("bus"));
+            add(rt.join("systemd").join("private"));
+        }
+    }
+    found
+}
+
+/// The socket paths in a D-Bus address (`unix:path=/run/user/1000/bus`,
+/// alternatives separated by `;`, values %-escaped).
+#[cfg(target_os = "linux")]
+fn bus_paths(addr: &str) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for alt in addr.split(';') {
+        let Some(("unix", params)) = alt.split_once(':') else {
+            continue;
+        };
+        for kv in params.split(',') {
+            if let Some(v) = kv.strip_prefix("path=") {
+                out.push(PathBuf::from(unescape_bus(v)));
+            }
+        }
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn unescape_bus(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok();
+            if let Some(n) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(n);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// What the `tin_guard` setting says: `auto` (the default), `on` or `off`;
 /// `CIG_TIN_GUARD=0` is `off` for one run.
 pub fn guard_setting() -> String {
@@ -605,7 +779,13 @@ impl Setup {
             // The inbox: a cig inside the hop has it as its own state root.
             let inbox = prepare_inbox(&run_dir)?;
             writable.push(cstr(&inbox)?);
+            let bus_cut = bus_cut();
+            let mut covers = Vec::new();
+            for p in key_routes(&keys, bus_cut) {
+                covers.push(cstr(&p)?);
+            }
             Some(Guard {
+                home_flags: locked_flags(&home),
                 home: cstr(&home)?,
                 keys: cstr(&keys)?,
                 writable,
@@ -613,27 +793,28 @@ impl Setup {
                 required: guard_setting() == "on",
                 inbox,
                 pretend_unavailable: std::env::var_os("CIG_INTERNAL_NO_GUARD").is_some(),
+                covers,
+                bus_cut,
             })
         };
         // The namespaces beyond the mounts: only with the box itself.
         let boxed = layers.is_some();
         let netns = boxed && spec.network != Network::On;
-        let mut resolv_empty = None;
         let mut forward = None;
-        if netns {
+        let mut sock_dir = None;
+        if netns && spec.network == Network::Registry {
             let seq = layers.map(seq_of).unwrap_or(0);
-            let empty = run_dir.join("hops").join(format!("{seq}.resolv"));
-            fs::write(&empty, b"")?;
-            resolv_empty = Some(cstr(&empty)?);
-            if spec.network == Network::Registry {
-                let exe = std::env::current_exe()?;
-                forward = Some([
-                    cstr(&exe)?,
-                    std::ffi::CString::new("internal-forward").expect("plain"),
-                    cstr(&proxy_sock_path(&run_dir, seq))?,
-                    std::ffi::CString::new(PROXY_PORT.to_string()).expect("digits"),
-                ]);
+            let sock = proxy_sock_path(&run_dir, seq);
+            if let Some(dir) = sock.parent() {
+                sock_dir = Some((cstr(dir)?, locked_flags(dir)));
             }
+            let exe = std::env::current_exe()?;
+            forward = Some([
+                cstr(&exe)?,
+                std::ffi::CString::new("internal-forward").expect("plain"),
+                cstr(&sock)?,
+                std::ffi::CString::new(PROXY_PORT.to_string()).expect("digits"),
+            ]);
         }
         Ok(Setup {
             uid_map: format!("{uid} {uid} 1\n").into_bytes(),
@@ -645,7 +826,8 @@ impl Setup {
             guard,
             pidns: boxed && spec.pidns,
             netns,
-            resolv_empty,
+            resolv_null: netns,
+            sock_dir,
             forward,
         })
     }
@@ -684,6 +866,11 @@ impl Setup {
         if !write_file(c"/proc/self/gid_map", &self.gid_map) {
             return self.fail(b"writing /proc/self/gid_map refused");
         }
+        // The maps are written: back to non-dumpable. The relay and the init
+        // below never exec, so they stay copies of cig's memory, the key
+        // among it when one was loaded; non-dumpable, nothing of the user's
+        // can trace or read them. The hop's exec makes it dumpable again.
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
         // Nothing mounted here must reach the parent's namespace.
         if libc::mount(
             std::ptr::null(),
@@ -738,7 +925,7 @@ impl Setup {
                     null,
                     g.home.as_ptr(),
                     null,
-                    libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY,
+                    libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | g.home_flags,
                     std::ptr::null(),
                 ) != 0
             {
@@ -812,6 +999,29 @@ impl Setup {
             }
             libc::close(fd);
         }
+        // The other ways to the key, covered with /dev/null after the
+        // overlays, so the cover is in the view the hop has: a key file read
+        // gives nothing, a socket refuses the connection. The hop keeps its
+        // own uid in the namespace, so after exec it has no capability to
+        // take a cover off, and a namespace it makes of its own inherits the
+        // cover locked.
+        if let Some(g) = &self.guard {
+            for c in &g.covers {
+                if libc::mount(
+                    c"/dev/null".as_ptr(),
+                    c.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                ) != 0
+                {
+                    self.note(&g.why, b"covering a way to the key refused");
+                    if g.required {
+                        return Err(io::Error::from_raw_os_error(libc::ENOTSUP));
+                    }
+                }
+            }
+        }
         // Into the working directory again, through the overlay this time.
         if libc::chdir(self.cwd.as_ptr()) != 0 {
             return self.fail(b"entering the working directory through the overlay refused");
@@ -829,14 +1039,36 @@ impl Setup {
                 libc::ioctl(s, libc::SIOCSIFFLAGS as _, &ifr);
                 libc::close(s);
             }
-            if let Some(empty) = &self.resolv_empty {
+            if self.resolv_null {
                 libc::mount(
-                    empty.as_ptr(),
+                    c"/dev/null".as_ptr(),
                     c"/etc/resolv.conf".as_ptr(),
                     std::ptr::null(),
                     libc::MS_BIND,
                     std::ptr::null(),
                 );
+            }
+            // The proxy's socket folder, read-only inside whatever the guard
+            // managed: the forwarder connects by path, so the hop must not be
+            // able to put a link to another socket in its place.
+            if let Some((dir, flags)) = &self.sock_dir {
+                if libc::mount(
+                    dir.as_ptr(),
+                    dir.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND,
+                    std::ptr::null(),
+                ) != 0
+                    || libc::mount(
+                        std::ptr::null(),
+                        dir.as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | *flags,
+                        std::ptr::null(),
+                    ) != 0
+                {
+                    return self.fail(b"making the proxy's socket folder read-only refused");
+                }
             }
         }
         // The PID namespace: unshare(CLONE_NEWPID) puts only children in
@@ -930,6 +1162,10 @@ impl Setup {
             libc::signal(libc::SIGTERM, libc::SIG_DFL);
             libc::signal(libc::SIGINT, libc::SIG_DFL);
         }
+        // Whatever descriptor cig held without close-on-exec (a library's,
+        // never cig's own) is closed by the exec: one that named a folder
+        // before the mounts above would still write through the old view.
+        cloexec_from_3();
         Ok(())
     }
 
@@ -988,6 +1224,62 @@ unsafe fn close_from_3() {
             libc::close(fd);
         }
     }
+}
+
+/// Mark every descriptor above stderr close-on-exec (`close_range` with
+/// `CLOSE_RANGE_CLOEXEC`, Linux 5.11, which the box needs anyway; else one
+/// at a time). The standard library's exec-status pipe is close-on-exec
+/// already, so the exec still reports to the parent.
+#[cfg(target_os = "linux")]
+unsafe fn cloexec_from_3() {
+    const CLOSE_RANGE_CLOEXEC: libc::c_long = 1 << 2;
+    if libc::syscall(
+        libc::SYS_close_range,
+        3 as libc::c_long,
+        libc::c_uint::MAX as libc::c_long,
+        CLOSE_RANGE_CLOEXEC,
+    ) < 0
+    {
+        for fd in 3..4096 {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+}
+
+/// The flags a bind remount of `path` must carry: a mount copied into a
+/// user namespace keeps its nosuid, nodev, noexec and atime settings
+/// locked, and a remount that would change one is refused (EPERM).
+#[cfg(target_os = "linux")]
+pub fn locked_flags(path: &Path) -> libc::c_ulong {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    let mut st: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
+        return 0;
+    }
+    // The kernel's statfs flag for relatime (not in the libc crate's musl
+    // bindings, though the kernel sets it there too).
+    const ST_RELATIME: libc::c_ulong = 4096;
+    let f = st.f_flag as libc::c_ulong;
+    let mut out: libc::c_ulong = 0;
+    for (st_bit, ms_bit) in [
+        (libc::ST_NOSUID as libc::c_ulong, libc::MS_NOSUID),
+        (libc::ST_NODEV as libc::c_ulong, libc::MS_NODEV),
+        (libc::ST_NOEXEC as libc::c_ulong, libc::MS_NOEXEC),
+        (libc::ST_NOATIME as libc::c_ulong, libc::MS_NOATIME),
+        (libc::ST_NODIRATIME as libc::c_ulong, libc::MS_NODIRATIME),
+        (ST_RELATIME, libc::MS_RELATIME),
+    ] {
+        if f & st_bit != 0 {
+            out |= ms_bit;
+        }
+    }
+    if f & (libc::ST_NOATIME as libc::c_ulong | ST_RELATIME) == 0 {
+        out |= libc::MS_STRICTATIME;
+    }
+    out
 }
 
 /// Wait for one child (through EINTR) and give its exit code.
@@ -1188,5 +1480,23 @@ fn mode_of(meta: &fs::Metadata) -> u32 {
     {
         let _ = meta;
         0o755
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_bus_paths_come_out_of_an_address() {
+        assert_eq!(
+            bus_paths("unix:path=/run/user/1000/bus"),
+            vec![PathBuf::from("/run/user/1000/bus")]
+        );
+        assert_eq!(
+            bus_paths("unix:abstract=/tmp/dbus-x,guid=1;unix:path=/tmp/a%20b/bus,guid=2"),
+            vec![PathBuf::from("/tmp/a b/bus")]
+        );
+        assert!(bus_paths("tcp:host=localhost,port=1").is_empty());
     }
 }

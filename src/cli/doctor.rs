@@ -408,8 +408,13 @@ fn guard_status() -> (bool, String) {
             Ok(st) if st.success() => (
                 true,
                 format!(
-                    "tin_guard = {setting}: {} see the tin read-only and no key",
-                    if setting == "on" { "all hops" } else { "boxed hops" }
+                    "tin_guard = {setting}: {} see the tin read-only and no key{}",
+                    if setting == "on" { "all hops" } else { "boxed hops" },
+                    if cigscript::burn::overlay::bus_cut() {
+                        ", and no session bus while the key may be in the OS keyring (cig config seal_key file gives them the bus)"
+                    } else {
+                        ""
+                    }
                 ),
             ),
             _ => (

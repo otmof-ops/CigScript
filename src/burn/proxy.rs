@@ -97,18 +97,89 @@ mod imp {
     }
 
     /// Does `host:port` pass the allow list?
+    /// Does `allow` let `host:port` through? A `host:port` entry is that
+    /// pair exactly; a name or address alone is that host on 443; `*.suffix`
+    /// is any name under it, on 443.
     pub fn allowed(allow: &[String], host: &str, port: u16) -> bool {
+        admission(allow, host, port).is_some()
+    }
+
+    /// How an entry admits the host: `Some(false)` by name or address,
+    /// `Some(true)` by a wildcard, `None` not at all. An exact entry is taken
+    /// as given wherever it points; a wildcard is not trusted to stay off
+    /// this machine and its network (see `internal`).
+    fn admission(allow: &[String], host: &str, port: u16) -> Option<bool> {
         let host = host.to_ascii_lowercase();
         let with_port = format!("{host}:{port}");
-        allow.iter().any(|a| {
+        let mut by_wildcard = false;
+        for a in allow {
+            let a = a.to_ascii_lowercase();
             if a.contains(':') && !a.starts_with('[') {
-                *a == with_port
+                if a == with_port {
+                    return Some(false);
+                }
             } else if let Some(suffix) = a.strip_prefix("*.") {
-                host == suffix || host.ends_with(&format!(".{suffix}"))
-            } else {
-                *a == host
+                if port == 443 && (host == suffix || host.ends_with(&format!(".{suffix}"))) {
+                    by_wildcard = true;
+                }
+            } else if a == host && port == 443 {
+                return Some(false);
             }
-        })
+        }
+        by_wildcard.then_some(true)
+    }
+
+    /// An address inside this machine or its network: loopback, private,
+    /// link-local, shared (CGNAT), unspecified, multicast or broadcast. A
+    /// name admitted by a wildcard that resolves to one is refused, so a name
+    /// someone else controls cannot turn the proxy on a service here.
+    pub fn internal(ip: &std::net::IpAddr) -> bool {
+        use std::net::IpAddr;
+        match ip {
+            IpAddr::V4(v4) => {
+                let o = v4.octets();
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.is_unspecified()
+                    || v4.is_multicast()
+                    || v4.is_broadcast()
+                    || (o[0] == 100 && (o[1] & 0xc0) == 64)
+                    || o[0] == 0
+            }
+            IpAddr::V6(v6) => {
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return internal(&IpAddr::V4(v4));
+                }
+                let seg = v6.segments();
+                v6.is_loopback()
+                    || v6.is_unspecified()
+                    || v6.is_multicast()
+                    || (seg[0] & 0xfe00) == 0xfc00
+                    || (seg[0] & 0xffc0) == 0xfe80
+            }
+        }
+    }
+
+    /// A hop-chosen name, fit to print: letters, digits and `.-_:[]` kept,
+    /// anything else (a control character, an escape) shown as `?`, and
+    /// capped, so a name cannot move the cursor or recolour the terminal.
+    pub fn printable(s: &str) -> String {
+        let mut out: String = s
+            .chars()
+            .take(100)
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || ".-_:[]".contains(c) {
+                    c
+                } else {
+                    '?'
+                }
+            })
+            .collect();
+        if s.chars().count() > 100 {
+            out.push('…');
+        }
+        out
     }
 
     fn event(shared: &Shared, line: serde_json::Value) {
@@ -169,22 +240,34 @@ mod imp {
                 return;
             }
         };
-        if !allowed(&shared.allow, &host, port) {
+        let Some(by_wildcard) = admission(&shared.allow, &host, port) else {
             let _ = writer.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
             event(
                 shared,
                 serde_json::json!({"t": now(), "call": "connect", "host": host, "port": port, "result": "refused", "why": "not in allow_hosts"}),
             );
             return;
-        }
-        let upstream = (host.as_str(), port)
+        };
+        let addrs: Vec<std::net::SocketAddr> = (host.as_str(), port)
             .to_socket_addrs()
-            .ok()
-            .and_then(|addrs| {
-                addrs
-                    .into_iter()
-                    .find_map(|a| TcpStream::connect_timeout(&a, Duration::from_secs(10)).ok())
-            });
+            .map(|a| a.collect())
+            .unwrap_or_default();
+        let outside: Vec<std::net::SocketAddr> = addrs
+            .iter()
+            .copied()
+            .filter(|a| !by_wildcard || !internal(&a.ip()))
+            .collect();
+        if by_wildcard && !addrs.is_empty() && outside.is_empty() {
+            let _ = writer.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+            event(
+                shared,
+                serde_json::json!({"t": now(), "call": "connect", "host": host, "port": port, "result": "refused", "why": "a wildcard entry does not reach an address on this machine or its network"}),
+            );
+            return;
+        }
+        let upstream = outside
+            .into_iter()
+            .find_map(|a| TcpStream::connect_timeout(&a, Duration::from_secs(10)).ok());
         let Some(upstream) = upstream else {
             let _ = writer.write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
             event(
@@ -255,8 +338,8 @@ mod imp {
             };
             if v["result"] == "refused" {
                 let what = match (v["host"].as_str(), v["port"].as_u64()) {
-                    (Some(h), Some(p)) => format!("{h}:{p}"),
-                    _ => v["target"].as_str().unwrap_or("?").to_string(),
+                    (Some(h), Some(p)) => format!("{}:{p}", printable(h)),
+                    _ => printable(v["target"].as_str().unwrap_or("?")),
                 };
                 if !out.contains(&what) {
                     out.push(what);
@@ -300,3 +383,55 @@ mod imp {
 
 #[cfg(not(unix))]
 pub use imp::{allowed, refused, start, Proxy};
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::imp::*;
+
+    fn allow(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn a_bare_name_or_wildcard_is_https_only_and_host_port_is_exact() {
+        let a = allow(&["registry.npmjs.org", "*.pythonhosted.org", "127.0.0.1:8080"]);
+        assert!(allowed(&a, "registry.npmjs.org", 443));
+        assert!(!allowed(&a, "registry.npmjs.org", 22));
+        assert!(allowed(&a, "files.pythonhosted.org", 443));
+        assert!(!allowed(&a, "files.pythonhosted.org", 80));
+        assert!(allowed(&a, "127.0.0.1", 8080));
+        assert!(!allowed(&a, "127.0.0.1", 443));
+        assert!(!allowed(&a, "evil.example", 443));
+        assert!(allowed(&a, "REGISTRY.npmjs.org", 443));
+    }
+
+    #[test]
+    fn a_wildcard_never_reaches_this_machine_or_its_network() {
+        for inside in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.1.1",
+            "100.64.0.1",
+            "0.0.0.0",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            assert!(internal(&inside.parse().unwrap()), "{inside}");
+        }
+        for outside in ["8.8.8.8", "104.16.0.1", "2606:4700::1111"] {
+            assert!(!internal(&outside.parse().unwrap()), "{outside}");
+        }
+    }
+
+    #[test]
+    fn a_hop_chosen_name_prints_plainly() {
+        assert_eq!(printable("registry.npmjs.org"), "registry.npmjs.org");
+        assert_eq!(printable("a\u{1b}[2Jb"), "a?[2Jb");
+        assert_eq!(printable("x\ny"), "x?y");
+        assert!(printable(&"a".repeat(300)).ends_with('…'));
+    }
+}
