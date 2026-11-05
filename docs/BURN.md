@@ -639,7 +639,8 @@ if r.outside.is_empty() { proc.apply_layer(r.layer) } else { proc.discard_layer(
   `*` stays within one folder, `**` crosses them. After the hop, cig reads
   its layers and reports every change no glob names (`r.outside`, each
   `{path, kind}`: `write`, `link`, `delete`, `replace`), and whatever
-  `expect` says, a link that leaves the pack (`link-out`), a set-id file
+  `expect` says, a link into your home that `expect` does not name
+(`link-out`; a link to a system path, such as a venv's python, is fine), a set-id file
   (`setuid`) and a folder that cannot be read (`unreadable`; a hop cannot
   hide its writes behind its own modes). One note names the first few
   (`E781`). `r.changed` counts what was written and removed, in the pack and

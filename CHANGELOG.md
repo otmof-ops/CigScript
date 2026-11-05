@@ -22,8 +22,8 @@ the machine can be written (#106; for cig-orchestrator's rehearsal, its
   where it cannot be had.
 - **`box: {expect: [...]}`.** The hop's footprint as globs (`~/` for the
   home). What the layers hold outside it comes back as `r.outside` (with
-  links that leave the pack, set-id files and unreadable folders reported
-  whatever it says), with `r.changed` and `r.refused`, and one note
+  links into the home that it does not name, set-id files and unreadable
+  folders reported whatever it says), with `r.changed` and `r.refused`, and one note
   (`E781`). Under `contain`, a hop off its footprint is held back.
 - **Evidence.** A rehearsal or a contained hop that fails keeps its layer;
   the error's value carries it and the judgement.

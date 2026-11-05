@@ -2270,11 +2270,29 @@ pub fn judge(layers: &Layers, home: Option<(&Path, &Path)>, expect: &[String]) -
     );
     let home_set = build(expect.iter().filter_map(|e| e.strip_prefix("~/")).collect());
     let roots: Vec<PathBuf> = layers.roots.iter().map(|(r, _, _)| r.clone()).collect();
+    let home_dir: Option<PathBuf> = home
+        .map(|(h, _)| h.to_path_buf())
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from));
     let mut j = Judged::default();
     let look =
         |root: &Path, upper: &Path, set: &globset::GlobSet, in_home: bool, j: &mut Judged| {
-            // A link may land in this tree or in any pack root.
-            let fine = |p: &Path| p.starts_with(root) || roots.iter().any(|r| p.starts_with(r));
+            // A link may land in this tree, in any pack root, in the home
+            // where `expect` names (a package manager's store), or outside
+            // the home altogether (a venv's python, a toolchain): what it
+            // must not do is point into the rest of your home, where the
+            // secrets are.
+            let fine = |p: &Path| {
+                if p.starts_with(root) || roots.iter().any(|r| p.starts_with(r)) {
+                    return true;
+                }
+                match &home_dir {
+                    Some(h) if p.starts_with(h) => p
+                        .strip_prefix(h)
+                        .map(|rel| home_set.is_match(rel))
+                        .unwrap_or(false),
+                    _ => true,
+                }
+            };
             let mut entries = Vec::new();
             walk_tolerant(root, upper, upper, &fine, &mut entries);
             for (real, kind) in entries {
@@ -2478,7 +2496,17 @@ mod tests {
         fs::write(upper.join("a.json"), "{}").unwrap();
         fs::create_dir_all(upper.join("sub")).unwrap();
         fs::write(upper.join("sub/b.json"), "{}").unwrap();
-        symlink("/etc/passwd", upper.join("node_modules/escape")).unwrap();
+        symlink(
+            home.join(".ssh/id_ed25519"),
+            upper.join("node_modules/escape"),
+        )
+        .unwrap();
+        symlink("/usr/bin/python3", upper.join("node_modules/venv-python")).unwrap();
+        symlink(
+            home.join(".npm/_cacache/x"),
+            upper.join("node_modules/store"),
+        )
+        .unwrap();
         symlink("x/index.js", upper.join("node_modules/inside")).unwrap();
         fs::write(upper.join("node_modules/suid"), "s").unwrap();
         fs::set_permissions(
@@ -2520,6 +2548,12 @@ mod tests {
         assert!(
             !got.iter()
                 .any(|(p, _)| p == "a.json" || p == "node_modules/inside" || p == "~/.npm/cache"),
+            "{got:?}"
+        );
+        // A link to a system path (a venv's python) or into an expected store is fine.
+        assert!(
+            !got.iter()
+                .any(|(p, _)| p == "node_modules/venv-python" || p == "node_modules/store"),
             "{got:?}"
         );
         assert_eq!(j.home_written, 2);
