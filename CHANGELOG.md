@@ -3,6 +3,15 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.12.3 — 2026-11-05
+
+- **The blacklist family, `E580`–`E589`**, registered for cig-orchestrator's
+  blacklist (cig-orchestrator #62), so `cig explain` and doctor know its
+  codes: `E580` on the blacklist and `E587` a list that does not verify come
+  from cig-orchestrator's guard; the rest (the two warnings, running
+  anyway, a blacklisted server, an entry held for review, an old list) are
+  reserved for the parts not built yet.
+
 ## 1.12.2 — 2026-11-05
 
 - **A box whose setup is refused says why.** When the contained box could

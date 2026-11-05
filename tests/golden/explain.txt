@@ -70,6 +70,16 @@ E550-E569  hops (process boundaries): child processes and foreign scripts
   E556  bad shape on stdout                runtime
   E557  bad encoding on stdout             runtime
 
+E580-E589  the blacklist: what cig-orchestrator stops wherever it shows up, from the lists it keeps and your own entries
+  E580  on the blacklist                   usage  (cigo)
+  E581  the last warning                   usage  (planned)
+  E582  run anyway, in the box             usage  (planned)
+  E583  run anyway, without the box        usage  (planned)
+  E584  a blacklisted server               usage  (planned)
+  E585  an entry held for review           usage  (planned)
+  E586  the list is old                    usage  (planned)
+  E587  a list that does not verify        usage  (cigo)
+
 E600-E699  raised by the script: cough, assert, chains, process checks
   E600  raised by the script               cough
   E601  assertion failed                   cough
@@ -1219,6 +1229,142 @@ E557 bad encoding on stdout  (runtime, hop family, since 1.1.0)
      remedy: redirect it to a file with the tool's own flag, then read the file
 
   arises in: run, light  ·  tags: windows
+
+======== E580 ========
+E580 on the blacklist  (usage, blacklist family, since 1.12.3)
+  from cig-orchestrator: its guard reports it, cig itself never does
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  Something a task would install, fetch or run is on a blacklist: a package (one version, or every version of it), a file by its sha256, a domain and its subdomains, an address range, or a URL pattern. The guard refuses the task before anything runs. Risk: critical. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: take it out of the project; cigo blacklist why <thing> says which entry matched and why
+
+  known causes, ranked; doctor checks them in this order
+  1. an entry on a blacklist (cigo blacklist list) matches it (cig-orchestrator #62)
+     probe: none; a suggestion, not a finding
+     remedy: cigo blacklist why <thing>; cigo blacklist remove <entry> when the entry itself is wrong
+
+  arises in: run, check  ·  related: E870, E587  ·  tags: ci-likely
+
+======== E581 ========
+E581 the last warning  (usage, blacklist family, since 1.12.3)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  The second of the two warnings before something on the blacklist runs anyway: what it could cost, and the safer way (a rehearsal). A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: do not run it; cigo rehearse <it> shows what it does without applying anything
+
+  known causes, ranked; doctor checks them in this order
+  1. cig-orchestrator's blacklist (#62), a part not built yet
+     probe: none; a suggestion, not a finding
+     remedy: none needed: nothing ran
+
+  arises in: run, check  ·  related: E580, E582
+
+======== E582 ========
+E582 run anyway, in the box  (usage, blacklist family, since 1.12.3)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  Something on the blacklist was run by your approval, inside the box, with its network refused and everything it did recorded. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: read what it did (cigo quarantine show) before you trust anything it wrote
+
+  known causes, ranked; doctor checks them in this order
+  1. cig-orchestrator's blacklist (#62), a part not built yet
+     probe: none; a suggestion, not a finding
+     remedy: read the record of the run
+
+  arises in: run, check  ·  related: E580, E583
+
+======== E583 ========
+E583 run anyway, without the box  (usage, blacklist family, since 1.12.3)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  Something on the blacklist was run outside the box because you approved it twice. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: check what it touched, and rotate any secret it could read
+
+  known causes, ranked; doctor checks them in this order
+  1. cig-orchestrator's blacklist (#62), a part not built yet
+     probe: none; a suggestion, not a finding
+     remedy: treat the machine as exposed to it
+
+  arises in: run, check  ·  related: E580, E582
+
+======== E584 ========
+E584 a blacklisted server  (usage, blacklist family, since 1.12.3)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A program tried to reach a host or address on the blacklist; the connection was refused. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: find out why the program wanted that host; cigo blacklist why <host> says which entry
+
+  known causes, ranked; doctor checks them in this order
+  1. cig-orchestrator's blacklist (#62), a part not built yet
+     probe: none; a suggestion, not a finding
+     remedy: cigo blacklist why <host>
+
+  arises in: run, check  ·  related: E580
+
+======== E585 ========
+E585 an entry held for review  (usage, blacklist family, since 1.12.3)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A blacklist entry matches a file the system's package manager owns, a running service or one of cigo's own files, which cannot be right; it is not enforced until someone looks at it, so a bad or poisoned list cannot break the machine. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: report the entry to the list's owner; cigo blacklist why <file> names it
+
+  known causes, ranked; doctor checks them in this order
+  1. cig-orchestrator's blacklist (#62), a part not built yet
+     probe: none; a suggestion, not a finding
+     remedy: report the entry to the list's owner
+
+  arises in: run, check  ·  related: E580, E587
+
+======== E586 ========
+E586 the list is old  (usage, blacklist family, since 1.12.3)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The blacklist has not been updated for longer than it should be; what was listed since is not on it. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: cigo blacklist update
+
+  known causes, ranked; doctor checks them in this order
+  1. cig-orchestrator's blacklist (#62), a part not built yet
+     probe: none; a suggestion, not a finding
+     remedy: cigo blacklist update
+
+  arises in: run, check  ·  related: E580
+
+======== E587 ========
+E587 a list that does not verify  (usage, blacklist family, since 1.12.3)
+  from cig-orchestrator: its guard reports it, cig itself never does
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A blacklist file is not signed by this machine's key: it was changed by something other than cigo blacklist (a hand edit, or a script taking out the entry that names its own payload). Its entries still count, and so do the entries of the last copy that verified, so taking an entry out does not let anything through; cigo blacklist reload signs the file again. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it.
+
+  what to type next: cigo blacklist reload, at a terminal, shows what changed and signs the file again
+
+  known causes, ranked; doctor checks them in this order
+  1. a blacklist file changed outside cigo blacklist, or cig cannot sign (before 1.11.0, or no key here)
+     probe: none; a suggestion, not a finding
+     remedy: cigo blacklist reload once you have read the change
+
+  arises in: run, check  ·  related: E580
 
 ======== E604 ========
 E604 chain lights itself  (cough, cough family, since 1.1.0)
