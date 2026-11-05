@@ -1553,6 +1553,17 @@ fn run_child(
     check_cwd(name, o, s)?;
     install_signal_forwarding();
     let mut c = command(cmd, args, o, journal, plan).ok_or_else(|| {
+        // The box or the guard could not be set up for this hop: its setup
+        // wrote why, and that is the answer, not "not found". The callers
+        // read the same reason back (E777, E712, or the tin with E763).
+        if let Some(why) = plan.and_then(|p| crate::burn::overlay::why_at(&p.base())) {
+            return runtime(format!(
+                "{name}: could not start `{cmd}`: the box could not be made: {why}"
+            ))
+            .code("E550")
+            .at(s)
+            .with_subject(cmd.to_string());
+        }
         spawn_error(
             name,
             cmd,

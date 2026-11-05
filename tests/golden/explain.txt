@@ -133,26 +133,26 @@ E850-E869  the updater and doctor
   reserved; nothing emitted yet
 
 E870-E899  what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read
-  E870  a known malicious package          usage  (planned)
-  E871  reads credentials                  usage  (planned)
-  E872  tries to send data out             usage  (planned)
-  E873  persistence                        usage  (planned)
-  E874  fetch and run                      usage  (planned)
-  E875  obfuscation                        usage  (planned)
+  E870  a known malicious package          usage  (cigo)
+  E871  reads credentials                  usage  (cigo)
+  E872  tries to send data out             usage  (cigo)
+  E873  persistence                        usage  (cigo)
+  E874  fetch and run                      usage  (cigo)
+  E875  obfuscation                        usage  (cigo)
   E876  ransomware shape                   usage  (planned)
-  E877  wiper shape                        usage  (planned)
-  E878  asks for privilege                 usage  (planned)
-  E879  eyes cigo or the tin               usage  (planned)
-  E880  outside the footprint              usage  (planned)
+  E877  wiper shape                        usage  (cigo)
+  E878  asks for privilege                 usage  (cigo)
+  E879  eyes cigo or the tin               usage  (cigo)
+  E880  outside the footprint              usage  (cigo)
   E881  typosquat                          usage  (planned)
   E882  brand new, or a new publisher      usage  (planned)
   E883  a new install script               usage  (planned)
   E884  no label on the pack               usage  (planned)
-  E885  a known vulnerability              usage  (planned)
-  E886  prompt injection                   usage  (planned)
-  E887  invisible instructions             usage  (planned)
+  E885  a known vulnerability              usage  (cigo)
+  E886  prompt injection                   usage  (cigo)
+  E887  invisible instructions             usage  (cigo)
   E888  probes for a sandbox               usage  (planned)
-  E889  a forged approval                  usage  (planned)
+  E889  a forged approval                  usage  (cigo)
   E890  cigo was changed                   usage  (planned)
   E891  decoys changed the output          usage  (planned)
 
@@ -1524,6 +1524,9 @@ E777 no isolation for untrusted code  (burn, guard family, since 1.11.0)
   1. unprivileged user namespaces are disabled, the kernel has no overlayfs, or the state directory sits on an overlay (a container's layer)
      probe: none; a suggestion, not a finding
      remedy: cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user namespaces enabled let the box be made
+  2. the contained box (contain: true) refused its setup: cig runs as root, where a hop keeps its capabilities in the box, or there is no scratch folder outside your home and the pack (HOME=/, as in a service account or a container run as any user)
+     probe: none; a suggestion, not a finding
+     remedy: run cig as an ordinary user whose HOME is a directory of its own; the message names which
 
   arises in: run  ·  related: E763, E771  ·  tags: kernel, ci-likely
 
@@ -2016,7 +2019,7 @@ E808 record from a newer cig  (usage, usage family, since 1.2.0)
 
 ======== E870 ========
 E870 a known malicious package  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 
@@ -2033,7 +2036,7 @@ E870 a known malicious package  (usage, finding family, since 1.11.0)
 
 ======== E871 ========
 E871 reads credentials  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2050,7 +2053,7 @@ E871 reads credentials  (usage, finding family, since 1.11.0)
 
 ======== E872 ========
 E872 tries to send data out  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 
@@ -2067,7 +2070,7 @@ E872 tries to send data out  (usage, finding family, since 1.11.0)
 
 ======== E873 ========
 E873 persistence  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2084,7 +2087,7 @@ E873 persistence  (usage, finding family, since 1.11.0)
 
 ======== E874 ========
 E874 fetch and run  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2101,7 +2104,7 @@ E874 fetch and run  (usage, finding family, since 1.11.0)
 
 ======== E875 ========
 E875 obfuscation  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2135,7 +2138,7 @@ E876 ransomware shape  (usage, finding family, since 1.11.0)
 
 ======== E877 ========
 E877 wiper shape  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 
@@ -2152,7 +2155,7 @@ E877 wiper shape  (usage, finding family, since 1.11.0)
 
 ======== E878 ========
 E878 asks for privilege  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2169,7 +2172,7 @@ E878 asks for privilege  (usage, finding family, since 1.11.0)
 
 ======== E879 ========
 E879 eyes cigo or the tin  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 
@@ -2186,7 +2189,7 @@ E879 eyes cigo or the tin  (usage, finding family, since 1.11.0)
 
 ======== E880 ========
 E880 outside the footprint  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2271,7 +2274,7 @@ E884 no label on the pack  (usage, finding family, since 1.11.0)
 
 ======== E885 ========
 E885 a known vulnerability  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2288,7 +2291,7 @@ E885 a known vulnerability  (usage, finding family, since 1.11.0)
 
 ======== E886 ========
 E886 prompt injection  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2305,7 +2308,7 @@ E886 prompt injection  (usage, finding family, since 1.11.0)
 
 ======== E887 ========
 E887 invisible instructions  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
 
@@ -2339,7 +2342,7 @@ E888 probes for a sandbox  (usage, finding family, since 1.11.0)
 
 ======== E889 ========
 E889 a forged approval  (usage, finding family, since 1.11.0)
-  planned: reserved for a feature that has not shipped yet
+  from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 

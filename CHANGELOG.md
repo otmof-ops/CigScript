@@ -3,6 +3,29 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.12.2 — 2026-11-05
+
+- **A box whose setup is refused says why.** When the contained box could
+  not be set up before the hop started (cig running as root, or no scratch
+  folder outside your home and the pack, as with `HOME=/` in a service
+  account or a container run as any user), the hop failed as `E551` "could
+  not start `sh`: no such file or directory" and kept an empty layer
+  (`E780`). It is now refused with the reason (`E777`, or `E712` under the
+  guard); a plain `box: true` falls back to the tin with `E763`, as it does
+  when the kernel refuses the box, and nothing is kept. `cig explain E777`
+  names the cause.
+- **`cig explain` says which codes come from cig-orchestrator.** The guard's
+  findings (`E870`–`E889`) are registered here so explain and doctor know
+  them, and every one was marked "planned: reserved for a feature that has
+  not shipped yet", including the twelve cig-orchestrator has reported since
+  1.3.0. The fourteen it reports through 1.6.0 now read "from
+  cig-orchestrator: its guard reports it, cig itself never does" (`(cigo)` in
+  the listings and in docs/ERRORS.md); the rest stay planned.
+- **The release uploads the licence files once.** Every build job attached
+  `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES.md`, and two replacing the
+  same file at once failed two jobs of the 1.12.1 release (its assets were
+  all published and their checksums match). One job attaches them now.
+
 ## 1.12.1 — 2026-11-05
 
 From a re-test of the tin's protections as an ordinary user (#112).

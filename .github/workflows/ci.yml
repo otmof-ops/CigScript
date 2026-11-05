@@ -160,6 +160,22 @@ jobs:
           files: |
             cig-*-${{ matrix.asset }}${{ matrix.ext }}
             cig-*-${{ matrix.asset }}${{ matrix.ext }}.sha256
+
+  # The licence files go beside the assets once, from one job. When every
+  # build uploaded them, two builds replacing the same asset at once failed
+  # the release (v1.12.1: armv7 and aarch64-apple-darwin).
+  release-notices:
+    name: release (licence files)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, reuse]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
             LICENSE
             NOTICE
             THIRD-PARTY-NOTICES.md

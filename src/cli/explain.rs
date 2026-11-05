@@ -74,6 +74,8 @@ fn list(ctx: &Ctx) -> i32 {
         for c in codes {
             let mark = if c.has_tag("planned") {
                 ctx.dim("  (planned)")
+            } else if c.has_tag("orchestrator") {
+                ctx.dim("  (cigo)")
             } else {
                 String::new()
             };
@@ -116,6 +118,12 @@ fn page(ctx: &Ctx, e: &Code) {
         outln!(
             "  {}",
             ctx.dim("planned: reserved for a feature that has not shipped yet")
+        );
+    }
+    if e.has_tag("orchestrator") {
+        outln!(
+            "  {}",
+            ctx.dim("from cig-orchestrator: its guard reports it, cig itself never does")
         );
     }
     outln!();
@@ -210,7 +218,7 @@ fn page(ctx: &Ctx, e: &Code) {
         .tags
         .iter()
         .map(String::as_str)
-        .filter(|t| *t != "planned")
+        .filter(|t| *t != "planned" && *t != "orchestrator")
         .collect();
     if !tags.is_empty() {
         footer.push(format!("tags: {}", tags.join(", ")));

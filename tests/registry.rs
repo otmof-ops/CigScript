@@ -26,6 +26,7 @@ const TAGS: &[&str] = &[
     "windows",
     "macos",
     "planned",
+    "orchestrator",
 ];
 
 /// Every `Eddd` token in the Rust sources, comments stripped.
@@ -86,12 +87,12 @@ fn every_emitted_code_is_registered_and_every_registered_code_is_emitted() {
         .difference(&emitted)
         .filter(|c| {
             let e = lookup(c).unwrap();
-            !e.has_tag("planned") && !e.retired
+            !e.has_tag("planned") && !e.has_tag("orchestrator") && !e.retired
         })
         .collect();
     assert!(
         dead.is_empty(),
-        "codes in errors/registry.toml that nothing in src/ emits (tag them `planned` or retire them): {dead:?}"
+        "codes in errors/registry.toml that nothing in src/ emits (tag them `planned` or `orchestrator`, or retire them): {dead:?}"
     );
 }
 
