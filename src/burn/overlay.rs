@@ -1259,21 +1259,24 @@ pub fn locked_flags(path: &Path) -> libc::c_ulong {
     if unsafe { libc::statvfs(c.as_ptr(), &mut st) } != 0 {
         return 0;
     }
-    let f = st.f_flag;
+    // The kernel's statfs flag for relatime (not in the libc crate's musl
+    // bindings, though the kernel sets it there too).
+    const ST_RELATIME: libc::c_ulong = 4096;
+    let f = st.f_flag as libc::c_ulong;
     let mut out: libc::c_ulong = 0;
     for (st_bit, ms_bit) in [
-        (libc::ST_NOSUID, libc::MS_NOSUID),
-        (libc::ST_NODEV, libc::MS_NODEV),
-        (libc::ST_NOEXEC, libc::MS_NOEXEC),
-        (libc::ST_NOATIME, libc::MS_NOATIME),
-        (libc::ST_NODIRATIME, libc::MS_NODIRATIME),
-        (libc::ST_RELATIME, libc::MS_RELATIME),
+        (libc::ST_NOSUID as libc::c_ulong, libc::MS_NOSUID),
+        (libc::ST_NODEV as libc::c_ulong, libc::MS_NODEV),
+        (libc::ST_NOEXEC as libc::c_ulong, libc::MS_NOEXEC),
+        (libc::ST_NOATIME as libc::c_ulong, libc::MS_NOATIME),
+        (libc::ST_NODIRATIME as libc::c_ulong, libc::MS_NODIRATIME),
+        (ST_RELATIME, libc::MS_RELATIME),
     ] {
         if f & st_bit != 0 {
             out |= ms_bit;
         }
     }
-    if f & (libc::ST_NOATIME | libc::ST_RELATIME) == 0 {
+    if f & (libc::ST_NOATIME as libc::c_ulong | ST_RELATIME) == 0 {
         out |= libc::MS_STRICTATIME;
     }
     out
