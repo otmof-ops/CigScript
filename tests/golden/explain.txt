@@ -1524,6 +1524,9 @@ E777 no isolation for untrusted code  (burn, guard family, since 1.11.0)
   1. unprivileged user namespaces are disabled, the kernel has no overlayfs, or the state directory sits on an overlay (a container's layer)
      probe: none; a suggestion, not a finding
      remedy: cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user namespaces enabled let the box be made
+  2. the contained box (contain: true) refused its setup: cig runs as root, where a hop keeps its capabilities in the box, or there is no scratch folder outside your home and the pack (HOME=/, as in a service account or a container run as any user)
+     probe: none; a suggestion, not a finding
+     remedy: run cig as an ordinary user whose HOME is a directory of its own; the message names which
 
   arises in: run  ·  related: E763, E771  ·  tags: kernel, ci-likely
 
