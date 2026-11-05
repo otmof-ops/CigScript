@@ -657,7 +657,7 @@ fn plan_contain(
     if euid == 0 {
         return Err(other("contain runs the hop as you, not as root: a root hop keeps its capabilities in the box and could make the rest writable again"));
     }
-    let filter = hop_filter().map_err(|e| io::Error::other(e))?;
+    let filter = hop_filter().map_err(io::Error::other)?;
     let roots: Vec<PathBuf> = layers.roots.iter().map(|(r, _, _)| r.clone()).collect();
     let state =
         std::path::absolute(super::runs::home_dir()).unwrap_or_else(|_| super::runs::home_dir());
@@ -838,7 +838,6 @@ pub fn hop_filter() -> Result<Vec<libc::sock_filter>, String> {
     {
         const LD_W_ABS: u16 = 0x20;
         const JEQ: u16 = 0x15;
-        const JGE: u16 = 0x35;
         const JSET: u16 = 0x45;
         const RET: u16 = 0x06;
         const ALLOW: u32 = 0x7fff_0000;
@@ -863,6 +862,7 @@ pub fn hop_filter() -> Result<Vec<libc::sock_filter>, String> {
         ];
         #[cfg(target_arch = "x86_64")]
         {
+            const JGE: u16 = 0x35;
             // x32: the same numbers with this bit set, a way around the rest.
             f.push(jmp(JGE, 0x4000_0000, 0, 1));
             f.push(st(RET, KILL));
@@ -1474,9 +1474,7 @@ impl Setup {
         // `contain`: the home layer, what goes back over it, the key folder
         // and the other ways to the key, the temp, a /dev of its own.
         if let Some(c) = &self.contain {
-            if let Err(e) = self.contain_mounts(c) {
-                return Err(e);
-            }
+            self.contain_mounts(c)?;
         }
         // The other ways to the key, covered with /dev/null after the
         // overlays, so the cover is in the view the hop has: a key file read

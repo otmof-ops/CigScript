@@ -315,7 +315,7 @@ impl Judgement {
         m.insert("outside".to_string(), Value::list(outside));
         m.insert(
             "refused".to_string(),
-            Value::list(self.refused.iter().map(|r| Value::str(r)).collect()),
+            Value::list(self.refused.iter().map(Value::str).collect()),
         );
         let mut c = IndexMap::new();
         for (k, v) in ["written", "removed", "home_written", "home_removed"]
