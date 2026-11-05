@@ -14,6 +14,13 @@ project follows semantic versioning.
   guard); a plain `box: true` falls back to the tin with `E763`, as it does
   when the kernel refuses the box, and nothing is kept. `cig explain E777`
   names the cause.
+- **`cig explain` says which codes come from cig-orchestrator.** The guard's
+  findings (`E870`–`E889`) are registered here so explain and doctor know
+  them, and every one was marked "planned: reserved for a feature that has
+  not shipped yet", including the twelve cig-orchestrator has reported since
+  1.3.0. The fourteen it reports through 1.6.0 now read "from
+  cig-orchestrator: its guard reports it, cig itself never does" (`(cigo)` in
+  the listings and in docs/ERRORS.md); the rest stay planned.
 - **The release uploads the licence files once.** Every build job attached
   `LICENSE`, `NOTICE` and `THIRD-PARTY-NOTICES.md`, and two replacing the
   same file at once failed two jobs of the 1.12.1 release (its assets were

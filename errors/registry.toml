@@ -8,7 +8,9 @@
 # `docs/ERRORS.md` and `docs/diagnostic.schema.json` are generated from it by
 # `scripts/gen-errors-doc.py`; `tests/registry.rs` fails the build when a code
 # is emitted that is not here, when a code here is never emitted (unless it is
-# tagged `planned`), or when an entry is missing any part of its page.
+# tagged `planned`, or `orchestrator`: emitted by cig-orchestrator, registered
+# here so explain and doctor know it), or when an entry is missing any part of
+# its page.
 #
 # Rules: a code never changes meaning; a retired code is never reused (mark it
 # `retired = true` and keep it). Every code has a `fix` in the shape "what to
@@ -2053,7 +2055,7 @@ meaning = "A package in the lockfile is a known malicious package (an OSV MAL- a
 fix = "remove the package; cigo audit <name> shows the advisory"
 no = "these-are-mine"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E885", "E881"]
 [[code.cause]]
@@ -2068,7 +2070,7 @@ meaning = "In the rehearsal the code read a credential file (an SSH key, a cloud
 fix = "if a tool needs that file, name it in the toolchain's footprint reads; otherwise that is the finding"
 no = "none"
 arises = ["run"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E872", "E880"]
 [[code.cause]]
@@ -2083,7 +2085,7 @@ meaning = "The code tried to connect somewhere that is not a registry or a host 
 fix = "allow the host in the footprint only if you meant it; with E871 beside it, treat the package as stealing credentials"
 no = "these-are-mine"
 arises = ["run"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E871", "E771"]
 [[code.cause]]
@@ -2098,7 +2100,7 @@ meaning = "The code wrote somewhere that runs again later: a shell rc file, a cr
 fix = "read what it wrote; a toolchain that legitimately installs a hook names it in its footprint"
 no = "none"
 arises = ["run"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E880"]
 [[code.cause]]
@@ -2113,7 +2115,7 @@ meaning = "The script downloads something and runs it as it arrives (curl | sh, 
 fix = "pin and verify what is fetched, or vendor it; a build tool's own installer step can be named in the footprint"
 no = "none"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E875"]
 [[code.cause]]
@@ -2128,7 +2130,7 @@ meaning = "Code is decoded or assembled before it runs: base64 or hex into eval 
 fix = "read the decoded form; legitimate build artefacts are packed too, so the other findings beside this one decide"
 no = "none"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E874"]
 [[code.cause]]
@@ -2158,7 +2160,7 @@ meaning = "In the rehearsal the code deleted files outside the toolchain's footp
 fix = "do not run it; the quarantine holds the evidence"
 no = "these-are-mine"
 arises = ["run"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E876", "E880"]
 [[code.cause]]
@@ -2173,7 +2175,7 @@ meaning = "The script calls sudo, doas, setuid or chmod +s, or raises a UAC prom
 fix = "run the privileged part yourself, knowing what it does"
 no = "none"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = []
 [[code.cause]]
@@ -2188,7 +2190,7 @@ meaning = "The script names cig's or cigo's own files (the state directory, the 
 fix = "do not run it; nothing legitimate needs to touch those"
 no = "these-are-mine"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E889", "E890"]
 [[code.cause]]
@@ -2203,7 +2205,7 @@ meaning = "In the rehearsal the code wrote, read or connected outside what the t
 fix = "if the path or host is legitimate for this project, add it to the project's footprint; cigo check validates it"
 no = "none"
 arises = ["run"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E873", "E872"]
 [[code.cause]]
@@ -2278,7 +2280,7 @@ meaning = "A package in the lockfile has a known vulnerability (a GHSA or CVE ad
 fix = "update to the fixed version"
 no = "none"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E870"]
 [[code.cause]]
@@ -2293,7 +2295,7 @@ meaning = "Text in the package (a README, a comment, install output) is addresse
 fix = "keep your agents off it; treat the text as data"
 no = "none"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E887"]
 [[code.cause]]
@@ -2308,7 +2310,7 @@ meaning = "Invisible Unicode (tag characters, zero-width characters inside words
 fix = "strip it and read what it said; nothing honest needs invisible text"
 no = "none"
 arises = ["run", "check"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E886"]
 [[code.cause]]
@@ -2338,7 +2340,7 @@ meaning = "An entry in cigo's trust store does not verify under this machine's k
 fix = "cigo trust list; remove the entry; the task is checked as if never approved"
 no = "these-are-mine"
 arises = ["run"]
-tags = ["ci-likely", "planned"]
+tags = ["ci-likely", "orchestrator"]
 since = "1.11.0"
 related = ["E879"]
 [[code.cause]]
