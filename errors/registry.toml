@@ -76,7 +76,7 @@ meaning = "hops (process boundaries): child processes and foreign scripts"
 from = "E580"
 to = "E589"
 family = "blacklist"
-kind = "usage"
+kind = "runtime"
 meaning = "the blacklist: what cig-orchestrator stops wherever it shows up, from the lists it keeps and your own entries"
 
 [[range]]

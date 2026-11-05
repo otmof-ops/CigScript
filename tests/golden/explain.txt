@@ -71,14 +71,14 @@ E550-E569  hops (process boundaries): child processes and foreign scripts
   E557  bad encoding on stdout             runtime
 
 E580-E589  the blacklist: what cig-orchestrator stops wherever it shows up, from the lists it keeps and your own entries
-  E580  on the blacklist                   usage  (cigo)
-  E581  the last warning                   usage  (planned)
-  E582  run anyway, in the box             usage  (planned)
-  E583  run anyway, without the box        usage  (planned)
-  E584  a blacklisted server               usage  (planned)
-  E585  an entry held for review           usage  (planned)
-  E586  the list is old                    usage  (planned)
-  E587  a list that does not verify        usage  (cigo)
+  E580  on the blacklist                   runtime  (cigo)
+  E581  the last warning                   runtime  (planned)
+  E582  run anyway, in the box             runtime  (planned)
+  E583  run anyway, without the box        runtime  (planned)
+  E584  a blacklisted server               runtime  (planned)
+  E585  an entry held for review           runtime  (planned)
+  E586  the list is old                    runtime  (planned)
+  E587  a list that does not verify        runtime  (cigo)
 
 E600-E699  raised by the script: cough, assert, chains, process checks
   E600  raised by the script               cough
@@ -1231,7 +1231,7 @@ E557 bad encoding on stdout  (runtime, hop family, since 1.1.0)
   arises in: run, light  ·  tags: windows
 
 ======== E580 ========
-E580 on the blacklist  (usage, blacklist family, since 1.12.3)
+E580 on the blacklist  (runtime, blacklist family, since 1.12.3)
   from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -1248,7 +1248,7 @@ E580 on the blacklist  (usage, blacklist family, since 1.12.3)
   arises in: run, check  ·  related: E870, E587  ·  tags: ci-likely
 
 ======== E581 ========
-E581 the last warning  (usage, blacklist family, since 1.12.3)
+E581 the last warning  (runtime, blacklist family, since 1.12.3)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -1265,7 +1265,7 @@ E581 the last warning  (usage, blacklist family, since 1.12.3)
   arises in: run, check  ·  related: E580, E582
 
 ======== E582 ========
-E582 run anyway, in the box  (usage, blacklist family, since 1.12.3)
+E582 run anyway, in the box  (runtime, blacklist family, since 1.12.3)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -1282,7 +1282,7 @@ E582 run anyway, in the box  (usage, blacklist family, since 1.12.3)
   arises in: run, check  ·  related: E580, E583
 
 ======== E583 ========
-E583 run anyway, without the box  (usage, blacklist family, since 1.12.3)
+E583 run anyway, without the box  (runtime, blacklist family, since 1.12.3)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -1299,7 +1299,7 @@ E583 run anyway, without the box  (usage, blacklist family, since 1.12.3)
   arises in: run, check  ·  related: E580, E582
 
 ======== E584 ========
-E584 a blacklisted server  (usage, blacklist family, since 1.12.3)
+E584 a blacklisted server  (runtime, blacklist family, since 1.12.3)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
@@ -1316,7 +1316,7 @@ E584 a blacklisted server  (usage, blacklist family, since 1.12.3)
   arises in: run, check  ·  related: E580
 
 ======== E585 ========
-E585 an entry held for review  (usage, blacklist family, since 1.12.3)
+E585 an entry held for review  (runtime, blacklist family, since 1.12.3)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -1333,7 +1333,7 @@ E585 an entry held for review  (usage, blacklist family, since 1.12.3)
   arises in: run, check  ·  related: E580, E587
 
 ======== E586 ========
-E586 the list is old  (usage, blacklist family, since 1.12.3)
+E586 the list is old  (runtime, blacklist family, since 1.12.3)
   planned: reserved for a feature that has not shipped yet
 
   kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
@@ -1350,7 +1350,7 @@ E586 the list is old  (usage, blacklist family, since 1.12.3)
   arises in: run, check  ·  related: E580
 
 ======== E587 ========
-E587 a list that does not verify  (usage, blacklist family, since 1.12.3)
+E587 a list that does not verify  (runtime, blacklist family, since 1.12.3)
   from cig-orchestrator: its guard reports it, cig itself never does
 
   kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)

@@ -15,7 +15,7 @@ A code never changes meaning. A retired code is never reused. A code marked *pla
 | `E500`–`E519` | runtime | `runtime` | runtime: a failure while the script was running, including the resource ceilings |
 | `E520`–`E529` | ghost | `runtime` | the ghost filesystem: dry-run reads of paths that simulated ops changed |
 | `E550`–`E569` | hop | `runtime` | hops (process boundaries): child processes and foreign scripts |
-| `E580`–`E589` | blacklist | `usage` | the blacklist: what cig-orchestrator stops wherever it shows up, from the lists it keeps and your own entries |
+| `E580`–`E589` | blacklist | `runtime` | the blacklist: what cig-orchestrator stops wherever it shows up, from the lists it keeps and your own entries |
 | `E600`–`E699` | cough | `cough` | raised by the script: cough, assert, chains, process checks |
 | `E700`–`E749` | kernel | `burn` | the burn kernel and its journal (write-ahead log) |
 | `E750`–`E769` | fold | `burn` | folds and packs: refusals when automation is composed |
@@ -1059,7 +1059,7 @@ the blacklist: what cig-orchestrator stops wherever it shows up, from the lists 
 
 ### E580 on the blacklist
 
-*usage · since 1.12.3 · arises in run, check · from cig-orchestrator*
+*runtime · since 1.12.3 · arises in run, check · from cig-orchestrator*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -1076,7 +1076,7 @@ Related: `E870`, `E587`.
 
 ### E581 the last warning
 
-*usage · since 1.12.3 · arises in run, check · planned*
+*runtime · since 1.12.3 · arises in run, check · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -1093,7 +1093,7 @@ Related: `E580`, `E582`.
 
 ### E582 run anyway, in the box
 
-*usage · since 1.12.3 · arises in run, check · planned*
+*runtime · since 1.12.3 · arises in run, check · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -1110,7 +1110,7 @@ Related: `E580`, `E583`.
 
 ### E583 run anyway, without the box
 
-*usage · since 1.12.3 · arises in run, check · planned*
+*runtime · since 1.12.3 · arises in run, check · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -1127,7 +1127,7 @@ Related: `E580`, `E582`.
 
 ### E584 a blacklisted server
 
-*usage · since 1.12.3 · arises in run, check · planned*
+*runtime · since 1.12.3 · arises in run, check · planned*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
@@ -1144,7 +1144,7 @@ Related: `E580`.
 
 ### E585 an entry held for review
 
-*usage · since 1.12.3 · arises in run, check · planned*
+*runtime · since 1.12.3 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -1161,7 +1161,7 @@ Related: `E580`, `E587`.
 
 ### E586 the list is old
 
-*usage · since 1.12.3 · arises in run, check · planned*
+*runtime · since 1.12.3 · arises in run, check · planned*
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
@@ -1178,7 +1178,7 @@ Related: `E580`.
 
 ### E587 a list that does not verify
 
-*usage · since 1.12.3 · arises in run, check · from cig-orchestrator*
+*runtime · since 1.12.3 · arises in run, check · from cig-orchestrator*
 
 **Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
 
