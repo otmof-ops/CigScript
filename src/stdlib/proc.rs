@@ -827,6 +827,18 @@ fn command(
                         c.env("CIG_KEYS_DIR", g.inbox.join("keys"));
                         c.env("CIG_PARENT_RUN", p.run_id());
                     }
+                    // A network of its own: the routes the outer
+                    // environment names (its proxies, and their
+                    // exceptions) lead nowhere from inside, and a hop has
+                    // no business learning them. Only cig's, set below for
+                    // the registry network, remain.
+                    if setup.netns {
+                        for (k, _) in std::env::vars_os() {
+                            if is_proxy_var(&k.to_string_lossy()) {
+                                c.env_remove(&k);
+                            }
+                        }
+                    }
                     if setup.forward.is_some() {
                         // The one way out: every proxy-aware tool through
                         // the forwarder. A tool that ignores proxies has no
@@ -1048,6 +1060,15 @@ fn parse_box_spec(
         }
     }
     Ok(spec)
+}
+
+/// An environment variable that names a proxy, or an exception to one:
+/// `*_PROXY` and `*_proxy` (`HTTPS_PROXY`, `NO_PROXY`, `YARN_HTTPS_PROXY`),
+/// `npm_config_*proxy`, `GIT_PROXY_COMMAND`, `GLOBAL_AGENT_*`.
+#[cfg(target_os = "linux")]
+fn is_proxy_var(name: &str) -> bool {
+    let up = name.to_ascii_uppercase();
+    up.contains("PROXY") || up.starts_with("GLOBAL_AGENT_")
 }
 
 /// The guard's refusal: `tin_guard = on`, and the guard cannot be made.

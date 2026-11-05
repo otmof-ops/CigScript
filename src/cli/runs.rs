@@ -265,6 +265,14 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
                 ctx.red(&v.head_text)
             }
         );
+        outln!(
+            "  ledger    {}",
+            if v.ledger_ok {
+                v.ledger_text
+            } else {
+                ctx.red(&v.ledger_text)
+            }
+        );
         if v.problems.is_empty() {
             outln!(
                 "  objects   every snapshot and tin object the journal needs is there and hashes as recorded"
@@ -278,6 +286,16 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
             for p in &v.problems {
                 outln!("    {} {p}", ctx.red("problem"));
             }
+        }
+        // What unburn would say, with its code: --verify is the strictest
+        // view, and it agrees with unburn on every refusal.
+        if let (Some(code), Some(verdict)) = (&v.code, &v.verdict) {
+            eprintln!("{} {verdict}", ctx.red(&format!("error[{code} burn]:")));
+            eprintln!(
+                "  = hint: cig unburn {} refuses this as it stands; cig explain {code} says why",
+                rec.id
+            );
+            eprintln!("  = explain: cig explain {code}");
         }
         return if v.ok { exit::OK } else { exit::SCRIPT_ERROR };
     }
@@ -294,8 +312,16 @@ struct Verified {
     head: String,
     head_ok: bool,
     head_text: String,
+    ledger_ok: bool,
+    ledger_text: String,
     problems: Vec<String>,
     ok: bool,
+    /// What `cig unburn` would refuse with, checked in its order: another
+    /// key (E708), the ledger (E709), the chain or its head (E760), the
+    /// objects (E703). `None` when it would restore.
+    code: Option<String>,
+    /// That refusal's message, as unburn gives it.
+    verdict: Option<String>,
 }
 
 /// Walk the journal's chain, compare its head with the record, and check
@@ -347,11 +373,26 @@ fn note_missing_runs(ctx: &Ctx, all: &[RunRecord]) {
 /// for the run (a run from before the ledger), or when the ledger cannot
 /// be read (the key is not here: nothing to compare with).
 fn ledger_disagrees(rec: &RunRecord, journal: &Journal) -> Option<String> {
+    ledger_check(rec, journal).0
+}
+
+/// The ledger's view of this run's journal: `Some(reason)` when it was cut
+/// short or swapped for an older copy (E709), and what `--verify` says.
+fn ledger_check(rec: &RunRecord, journal: &Journal) -> (Option<String>, String) {
     // A journal under another key cannot be judged against this ledger, and
     // a ledger whose own chain is broken judges nothing (that is E709 in
     // `cig tin verify`, not a verdict on this run).
-    if journal.chain().other_key || journal.chain().unverified {
-        return None;
+    if journal.chain().other_key {
+        return (
+            None,
+            "not checked: the journal is under another key".to_string(),
+        );
+    }
+    if journal.chain().unverified {
+        return (
+            None,
+            "not checked: the tin's key is not available here".to_string(),
+        );
     }
     // The record speaks first: a journal whose head is not the one its own
     // record saved is reported by `tampered` (E760). The ledger judges what
@@ -362,26 +403,51 @@ fn ledger_disagrees(rec: &RunRecord, journal: &Journal) -> Option<String> {
         .as_deref()
         .is_some_and(|h| h != journal.head())
     {
-        return None;
-    }
-    let ledger = cigscript::burn::ledger::load().ok()?;
-    if ledger.broken_at.is_some() {
-        return None;
-    }
-    let line = cigscript::burn::ledger::last_record_of(&ledger, &rec.id)?;
-    let lines = journal.chain().lines as u64;
-    if lines < line.lines {
-        return Some(format!(
-            "this run's journal ends at line {lines}, but the ledger says it went to {}: cut short",
-            line.lines
-        ));
-    }
-    if line.head != journal.head() && lines == line.lines {
-        return Some(
-            "this is an old copy of the record: the ledger has a later one with the same length and another head".to_string(),
+        return (
+            None,
+            "not consulted: the journal already disagrees with its own record (above)".to_string(),
         );
     }
-    None
+    let Ok(ledger) = cigscript::burn::ledger::load() else {
+        return (
+            None,
+            "not checked: the ledger cannot be read here".to_string(),
+        );
+    };
+    if ledger.broken_at.is_some() {
+        return (
+            None,
+            "not checked: the ledger's own chain is broken (cig tin verify says where)".to_string(),
+        );
+    }
+    let Some(line) = cigscript::burn::ledger::last_record_of(&ledger, &rec.id) else {
+        return (
+            None,
+            "no line for this run (a run from before the ledger, or another machine's)".to_string(),
+        );
+    };
+    let lines = journal.chain().lines as u64;
+    if lines < line.lines {
+        return (
+            Some(format!(
+                "this run's journal ends at line {lines}, but the ledger says it went to {}: cut short",
+                line.lines
+            )),
+            String::new(),
+        );
+    }
+    if line.head != journal.head() && lines == line.lines {
+        return (
+            Some(
+                "this is an old copy of the record: the ledger has a later one with the same length and another head".to_string(),
+            ),
+            String::new(),
+        );
+    }
+    (
+        None,
+        "agrees: the journal ends where the ledger says it did".to_string(),
+    )
 }
 
 fn tampered(rec: &RunRecord, journal: &Journal) -> Option<(usize, String)> {
@@ -406,6 +472,7 @@ fn tampered(rec: &RunRecord, journal: &Journal) -> Option<(usize, String)> {
 
 fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
     let chain = journal.chain().clone();
+    let signed = chain.format >= 3;
     let (chain_ok, chain_text) = if !chain.checked() {
         (
             true,
@@ -413,6 +480,16 @@ fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
                 "none: the journal is format {} (from before 1.5.0), so its lines carry no prev",
                 chain.format
             ),
+        )
+    } else if chain.other_key {
+        (
+            false,
+            "signed by another key (another machine's, or one since replaced): not checked here; cig unburn --accept-unsigned restores from it by its hashes".to_string(),
+        )
+    } else if chain.unverified {
+        (
+            true,
+            "not checked: the journal is signed and the tin's key is not available here; its files are checked by their hashes".to_string(),
         )
     } else if let Some(b) = &chain.broken_at {
         (false, format!("BROKEN at line {}: {}", b.line, b.reason))
@@ -426,9 +503,14 @@ fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
         (
             true,
             format!(
-                "intact: {} line{}, each carrying the hash of the one before it{renamed}",
+                "intact: {} line{}, each {}{renamed}",
                 chain.lines,
-                if chain.lines == 1 { "" } else { "s" }
+                if chain.lines == 1 { "" } else { "s" },
+                if signed {
+                    "signed by your key"
+                } else {
+                    "carrying the hash of the one before it"
+                }
             ),
         )
     };
@@ -437,6 +519,12 @@ fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
         _ if !chain.checked() => (
             true,
             "not checked: a journal without a chain has no head to compare".to_string(),
+        ),
+        // As unburn: a head computed under another key, or without one, is
+        // not the head the record saved, and that is not tampering.
+        _ if chain.other_key || chain.unverified => (
+            true,
+            "not checked: the chain could not be checked here (above)".to_string(),
         ),
         None => (
             true,
@@ -448,8 +536,43 @@ fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
             "does not match the record: lines were added, removed or changed after the record was saved".to_string(),
         ),
     };
+    let (ledger_says, ledger_text) = ledger_check(rec, journal);
+    let ledger_ok = ledger_says.is_none();
+    let ledger_text = ledger_says.clone().unwrap_or(ledger_text);
     let problems = journal.verify();
-    let ok = chain_ok && head_ok && problems.is_empty();
+    // The verdict, in unburn's order and with its words.
+    let (code, verdict) = if chain.other_key {
+        (
+            Some("E708"),
+            Some(
+                "this run was signed by another key; its files still match their hashes"
+                    .to_string(),
+            ),
+        )
+    } else if let Some(reason) = ledger_says {
+        (Some("E709"), Some(reason))
+    } else if let Some((line, reason)) = tampered(rec, journal) {
+        (
+            Some("E760"),
+            Some(format!(
+                "the journal of {} is not the record the run wrote: line {line} {reason}",
+                rec.id
+            )),
+        )
+    } else if !problems.is_empty() {
+        (
+            Some("E703"),
+            Some(format!(
+                "cannot roll back {}: {} problem{} found before touching anything",
+                rec.id,
+                problems.len(),
+                if problems.len() == 1 { "" } else { "s" }
+            )),
+        )
+    } else {
+        (None, None)
+    };
+    let ok = code.is_none() && chain_ok && head_ok && ledger_ok;
     Verified {
         chain,
         chain_ok,
@@ -458,8 +581,12 @@ fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
         head,
         head_ok,
         head_text,
+        ledger_ok,
+        ledger_text,
         problems,
         ok,
+        code: code.map(str::to_string),
+        verdict,
     }
 }
 

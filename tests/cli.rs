@@ -5709,6 +5709,52 @@ fn a_contained_hops_network_works_with_cig_under_tmp() {
     assert_eq!(got, "200 hello from the registry", "{err}");
 }
 
+/// A hop in a box with a network of its own sees cig's proxy alone: the
+/// outer environment's proxies and exceptions lead nowhere from inside (#112).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_hop_sees_only_cigs_proxy() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"env | grep -i -e proxy -e global_agent | sort > reg.txt\"], {cwd: \"p\", box: {network: \"registry\", allow_hosts: [\"registry.npmjs.org\"]}})\n  proc.run(\"sh\", [\"-c\", \"env | grep -i -e proxy -e global_agent | sort > off.txt; true\"], {cwd: \"p\", box: {network: \"off\"}})\n}\n",
+    );
+    let out = sb.cig_env(
+        &["run", "s.cig"],
+        &[
+            ("GLOBAL_AGENT_HTTPS_PROXY", "http://127.0.0.1:41005"),
+            ("HTTPS_PROXY", "http://outer.example:3128"),
+            ("no_proxy", "intranet.example"),
+            ("YARN_HTTPS_PROXY", "http://outer.example:3128"),
+            ("GIT_PROXY_COMMAND", "outer-proxy"),
+        ],
+    );
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if err.contains("E777") && !box_expected_here() {
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    let reg = sb.read("p/reg.txt");
+    for line in reg.lines() {
+        let (k, v) = line.split_once('=').unwrap();
+        assert!(
+            v == "http://127.0.0.1:38080" || (v.is_empty() && k.eq_ignore_ascii_case("no_proxy")),
+            "the registry box kept an outer proxy variable: {line}\n{reg}"
+        );
+    }
+    assert!(reg.contains("HTTPS_PROXY=http://127.0.0.1:38080"), "{reg}");
+    assert!(
+        !reg.contains("GLOBAL_AGENT") && !reg.contains("outer"),
+        "{reg}"
+    );
+    let off = sb.read("p/off.txt");
+    assert!(
+        off.trim().is_empty(),
+        "the network-off box kept proxy variables: {off}"
+    );
+}
+
 /// `contain` asks for a network of the hop's own and its own PID namespace:
 /// the machine's network would reach services on this machine.
 #[cfg(target_os = "linux")]
@@ -6863,7 +6909,7 @@ fn an_edited_journal_line_breaks_the_chain() {
     let shown = String::from_utf8_lossy(&out.stdout);
     assert!(
         shown
-            .contains("chain     BROKEN at line 3: its prev is not the hash of the line before it"),
+            .contains("chain     BROKEN at line 3: its signature does not match: this line was not signed by your key"),
         "{shown}"
     );
     // Edit the last line instead: the chain fits, the recorded head does not.
@@ -6882,6 +6928,101 @@ fn an_edited_journal_line_breaks_the_chain() {
     let v: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
     assert_eq!(v["verify"]["ok"], false, "{v}");
     assert_eq!(v["verify"]["head_ok"], false, "{v}");
+}
+
+/// `cig runs <id> --verify` and `cig unburn <id>` agree: for every way the
+/// record can be tampered with, the one fails exactly when the other
+/// refuses, with the same code (#112).
+#[test]
+fn verify_and_unburn_agree() {
+    fn code_of(stderr: &str) -> Option<String> {
+        stderr
+            .find("error[E")
+            .map(|i| stderr[i + 6..i + 10].to_string())
+    }
+    type Tamper = fn(&Sandbox, &str, &Path);
+    let cases: Vec<(&str, Option<&str>, Tamper)> = vec![
+        ("untouched", None, |_, _, _| {}),
+        ("an edited line", Some("E760"), |_, _, jp| {
+            let text = fs::read_to_string(jp).unwrap();
+            fs::write(jp, text.replacen("a.txt", "z.txt", 1)).unwrap();
+        }),
+        ("cut short", Some("E760"), |_, _, jp| {
+            let text = fs::read_to_string(jp).unwrap();
+            let kept: Vec<&str> = text.lines().collect();
+            fs::write(jp, kept[..kept.len() - 1].join("\n") + "\n").unwrap();
+        }),
+        (
+            "cut short, the record made to agree",
+            Some("E709"),
+            |sb, id, jp| {
+                let text = fs::read_to_string(jp).unwrap();
+                let kept: Vec<&str> = text.lines().collect();
+                fs::write(jp, kept[..kept.len() - 1].join("\n") + "\n").unwrap();
+                let out = sb.cig(&["--json", "runs", id, "--verify"]);
+                let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+                let head = v["verify"]["head"].as_str().unwrap().to_string();
+                let rp = sb.home().join("runs").join(id).join("run.json");
+                let mut rec: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&rp).unwrap()).unwrap();
+                rec["journal_head"] = serde_json::Value::String(head);
+                fs::write(&rp, serde_json::to_string_pretty(&rec).unwrap()).unwrap();
+            },
+        ),
+        ("a snapshot gone", Some("E703"), |sb, id, _| {
+            let snaps = sb.home().join("runs").join(id).join("snapshots");
+            for e in fs::read_dir(&snaps).unwrap().flatten() {
+                fs::remove_file(e.path()).unwrap();
+            }
+        }),
+    ];
+    for (what, want, tamper) in cases {
+        let sb = Sandbox::new();
+        let (id, jp) = chained_run(&sb);
+        tamper(&sb, &id, &jp);
+        let verify = sb.cig(&["runs", &id, "--verify"]);
+        let verr = String::from_utf8_lossy(&verify.stderr).to_string();
+        let unburn = sb.cig(&["unburn", &id]);
+        let uerr = String::from_utf8_lossy(&unburn.stderr).to_string();
+        assert_eq!(
+            verify.status.success(),
+            unburn.status.success(),
+            "{what}: --verify and unburn disagree\nverify: {verr}\n{}\nunburn: {uerr}",
+            String::from_utf8_lossy(&verify.stdout)
+        );
+        assert_eq!(
+            code_of(&verr),
+            code_of(&uerr),
+            "{what}\nverify: {verr}\nunburn: {uerr}"
+        );
+        assert_eq!(
+            code_of(&verr).as_deref(),
+            want,
+            "{what}\nverify: {verr}\n{}",
+            String::from_utf8_lossy(&verify.stdout)
+        );
+    }
+}
+
+/// A format 2 journal (unsigned) keeps the hash wording; the signed format
+/// says "signature" (above).
+#[test]
+fn e760_says_hash_on_format_2() {
+    let sb = Sandbox::new();
+    sb.run_ok(&["config", "journal_sign", "off"]);
+    let (id, jp) = chained_run(&sb);
+    let text = fs::read_to_string(&jp).unwrap();
+    assert!(text.starts_with("{\"format\":2,"), "{text}");
+    fs::write(&jp, text.replacen("a.txt", "z.txt", 1)).unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    assert_eq!(out.status.code(), Some(1));
+    let shown = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        shown.contains("its prev is not the hash of the line before it"),
+        "{shown}"
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("error[E760 burn]"), "{err}");
 }
 
 #[test]

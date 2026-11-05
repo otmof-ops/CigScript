@@ -3,6 +3,28 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.12.1 — 2026-11-05
+
+From a re-test of the tin's protections as an ordinary user (#112).
+
+- **`cig runs <id> --verify` agrees with `cig unburn`.** It runs every check
+  unburn runs before it touches anything, in the same order, and fails
+  exactly when unburn would refuse, with the same code: the chain, the head
+  the record saved, the ledger's line for the run (`E709`, which `--verify`
+  did not consult), and the objects (`E703`). A `ledger` line joins
+  `chain`, `head` and `objects`, and the refusal is printed with its code.
+  A journal signed by another key no longer reads "intact" there (`E708`),
+  and its head is not compared where unburn does not compare it.
+- **`E760` names the signature on a signed journal.** In format 3 a line's
+  link is a signature under the tin's key, so a broken one says "its
+  signature does not match: this line was not signed by your key", and an
+  intact chain is "each signed by your key"; format 2 keeps the hash wording.
+  `cig explain E760` gains the format 3 cause.
+- **A boxed hop with a network of its own sees cig's proxy alone.** The outer
+  environment's proxy variables and their exceptions (`*_PROXY`,
+  `npm_config_*proxy`, `GIT_PROXY_COMMAND`, `GLOBAL_AGENT_*`, `NO_PROXY`)
+  lead nowhere from inside and are no longer passed on.
+
 ## 1.12.0 — 2026-11-05
 
 The rehearsal box: a hop whose code you did not write runs so that

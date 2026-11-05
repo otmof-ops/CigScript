@@ -1629,16 +1629,17 @@ Related: `E751`, `E752`.
 
 **Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
 
-Every line of a run's journal carries the hash of the line before it (format 2, since 1.5.0), so a line edited, removed or reordered after the run no longer fits its neighbours. cig unburn refuses to treat such a journal as the record of what the run did.
+Every line of a run's journal is chained to the line before it: by a hash in format 2 (since 1.5.0), by a signature under the tin's key in format 3 (since 1.9.0). A line edited, removed or reordered after the run no longer fits its neighbours, and in format 3 nothing without the key can re-chain it; a journal that ends somewhere other than the head its run record saved was cut short or added to. cig unburn refuses to treat such a journal as the record of what the run did, and cig runs <id> --verify says the same.
 
 **What to type next:** cig runs <id> --verify names the first line that does not fit; cig unburn <id> --force restores from the journal as it is
 
 **Known causes**, ranked; doctor checks them in this order:
 
-1. a journal line was edited by hand, or a tool rewrote the file (no probe; a suggestion, not a finding). **Remedy:** `cig runs <id> --verify` says which line; if the edit was yours and the rest is right, `cig unburn <id> --force`
-2. lines were removed, or the journal was replaced with another run's (no probe; a suggestion, not a finding). **Remedy:** the record cannot be trusted as it is; look at the files themselves before restoring anything
+1. a signed journal (format 3) was edited and its chain recomputed by something without the key: the signature on the first changed line does not match (no probe; a suggestion, not a finding). **Remedy:** the record was tampered with; look at the files themselves before restoring anything, and at what else ran as you
+2. a journal line was edited by hand, or a tool rewrote the file (no probe; a suggestion, not a finding). **Remedy:** `cig runs <id> --verify` says which line; if the edit was yours and the rest is right, `cig unburn <id> --force`
+3. lines were removed, or the journal was replaced with another run's (no probe; a suggestion, not a finding). **Remedy:** the record cannot be trusted as it is; look at the files themselves before restoring anything
 
-Related: `E703`, `E704`.
+Related: `E703`, `E704`, `E709`.
 
 
 ### E761 a hop's report could not be used

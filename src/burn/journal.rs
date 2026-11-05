@@ -469,6 +469,11 @@ impl Journal {
                         unverifiable = true;
                         None
                     }
+                    // A signed journal's links are MACs under the tin's
+                    // key: one that does not match was not signed by it.
+                    Some(_) if chain.format >= 3 => Some(
+                        "its signature does not match: this line was not signed by your key (edited, removed or reordered, or re-chained by something without the key)",
+                    ),
                     Some(_) => Some(
                         "its prev is not the hash of the line before it: a line was edited, removed or reordered",
                     ),

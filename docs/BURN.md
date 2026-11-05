@@ -381,11 +381,15 @@ version from the humidor instead of guessing.
 **The hash chain.** From format 2 (1.5.0) every line of the journal carries
 `prev`: the SHA-256 of the line before it exactly as written, and the first
 line that of the run's id. When the record is saved, `run.json` keeps the
-hash of the last line (`journal_head`). `cig runs <id> --verify` walks the
+hash of the last line (`journal_head`). `cig runs <id> --verify` runs every
+check `cig unburn` runs before it touches anything, in the same order, and
+fails exactly when unburn would refuse, naming the same code: it walks the
 chain and reports the first line that does not fit (edited, removed or
-reordered), compares the head with the record (lines added or removed
-since), and checks every snapshot and tin object a rollback would need
-against its recorded hash. `cig unburn` walks the chain before it changes
+reordered; in a signed journal, a line whose signature is not your key's),
+compares the head with the record (lines added or removed since), asks the
+ledger where the journal ended (`E709`: cut short, or an older copy swapped
+in, though the record was made to agree), and checks every snapshot and tin
+object a rollback would need against its recorded hash (`E703`). `cig unburn` walks the chain before it changes
 anything and refuses a broken one with `E760`, and a head that does not
 match the record the same way (the last line has nothing after it to carry
 its hash; the record carries it, and an unburn or a give-back saves the head
