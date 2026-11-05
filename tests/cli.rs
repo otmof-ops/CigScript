@@ -89,6 +89,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             // A runner's CI must not reach the sandbox: the one test that
             // wants it sets it itself.
             .env_remove("CI")
@@ -133,6 +136,9 @@ impl Sandbox {
             .env("HOME", self.path())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .env_remove("CI")
             .envs(envs.iter().copied())
@@ -147,6 +153,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .env_remove("CI")
             .envs(envs.iter().copied())
@@ -168,6 +177,9 @@ impl Sandbox {
             .env("CIGSCRIPT_HOME", self.home())
             .env("NO_COLOR", "1")
             .env("CIG_SEAL_KEY", "file")
+            // Every cig a test starts, and every background flush it spawns,
+            // files into the sandbox's own tracker, never a real one.
+            .env("CIG_INTERNAL_TRACKER_DIR", self.path().join("tracker"))
             .env("CIG_UPDATE_MANIFEST", self.path().join("no-releases.json"))
             .env_remove("CI")
             .stdin(std::process::Stdio::null())
@@ -624,6 +636,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .env("CIGSCRIPT_HOME", sb.home())
         .env("NO_COLOR", "1")
         .env("CIG_SEAL_KEY", "file")
+        .env("CIG_INTERNAL_TRACKER_DIR", sb.path().join("tracker"))
         .env("CIG_INTERNAL_PANIC", "1")
         .env_remove("CI")
         .output()
@@ -656,6 +669,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
         .args(["run", "s.cig"])
         .current_dir(sb.path())
         .env("CIGSCRIPT_HOME", sb.home())
+        .env("CIG_INTERNAL_TRACKER_DIR", sb.path().join("tracker"))
         .env("CIG_INTERNAL_PANIC", "1")
         .env_remove("CI")
         .output()
@@ -5577,7 +5591,7 @@ fn a_contained_hop_that_fails_keeps_its_layer_as_evidence() {
     sb.write("p/keep.txt", "v1\n");
     sb.write(
         "s.cig",
-        "pack { \"./p\" }\nburn {\n  try {\n    proc.run(\"sh\", [\"-c\", \"echo x > stray.txt; exit 3\"], {cwd: \"p\", ok: [0], box: {network: \"off\", contain: true, expect: []}})\n  } ashtray e {\n    fs.write_text(\"p/evidence.txt\", e.layer + \" \" + e.outside.map(pack(u) => u.path).join(\",\"))\n  }\n}\n",
+        "pack { \"./p\" }\nburn {\n  try {\n    proc.run(\"sh\", [\"-c\", \"echo x > stray.txt; exit 3\"], {cwd: \"p\", ok: [0], box: {network: \"off\", contain: true, expect: []}})\n  } ashtray e {\n    fs.write_text(\"p/evidence.txt\", str(e.get(\"layer\", \"none\")) + \" \" + e.get(\"outside\", []).map(pack(u) => u.path).join(\",\"))\n  }\n}\n",
     );
     let Some((out, err)) = run_contained(&sb, "s.cig") else {
         return;
@@ -9294,6 +9308,65 @@ fn assert_no_marker(text: &str, what: &str) {
         !text.to_ascii_lowercase().contains("zqx"),
         "{what} carries a name of the person's:\n{text}"
     );
+}
+
+/// One sender at a time, really: a send waits while another cig holds the
+/// ashtray, and files only once it is let go. (Before 1.12.0 a send gave
+/// up waiting after five seconds and filed alongside the holder, so two
+/// senders could file at once: on the test tracker two issues took one
+/// number, against GitHub the same report could be filed twice.)
+#[cfg(unix)]
+#[test]
+fn a_send_waits_for_the_sender_that_holds_the_ashtray() {
+    let sb = Sandbox::new();
+    sb.run_ok(&["config", "reports", "always"]);
+    let tracker = sb.path().join("tracker");
+    sb.write(
+        "tool.json",
+        r#"{"kind":"crash","panic_message":"map has no key","panic_location":"orchestrate.cig:12","version":"1.1.0","cwd":"~/w","command":["cigo","run","t"],"active_run_id":null}"#,
+    );
+    // Another sender holds the ashtray (a live lock, by another process).
+    fs::create_dir_all(sb.home().join("ashtray")).unwrap();
+    let held = sb.home().join("ashtray").join(".flush.lock");
+    fs::write(&held, "999999\n").unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args([
+            "crash",
+            "submit",
+            "--origin",
+            "cig-orchestrator",
+            "--repo",
+            "otmof-ops/cig-orchestrator",
+            "--file",
+            &sb.path().join("tool.json").to_string_lossy(),
+            "--now",
+        ])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .env("CIG_UPDATE_MANIFEST", sb.path().join("no-releases.json"))
+        .env("CIG_INTERNAL_TRACKER_DIR", &tracker)
+        .env_remove("CI")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Past the five seconds the old send waited before going ahead anyway.
+    std::thread::sleep(std::time::Duration::from_millis(6500));
+    let early = files_under(&tracker);
+    let still = child.try_wait().unwrap().is_none();
+    fs::remove_file(&held).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        early.is_empty(),
+        "filed while another sender held the ashtray: {early:?}\n{err}"
+    );
+    assert!(still, "the send did not wait for the holder: {err}");
+    assert!(out.status.success(), "{err}");
+    assert_eq!(files_under(&tracker).len(), 1, "{err}");
 }
 
 #[cfg(unix)]

@@ -44,6 +44,21 @@ the machine can be written (#106; for cig-orchestrator's rehearsal, its
 - **The proxy tries a registry's IPv4 addresses first**, five seconds an
   address: on a network that drops IPv6 (some VPNs do, against leaks) a v6
   address only times out.
+- **Fixed: two senders could file reports at once.** A send waited five
+  seconds for another sender's lock and then went ahead without it, so a
+  run's background flush and a `cig crash send` typed meanwhile could both
+  file, and against GitHub the same report could be filed twice. It now waits
+  up to two minutes, and when the lock is still held the report stays queued
+  for the next send. Within one process the lock is re-entrant: a flush no
+  longer stalls five seconds on its own lock for every report.
+- **Fixed: the same failure reported twice within one second lost a count.**
+  A report's id is its time to the second and its fingerprint, so the second
+  report overwrote the first in the ashtray. A new report claims a name of its
+  own (`<id>-2`, and so on).
+- **The test suite can no longer reach a real tracker.** Every cig a test
+  starts files into the sandbox's own tracker, background flushes included;
+  one started without it could send a test report through an authenticated
+  `gh`.
 - **Fixed: `proc.shell` dropped a boxed hop's layer.** It gives back the
   layer and the judgement as `proc.run` does (since 1.11.0 a shell hop with
   `apply: "never"` kept its layer without saying where).
