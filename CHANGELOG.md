@@ -35,6 +35,15 @@ the machine can be written (#106; for cig-orchestrator's rehearsal, its
 - **`cig box discard`** now takes the layer's record and scratch folder with
   it; `cig runs --prune` and an unburn take a contained hop's scratch folder
   too.
+- **Fixed: a contained hop's network could not start when cig itself lived
+  under /tmp.** The box's temp goes over /tmp, and the forwarder was started
+  by its path after that, so a cig in a build tree or a tool folder under
+  /tmp left the hop with no way out (npm then fell back to a stale cache
+  after a minute of retries). The forwarder's program is held before any
+  mount and started through that handle.
+- **The proxy tries a registry's IPv4 addresses first**, five seconds an
+  address: on a network that drops IPv6 (some VPNs do, against leaks) a v6
+  address only times out.
 - **Fixed: `proc.shell` dropped a boxed hop's layer.** It gives back the
   layer and the judgement as `proc.run` does (since 1.11.0 a shell hop with
   `apply: "never"` kept its layer without saying where).

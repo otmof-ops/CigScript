@@ -5611,6 +5611,73 @@ fn a_boxed_shell_hop_returns_its_layer_and_judgement() {
     assert_eq!(sb.read("p/shell.txt"), "true stray.txt", "{err}");
 }
 
+/// A contained hop's way out works when cig itself lives under /tmp, which
+/// the box's own temp covers: the forwarder is started through a handle
+/// held before the mounts, not by its path (found rehearsing npm with a cig
+/// built under /tmp: the hop had no network and npm fell back to a stale
+/// cache after a minute of retries).
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_hops_network_works_with_cig_under_tmp() {
+    if !contain_expected_here() || Command::new("python3").arg("--version").output().is_err() {
+        eprintln!("contain or python3 not here; skipped");
+        return;
+    }
+    let bin = tempfile::tempdir().unwrap();
+    let proj = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    if !bin.path().starts_with("/tmp") || proj.path().starts_with("/tmp") {
+        eprintln!("needs the system temp at /tmp and the build tree elsewhere; skipped");
+        return;
+    }
+    let cig = bin.path().join("cig");
+    fs::copy(env!("CARGO_BIN_EXE_cig"), &cig).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for conn in listener.incoming() {
+            let Ok(mut c) = conn else { break };
+            let mut buf = [0u8; 4096];
+            let _ = c.read(&mut buf);
+            let body = "hello from the registry";
+            let _ = c.write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            );
+        }
+    });
+    let root = proj.path();
+    fs::create_dir_all(root.join("p")).unwrap();
+    fs::write(root.join("p/keep.txt"), "v1\n").unwrap();
+    fs::write(
+        root.join("p/probe.py"),
+        format!("import http.client\nc = http.client.HTTPConnection('127.0.0.1', 38080, timeout=5)\nc.set_tunnel('127.0.0.1', {port})\nc.request('GET', '/')\nr = c.getresponse()\nopen('reg.txt', 'w').write(str(r.status) + ' ' + r.read().decode())\n"),
+    )
+    .unwrap();
+    fs::write(
+        root.join("s.cig"),
+        format!("pack {{ \"./p\" }}\nburn {{\n  proc.run(\"python3\", [\"probe.py\"], {{cwd: \"p\", box: {{network: \"registry\", allow_hosts: [\"127.0.0.1:{port}\"], contain: true, expect: [\"reg.txt\"]}}}})\n}}\n"),
+    )
+    .unwrap();
+    let out = Command::new(&cig)
+        .args(["run", "s.cig"])
+        .current_dir(root)
+        .env("CIGSCRIPT_HOME", root.join("home"))
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .env("CIG_UPDATE_MANIFEST", root.join("no-releases.json"))
+        .env_remove("CI")
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{err}");
+    let got = fs::read_to_string(root.join("p/reg.txt")).unwrap_or_default();
+    assert_eq!(got, "200 hello from the registry", "{err}");
+}
+
 /// `contain` asks for a network of the hop's own and its own PID namespace:
 /// the machine's network would reach services on this machine.
 #[cfg(target_os = "linux")]

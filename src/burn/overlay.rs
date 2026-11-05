@@ -1343,6 +1343,13 @@ impl Setup {
         // among it when one was loaded; non-dumpable, nothing of the user's
         // can trace or read them. The hop's exec makes it dumpable again.
         libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+        // The forwarder's program, held before any mount changes the view:
+        // under `contain` the box's temp goes over /tmp, and a cig that lives
+        // there (a build tree, a CI runner's tool folder) would be gone.
+        let exe_fd = match &self.forward {
+            Some(f) => libc::open(f[0].as_ptr(), libc::O_PATH | libc::O_CLOEXEC),
+            None => -1,
+        };
         // Nothing mounted here must reach the parent's namespace.
         if libc::mount(
             std::ptr::null(),
@@ -1622,6 +1629,12 @@ impl Setup {
                         f[3].as_ptr(),
                         std::ptr::null(),
                     ];
+                    // Through the descriptor held above, whatever covers
+                    // the path now; by the path where none could be held.
+                    if exe_fd >= 0 {
+                        let from = fd_path(exe_fd);
+                        libc::execv(from.as_ptr() as *const libc::c_char, argv.as_ptr());
+                    }
                     libc::execv(f[0].as_ptr(), argv.as_ptr());
                     libc::_exit(127);
                 }
