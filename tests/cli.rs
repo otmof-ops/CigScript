@@ -5360,6 +5360,33 @@ fn an_isolated_hop_has_no_burn_protocol() {
     );
 }
 
+/// A kept layer waits for `cig box apply` across other runs: the sweep a
+/// `cig run` makes of dead runs' layers takes only those never applied.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_kept_layer_survives_another_run() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "keep.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo new > made.txt\"], {cwd: \"p\", box: {apply: \"never\"}})\n}\n",
+    );
+    sb.write("other.cig", "burn {\n  exhale \"another run\"\n}\n");
+    let out = sb.cig(&["run", "keep.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    sb.run_ok(&["run", "other.cig"]);
+    let list = sb.run_ok(&["box", "list"]);
+    assert!(
+        list.contains("echo new > made.txt"),
+        "another run swept the kept layer: {list}"
+    );
+}
+
 /// A kept layer goes with `cig box discard`, and with an unburn of the run
 /// it belongs to (the base it was made against is gone).
 #[cfg(target_os = "linux")]
