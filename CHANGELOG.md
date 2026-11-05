@@ -40,7 +40,7 @@ the machine can be written (#106; for cig-orchestrator's rehearsal, its
 
 The box and the guard, hardened after a review of 1.11.1. The keyring
 finding was reproduced on a desktop that keeps the tin's key there. The
-five fixes and the proxy's rules each have a test that fails without them;
+six fixes and the proxy's rules each have a test that fails without them;
 the smaller items are covered by the box and guard tests as they stand.
 
 - **Fixed: a guarded hop could reach the key in the OS keyring.** On Linux
@@ -62,6 +62,10 @@ the smaller items are covered by the box and guard tests as they stand.
 - **Fixed: a kept layer's record sat in the layer's own folder,** which
   the hop could write, so a planted record could keep a layer a dead cig
   left behind. Records live under the run's `kept/`.
+- **Fixed: a kept layer was swept by the next `cig run`.** The sweep of
+  dead runs' layers took kept ones too, so `cig box apply` found nothing
+  once any other script had run. Only layers a run never got to apply are
+  swept now.
 - **The proxy:** a name or `*.suffix` in `allow_hosts` means port 443
   (`host:port` for any other); a name admitted by a wildcard that resolves
   to loopback, a private or a link-local address is refused; a host a hop
