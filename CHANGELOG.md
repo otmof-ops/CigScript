@@ -35,6 +35,9 @@ the machine can be written (#106; for cig-orchestrator's rehearsal, its
 - **`cig box discard`** now takes the layer's record and scratch folder with
   it; `cig runs --prune` and an unburn take a contained hop's scratch folder
   too.
+- **Fixed: `proc.shell` dropped a boxed hop's layer.** It gives back the
+  layer and the judgement as `proc.run` does (since 1.11.0 a shell hop with
+  `apply: "never"` kept its layer without saying where).
 
 ## 1.11.2 — 2026-11-05
 

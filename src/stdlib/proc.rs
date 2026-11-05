@@ -2409,19 +2409,7 @@ fn run(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let o = Options::parse(a, 2, "proc.run", s, None)?;
     match hop(i, "proc.run", &cmd, &args, &o, s)? {
         None => Ok(result_map(0, "", "", 0, true)),
-        Some((raw, out, err)) => {
-            let value = result_map(raw.code, &out, &err, raw.duration_ms, false);
-            if let Value::Map(m) = &value {
-                if let Some(layer) = &raw.layer {
-                    m.borrow_mut()
-                        .insert("layer".to_string(), Value::str(layer));
-                }
-                if let Some(j) = &raw.judged {
-                    j.insert(&mut m.borrow_mut());
-                }
-            }
-            Ok(value)
-        }
+        Some((raw, out, err)) => Ok(hop_value(&raw, &out, &err)),
     }
 }
 
@@ -2567,8 +2555,24 @@ fn shell(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     args.push(script.clone());
     match hop(i, "proc.shell", &cmd, &args, &o, s)? {
         None => Ok(result_map(0, "", "", 0, true)),
-        Some((raw, out, err)) => Ok(result_map(raw.code, &out, &err, raw.duration_ms, false)),
+        Some((raw, out, err)) => Ok(hop_value(&raw, &out, &err)),
     }
+}
+
+/// A hop's result as `proc.run` and `proc.shell` give it: the exit code and
+/// the output, and for a boxed hop the layer it kept and its judgement.
+fn hop_value(raw: &Raw, out: &str, err: &str) -> Value {
+    let value = result_map(raw.code, out, err, raw.duration_ms, false);
+    if let Value::Map(m) = &value {
+        if let Some(layer) = &raw.layer {
+            m.borrow_mut()
+                .insert("layer".to_string(), Value::str(layer));
+        }
+        if let Some(j) = &raw.judged {
+            j.insert(&mut m.borrow_mut());
+        }
+    }
+    value
 }
 
 /// `proc.pipe([[cmd, args...], ...], opts)`: stages connected stdout to

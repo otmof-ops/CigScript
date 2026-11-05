@@ -5590,6 +5590,27 @@ fn a_contained_hop_that_fails_keeps_its_layer_as_evidence() {
     assert!(list.contains("exit 3"), "{list}");
 }
 
+/// `proc.shell` gives back what `proc.run` does for a boxed hop: the layer
+/// it kept and its judgement.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_boxed_shell_hop_returns_its_layer_and_judgement() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  stick r = proc.shell(\"echo x > stray.txt\", {cwd: \"p\", box: {apply: \"never\", expect: [\"made.txt\"]}})\n  fs.write_text(\"p/shell.txt\", str(r.layer != null) + \" \" + r.outside.map(pack(u) => u.path).join(\",\"))\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if fell_back(&err) {
+        allow_fallback(&err);
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    assert_eq!(sb.read("p/shell.txt"), "true stray.txt", "{err}");
+}
+
 /// `contain` asks for a network of the hop's own and its own PID namespace:
 /// the machine's network would reach services on this machine.
 #[cfg(target_os = "linux")]
