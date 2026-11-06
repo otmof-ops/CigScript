@@ -3,6 +3,23 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.13.2 — 2026-11-06
+
+- **Every run starts in milliseconds again, however long the history.**
+  Before each run cig looks up the script's last good version, and that
+  read every run's journal in full: on a machine with about a thousand
+  runs, each start took two seconds (fifteen on a debug build). The lookup
+  now reads each run's record alone, which holds everything it needs; a
+  trivial run on that machine starts in 0.05 s.
+- **No writes reported that the hop did not make.** A link inside the pack
+  that leads outside it is watched for writes through it, shallowly. A
+  link to the pack's own ancestors (a Wine prefix's `z:` leads to `/`) made
+  cig watch the whole machine, and the system's own writes (`/var/log`,
+  `/proc`) and the shallow walk's cap read as the hop's: hundreds of paths
+  under `/etc` reported as `E752` for a hop that wrote nothing. Such a link
+  is no longer watched, nor one into `/proc`, `/sys`, `/dev` or `/run`, and
+  past the shallow walk's cap only what both walks saw is compared.
+
 ## 1.13.1 — 2026-11-06
 
 - **A box with no pack is never a silent no-op.** In a script that
