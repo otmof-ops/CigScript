@@ -352,14 +352,19 @@ fn a_program_takes_its_run_flags_and_refuses_a_mistyped_one() {
 #[test]
 fn a_program_does_not_lint_itself_on_every_start() {
     let s = Sandbox::new();
-    // An unused binding is a warning for the checker, never an error.
+    // An effect in a function, outside any burn: a warning, never an error.
     s.write(
         "lint.cig",
-        "pull f() {\n  stick unused = 1\n  snuff 2\n}\nexhale f()\n",
+        "pull f() {\n  fs.write_text(\"x.txt\", \"y\")\n}\nexhale \"ok\"\n",
     );
     let exe = s.compile("lint", "lint.cig");
     let c = s.cig(&["run", "lint.cig"]);
     let p = s.prog(&exe, &[]);
+    assert!(
+        text(&c.stderr).contains("warning["),
+        "cig run gave no warning to compare against: {}",
+        text(&c.stderr)
+    );
     assert_eq!(c.status.code(), p.status.code());
     assert_eq!(text(&c.stdout), text(&p.stdout));
     assert!(!text(&p.stderr).contains("warning["), "{}", text(&p.stderr));
