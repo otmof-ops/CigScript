@@ -593,6 +593,14 @@ proc.run("npm", ["ci"], {box: {
   run a kept layer belongs to drops it too: the base it was made against is
   gone. The record that keeps a layer lives under the run's `kept/`, not
   beside the layer, where the hop could have planted one.
+- **A copy for another tool, in the tin.** `cig tin keep <file> --label <l>
+  [--name <n>]` keeps a sealed copy of a file under the caller's label, and
+  `cig tin give --label <l> --name <n>` prints it back. Each keep is a line
+  in the ledger, so a copy deleted from the tin (the record or the object)
+  is missed: `give` exits 4 and says when it was kept, where a name never
+  kept exits 1. `cig tin gc` leaves kept copies alone. cig-orchestrator
+  keeps the last blacklist it verified and its hook's entry there, so
+  deleting the file they back does not take them out of force.
 - **A key for another tool's records.** `cig tin mac <file> --label <l>`
   prints a MAC over the file under a subkey of the tin's key derived for
   that label; `--check <hex>` verifies one. cig-orchestrator signs its trust
@@ -664,7 +672,13 @@ if r.outside.is_empty() { proc.apply_layer(r.layer) } else { proc.discard_layer(
   the run unburns it like any other; only while the layer still holds
   exactly what it held when it was judged (a digest of every change is
   kept with it), and `E782` otherwise. `proc.discard_layer(r.layer)` drops
-  one. The home layer is never applied: it goes with the rest.
+  one. The home layer is never applied with it, only by name:
+  `proc.apply_layer(r.layer, {home: ["~/.cache/**", "~/.config/tool/**"]})`
+  also places the home writes those globs name (a tool's cache, its own
+  config), checked against a digest of the home layer taken when it was
+  judged (`E782` when it changed). They are outside the pack, so they are
+  placed as they are, not journaled, and named in the result's `home`; the
+  rest of the home layer goes with the layer.
 - **`quiet: true`.** A script that reads the layer, `outside`, `refused`
   and `changed` itself and says what they mean in its own words (a guard
   rating what a package did) leaves out cig's own lines about the layer:

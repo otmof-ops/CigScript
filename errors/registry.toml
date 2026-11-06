@@ -1409,6 +1409,21 @@ probe = "none"
 remedy = "cigo blacklist reload once you have read the change"
 
 [[code]]
+code = "E588"
+title = "the blacklist file is gone"
+meaning = "A blacklist file, or its signature, was deleted. Its entries still count in full, from the copy cigo keeps in the tin, and every guarded call says so until cigo blacklist reload puts the file back or signs its removal: an empty or missing list never takes entries out. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json."
+fix = "cigo blacklist reload, at a terminal, puts the file back from the tin"
+no = "these-are-mine"
+arises = ["run", "check"]
+tags = ["orchestrator"]
+since = "1.14.0"
+related = ["E580", "E587"]
+[[code.cause]]
+why = "mine.list or mine.list.mac was removed outside cigo blacklist (cig-orchestrator #80)"
+probe = "none"
+remedy = "cigo blacklist reload"
+
+[[code]]
 code = "E604"
 title = "chain lights itself"
 meaning = "A chain is a step of itself, directly or through other chains; lighting it would never end."
@@ -2589,33 +2604,33 @@ remedy = "cigo guard shows the level and when the pause ends"
 
 [[code]]
 code = "E897"
-title = "level 5 blocked a program"
-meaning = "At guard_scope system, a program marked as downloaded and known to nothing on this machine was stopped before it started. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json."
-fix = "cigo rehearse <path>; a clean rehearsal lets it start"
-no = "none"
+title = "the agent went for the guard"
+meaning = "An AI agent's command (or a file it would write) would change the guard's own files: Claude Code's settings where the hook lives, cigscript's config and blacklists, the tin and cig's state, cig's and cigo's own install folders, the shims on PATH, or a PATH line in a startup file. It is refused, and no approval applies it. Risk: critical. Reserved for guard_scope's level 5 until cig 1.14.0, never reported for it. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json."
+fix = "nothing to do: nothing ran; if you meant the change, make it yourself, outside the agent"
+no = "these-are-mine"
 arises = ["run"]
-tags = ["planned"]
+tags = ["orchestrator"]
 since = "1.13.0"
-related = ["E893"]
+related = ["E895", "E879"]
 [[code.cause]]
-why = "an unknown downloaded program started (guard_scope system)"
+why = "an agent's command or file write named the guard's own files (cig-orchestrator #80)"
 probe = "none"
-remedy = "cigo guard log names the program and its hash"
+remedy = "cigo agent log shows the command and its session"
 
 [[code]]
 code = "E898"
-title = "a suspicious launch chain"
-meaning = "A program that does not start shells or interpreters (a browser, a mail or chat app, a document viewer) just started one: the shape of an exploited program running its payload. The child runs boxed and rehearsed. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json."
-fix = "cigo guard log shows the chain; nothing it did is real until the rehearsal says so"
-no = "none"
+title = "a rehearsal that could not see"
+meaning = "A rehearsal found nothing, but the box it ran in does not report what the code read or which connections it tried, so finding nothing is not evidence of nothing: the verdict is low, not none, and it is not kept. Risk: low. Reserved for guard_scope's level 5 until cig 1.14.0, never reported for it. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json."
+fix = "nothing to do: it runs where low runs, and is rehearsed again each time until cig's box watches reads and connections"
+no = "cant-see-any"
 arises = ["run"]
-tags = ["planned"]
+tags = ["orchestrator"]
 since = "1.13.0"
-related = ["E897"]
+related = ["E871", "E872"]
 [[code.cause]]
-why = "a parent-chain rule matched (guard_scope system)"
+why = "the rehearsal's box reports writes, not reads or refused connections (CigScript #106)"
 probe = "none"
-remedy = "cigo guard log shows the launcher and the child"
+remedy = "cig update once the box gains the watch; a new cig voids kept verdicts"
 
 [[code]]
 code = "E899"

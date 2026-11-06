@@ -5614,6 +5614,58 @@ fn a_box_without_a_pack_is_refused_when_isolated_and_said_when_plain() {
     assert_eq!(sb.read("plain.txt"), "x\n");
 }
 
+/// A contained hop's home writes are never applied with its layer, unless
+/// the script names them: `proc.apply_layer(layer, {home: [...]})` places
+/// what the globs name (outside the pack, so not journaled) and leaves the
+/// rest, and a home layer changed after it was judged applies nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_contained_hops_home_writes_apply_only_by_name_and_only_as_judged() {
+    let sb = Sandbox::new();
+    let home = sb.path().join("h");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join(".bashrc"), "orig\n").unwrap();
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    let hop = "mkdir -p \\\"$HOME/.cache/tool\\\" && echo c > \\\"$HOME/.cache/tool/a.txt\\\"; echo x >> \\\"$HOME/.bashrc\\\"; echo made > made.txt";
+    sb.write(
+        "s.cig",
+        &format!("pack {{ \"./p\" }}\nburn {{\n  stick r = proc.run(\"sh\", [\"-c\", \"{hop}\"], {{cwd: \"p\", box: {{network: \"off\", contain: true, apply: \"never\", quiet: true, expect: [\"made.txt\"]}}}})\n  stick done = proc.apply_layer(r.layer, {{home: [\"~/.cache/**\"]}})\n  fs.write_text(\"p/home.txt\", done.home.join(\",\"))\n}}\n"),
+    );
+    let out = sb.cig_env(&["run", "s.cig"], &[("HOME", home.to_str().unwrap())]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    if !contain_expected_here() {
+        assert!(err.contains("E777") || out.status.success(), "{err}");
+        return;
+    }
+    assert!(out.status.success(), "{err}");
+    assert_eq!(sb.read("p/made.txt"), "made\n", "{err}");
+    assert_eq!(
+        fs::read_to_string(home.join(".cache/tool/a.txt")).unwrap(),
+        "c\n",
+        "{err}"
+    );
+    assert_eq!(
+        fs::read_to_string(home.join(".bashrc")).unwrap(),
+        "orig\n",
+        "{err}"
+    );
+    assert!(sb.read("p/home.txt").contains(".cache/tool/a.txt"), "{err}");
+    // Changed after it was judged: nothing of the home is applied.
+    fs::remove_dir_all(home.join(".cache")).unwrap();
+    sb.write(
+        "t.cig",
+        &format!("pack {{ \"./p\" }}\nburn {{\n  stick r = proc.run(\"sh\", [\"-c\", \"{hop}\"], {{cwd: \"p\", box: {{network: \"off\", contain: true, apply: \"never\", quiet: true, expect: [\"made.txt\"]}}}})\n  stick run = cig.run_id()\n  proc.run(\"sh\", [\"-c\", \"for f in /var/tmp/cig-box-*-\" + run + \"-*/home-upper/.cache/tool/a.txt /tmp/cig-box-*-\" + run + \"-*/home-upper/.cache/tool/a.txt; do [ -f \\\"$f\\\" ] && echo tampered > \\\"$f\\\"; done; true\"])\n  try {{\n    proc.apply_layer(r.layer, {{home: [\"~/.cache/**\"]}})\n  }} ashtray e {{\n    fs.write_text(\"p/refused.txt\", e.message)\n  }}\n}}\n"),
+    );
+    let out = sb.cig_env(&["run", "t.cig"], &[("HOME", home.to_str().unwrap())]);
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        sb.read("p/refused.txt")
+            .contains("changed since they were judged"),
+        "{err}"
+    );
+    assert!(!home.join(".cache/tool/a.txt").exists(), "{err}");
+}
+
 /// `quiet: true`: a script that reads the layer and says what it means
 /// itself gets the same result, without cig's own lines about the layer.
 #[cfg(target_os = "linux")]
@@ -10088,4 +10140,98 @@ fn doors_to_the_whole_machine_or_past_the_cap_report_no_writes_the_hop_did_not_m
     assert!(!err.contains("/proc/"), "{err}");
     assert!(!err.contains("/b/f"), "{err}");
     assert_eq!(sb.read("p/here.txt"), "kept\n");
+}
+
+/// `cig tin keep` and `cig tin give`: a copy another tool keeps in the tin
+/// comes back as it was kept, survives `cig tin gc`, and once the ledger
+/// has a keep, a copy deleted from the tin is missed (exit 4), never taken
+/// for nothing kept (exit 1).
+#[test]
+fn a_kept_copy_comes_back_survives_gc_and_is_missed_when_deleted() {
+    let sb = Sandbox::new();
+    sb.write("mine.list", "npm:evil\n");
+    let keep = sb.cig(&["tin", "keep", "mine.list", "--label", "cigo-blacklist"]);
+    assert!(
+        keep.status.success(),
+        "{}",
+        String::from_utf8_lossy(&keep.stderr)
+    );
+    let gc = sb.cig(&["tin", "gc"]);
+    assert!(
+        gc.status.success(),
+        "{}",
+        String::from_utf8_lossy(&gc.stderr)
+    );
+    let give = sb.cig(&[
+        "tin",
+        "give",
+        "--label",
+        "cigo-blacklist",
+        "--name",
+        "mine.list",
+    ]);
+    assert!(
+        give.status.success(),
+        "{}",
+        String::from_utf8_lossy(&give.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&give.stdout), "npm:evil\n");
+    let none = sb.cig(&[
+        "tin",
+        "give",
+        "--label",
+        "cigo-blacklist",
+        "--name",
+        "other",
+    ]);
+    assert_eq!(none.status.code(), Some(1));
+    let record = sb
+        .home()
+        .join("tin")
+        .join("keeps")
+        .join("cigo-blacklist")
+        .join("mine.list.json");
+    let record = if record.is_file() {
+        record
+    } else {
+        // wherever this cig keeps the tin, the record is the one json under keeps/
+        let mut found = None;
+        for e in walk(&sb.home()) {
+            if e.ends_with("cigo-blacklist/mine.list.json") {
+                found = Some(e);
+            }
+        }
+        found.expect("the keep's record")
+    };
+    fs::remove_file(&record).unwrap();
+    let gone = sb.cig(&[
+        "tin",
+        "give",
+        "--label",
+        "cigo-blacklist",
+        "--name",
+        "mine.list",
+    ]);
+    assert_eq!(
+        gone.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&gone.stderr)
+    );
+    assert!(String::from_utf8_lossy(&gone.stderr).contains("the ledger says mine.list was kept"));
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                out.extend(walk(&p));
+            } else {
+                out.push(p);
+            }
+        }
+    }
+    out
 }

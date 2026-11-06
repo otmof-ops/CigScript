@@ -101,7 +101,7 @@ Reads are free; anything that changes a file is a **burn**, snapshotted before a
 | `proc.pipe` | 1-2 | **burn** |
 | `proc.shell` | 1-2 | **burn** |
 | `proc.which` | 1 | read |
-| `proc.apply_layer` | 1 | **burn** |
+| `proc.apply_layer` | 1-2 | **burn** |
 | `proc.discard_layer` | 1 | **burn** |
 
 ## time
