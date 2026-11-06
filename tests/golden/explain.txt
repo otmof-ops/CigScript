@@ -2223,7 +2223,7 @@ E807 pinned version not available  (usage, usage family, since 1.2.0)
      remedy: write `# cig 1.1` (any 1.1.x), `# cig 1.1.2` (exactly) or `# cig >=1.1.2` under the shebang; `.cig-version` takes the same
   3. no release of that version exists for this platform
      probe: release-manifest (the cached release manifest and the checksum file for the asset)
-     remedy: build it: cargo install --git https://github.com/otmof-ops/CigScript --tag v<version> --root ~/.cigscript/humidor/<version>
+     remedy: build it: cargo install --git https://github.com/otmof-ops/cig-script --tag v<version> --root ~/.cigscript/humidor/<version>
 
   arises in: run, check, light, any  ·  related: E808
 

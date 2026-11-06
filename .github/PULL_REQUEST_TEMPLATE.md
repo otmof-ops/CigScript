@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript) -->
+<!-- SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script) -->
 <!-- SPDX-License-Identifier: CC-BY-4.0 -->
 
 ## What broke, or what was missing

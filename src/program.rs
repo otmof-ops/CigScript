@@ -1,9 +1,9 @@
-// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Programs: a script appended to the `cig` that runs it.
 //!
-//! CigCompile's first back end (otmof-ops/cigcompile#2, stage A) makes a
+//! CigCompile's first back end (otmof-ops/cig-compile#2, stage A) makes a
 //! program by appending a checked script to the `cig` binary of the same
 //! version, built for the machine it is meant for. At start-up `cig` looks
 //! at its own end: when a program is there, it runs that program through
@@ -26,7 +26,7 @@
 //! The sha256s are integrity, not authenticity: they catch a damaged or
 //! truncated program, not an edited one (anyone can recompute them), and
 //! the runtime half is not covered. Programs are unsigned until
-//! cigcompile#10.
+//! cig-compile#10.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

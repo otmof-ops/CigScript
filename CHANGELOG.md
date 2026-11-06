@@ -3,6 +3,14 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+- **The repository is otmof-ops/cig-script**, named like the rest of the cig
+  family (cig-orchestrator, cig-compile, cig-os). It was otmof-ops/CigScript;
+  GitHub redirects the old name for the web, git, the API and release
+  downloads, so an installed cig keeps updating. `cig update`, reports and
+  the install scripts now name the new one.
+
 ## 1.15.0 — 2026-11-07
 
 Compiled programs, the first stage of cigcompile (otmof-ops/cigcompile#2).

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Compiled programs (src/program.rs, docs/PROGRAMS.md): a script appended

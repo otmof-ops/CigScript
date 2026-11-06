@@ -1,10 +1,10 @@
 #!/bin/sh
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 # CigScript installer. POSIX sh, no sudo, asks before installing anything.
 #
 #   Review first (recommended):
-#     curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.0/install.sh -o install.sh
+#     curl -fsSL https://raw.githubusercontent.com/otmof-ops/cig-script/v1.6.0/install.sh -o install.sh
 #     less install.sh && sh install.sh
 #
 #   Options:
@@ -20,7 +20,7 @@
 
 set -u
 
-REPO="otmof-ops/CigScript"
+REPO="otmof-ops/cig-script"
 VERSION=""
 PREFIX="${HOME}/.local/bin"
 FROM_SOURCE=0

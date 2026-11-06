@@ -1,5 +1,5 @@
 #!/usr/bin/env cig
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: CC0-1.0
 # Read a CSV of expenses, total it per category, write a JSON report.
 #

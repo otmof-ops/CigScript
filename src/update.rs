@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 // SPDX-License-Identifier: Apache-2.0
 
 //! Self-update from GitHub releases, through `gh` or `curl`.
@@ -17,7 +17,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub const DEFAULT_REPO: &str = "otmof-ops/CigScript";
+pub const DEFAULT_REPO: &str = "otmof-ops/cig-script";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version(pub u64, pub u64, pub u64);

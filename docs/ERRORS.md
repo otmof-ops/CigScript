@@ -2120,7 +2120,7 @@ The script pins a cig version this cig is not, and no cig that satisfies the pin
 
 1. the pinned version was never fetched and there is no network (no probe; a suggestion, not a finding). **Remedy:** cig versions add <version> when online; the humidor keeps it after that
 2. the pin cannot be read: not a version, or a constraint cig does not know (no probe; a suggestion, not a finding). **Remedy:** write `# cig 1.1` (any 1.1.x), `# cig 1.1.2` (exactly) or `# cig >=1.1.2` under the shebang; `.cig-version` takes the same
-3. no release of that version exists for this platform (probe `release-manifest`). **Remedy:** build it: cargo install --git https://github.com/otmof-ops/CigScript --tag v<version> --root ~/.cigscript/humidor/<version>
+3. no release of that version exists for this platform (probe `release-manifest`). **Remedy:** build it: cargo install --git https://github.com/otmof-ops/cig-script --tag v<version> --root ~/.cigscript/humidor/<version>
 
 Related: `E808`.
 

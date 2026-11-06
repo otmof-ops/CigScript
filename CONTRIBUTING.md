@@ -17,7 +17,7 @@ to attach it after you've read it; `cig report <run> --send` files it for
 you, through the ashtray, as an issue labelled `report`. The run record
 under `~/.cigscript/runs/<id>/` has the journal and the snapshots if more is
 needed. Use the [cheat issue
-template](https://github.com/otmof-ops/CigScript/issues/new?template=cheat.yml).
+template](https://github.com/otmof-ops/cig-script/issues/new?template=cheat.yml).
 
 cig also reports its own bugs: a crash, an internal error, or a tripwire
 that found one of its promises broken after the work. Every such report
@@ -123,6 +123,6 @@ means, the manual's name. Rules, from the lexicon itself:
 5. **Never smug, never on trial.**
 
 The lexicon's gap list is an open invitation; the [coined-a-term
-template](https://github.com/otmof-ops/CigScript/issues/new?template=coined-a-term.yml)
+template](https://github.com/otmof-ops/cig-script/issues/new?template=coined-a-term.yml)
 requires the manual's name. A vernacular term used in any doc must resolve to
 a lexicon entry; `tests/docs.rs` checks the README's table.

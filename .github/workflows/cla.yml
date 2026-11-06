@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 #
 # Contributor licence agreement check (CLA Assistant Lite). A pull request
@@ -34,6 +34,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           path-to-signatures: .github/CLA/signatures.json
-          path-to-document: https://github.com/otmof-ops/CigScript/blob/main/.github/CLA/ICLA.md
+          path-to-document: https://github.com/otmof-ops/cig-script/blob/main/.github/CLA/ICLA.md
           branch: main
           allowlist: otmof-ops,bot*

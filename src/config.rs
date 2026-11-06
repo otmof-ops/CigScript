@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 // SPDX-License-Identifier: Apache-2.0
 
 //! `~/.cigscript/config`: a few `key = value` lines. No dependency, no
@@ -33,7 +33,7 @@ pub const KEYS: &[(&str, &str, &str)] = &[
     ),
     (
         "issues_repo",
-        "otmof-ops/CigScript",
+        "otmof-ops/cig-script",
         "GitHub repository that receives crash reports (owner/name)",
     ),
     (

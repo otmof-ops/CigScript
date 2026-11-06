@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 # literals, arithmetic, strings, collections
 exhale 1 + 2 * 3, 7 / 2, 8 / 2, 7 % 3, -5, 2.5 * 2, 1_000 + 1

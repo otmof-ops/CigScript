@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 """Regenerate docs/ERRORS.md and docs/diagnostic.schema.json from the registry.
 

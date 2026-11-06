@@ -1,16 +1,16 @@
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 # CigScript installer for Windows. Downloads a binary release, verifies its
 # sha256 (and the gh attestation when gh is on PATH), and offers to add the
 # install directory to the user's PATH. No admin rights required.
 #
 #   Review first (recommended):
-#     irm https://raw.githubusercontent.com/otmof-ops/CigScript/v1.6.0/install.ps1 -OutFile install.ps1
+#     irm https://raw.githubusercontent.com/otmof-ops/cig-script/v1.6.0/install.ps1 -OutFile install.ps1
 #     notepad install.ps1 ; .\install.ps1
 #
 #   One-liner (reads CIG_VERSION, CIG_PREFIX, CIG_NO_MODIFY_PATH, CIG_YES from
 #   the environment because `iex` cannot pass parameters):
-#     irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
+#     irm https://raw.githubusercontent.com/otmof-ops/cig-script/main/install.ps1 | iex
 #
 #   Options:
 #     -Version vX.Y.Z    install this release (default: the newest stable release)
@@ -39,7 +39,7 @@ if (-not $Prefix) {
 if (-not $NoModifyPath -and $env:CIG_NO_MODIFY_PATH) { $NoModifyPath = $true }
 if (-not $Yes -and $env:CIG_YES) { $Yes = $true }
 
-$Repo = 'otmof-ops/CigScript'
+$Repo = 'otmof-ops/cig-script'
 
 function Say([string]$m) { Write-Host $m }
 function Fail([string]$m) {

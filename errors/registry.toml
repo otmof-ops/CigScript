@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 #
 # The CigScript error-code registry: the one place a code is defined.
@@ -135,7 +135,7 @@ family = "internal"
 kind = "internal"
 meaning = "internal: a bug in CigScript itself"
 
-# ----- the four-digit families: cigcompile and CigarScript (cigcompile#11) --
+# ----- the four-digit families: cigcompile and CigarScript (cig-compile#11) --
 # A four-digit code's kind is its range's; the first-digit rule above is
 # the three-digit codes'. Codes compare by number, never as text.
 
@@ -2233,7 +2233,7 @@ remedy = "write `# cig 1.1` (any 1.1.x), `# cig 1.1.2` (exactly) or `# cig >=1.1
 [[code.cause]]
 why = "no release of that version exists for this platform"
 probe = "release-manifest"
-remedy = "build it: cargo install --git https://github.com/otmof-ops/CigScript --tag v<version> --root ~/.cigscript/humidor/<version>"
+remedy = "build it: cargo install --git https://github.com/otmof-ops/cig-script --tag v<version> --root ~/.cigscript/humidor/<version>"
 
 [[code]]
 code = "E808"
