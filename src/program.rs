@@ -55,9 +55,9 @@ pub static RUNTIME_MARK: &str = concat!("\0cig-runtime-version=", env!("CARGO_PK
 /// for a binary without the mark (a cig before 1.15.0, or not a cig).
 pub fn runtime_version(bytes: &[u8]) -> Option<String> {
     let needle = b"\0cig-runtime-version=";
-    let mut from = 0;
-    while let Some(at) = find(&bytes[from..], needle) {
-        let start = from + at + needle.len();
+    // memchr's SIMD search: an 11 MB runtime is read in about a millisecond.
+    for at in memchr::memmem::find_iter(bytes, needle) {
+        let start = at + needle.len();
         let rest = &bytes[start..bytes.len().min(start + 32)];
         if let Some(end) = rest.iter().position(|b| *b == 0) {
             let v = &rest[..end];
@@ -70,13 +70,8 @@ pub fn runtime_version(bytes: &[u8]) -> Option<String> {
                 return Some(String::from_utf8_lossy(v).to_string());
             }
         }
-        from = start;
     }
     None
-}
-
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    hay.windows(needle.len()).position(|w| w == needle)
 }
 
 static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

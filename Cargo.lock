@@ -421,6 +421,7 @@ dependencies = [
  "indexmap",
  "keyring",
  "libc",
+ "memchr",
  "regex",
  "serde",
  "serde_json",

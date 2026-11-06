@@ -25,6 +25,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 indexmap = { version = "2", features = ["serde"] }
 regex = "1"
+memchr = "2"
 globset = "0.4"
 walkdir = "2"
 sha2 = "0.10"
