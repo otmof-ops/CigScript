@@ -912,6 +912,11 @@ pub fn referenced() -> HashSet<PathBuf> {
             }
         }
     }
+    // What another tool keeps here (`cig tin keep`) is referred to by its
+    // record, whatever the runs say.
+    for k in kept_copies() {
+        out.insert(k.object);
+    }
     out
 }
 
@@ -1436,5 +1441,168 @@ mod tests {
             assert!(object.is_file());
             assert_eq!(objects().len(), 1);
         });
+    }
+}
+
+/// A copy another tool keeps in the tin under a label of its own (`cig tin
+/// keep`): the last list it verified, the entry it wrote somewhere else. The
+/// bytes are a sealed object, the record names it, and the ledger has a
+/// line for each keep, so a copy deleted along with the file it backs is
+/// missed rather than forgotten.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct KeptCopy {
+    pub label: String,
+    pub name: String,
+    pub sha256: String,
+    pub object: PathBuf,
+    pub bytes: u64,
+    pub at: String,
+}
+
+pub fn keeps_dir() -> PathBuf {
+    dir().join("keeps")
+}
+
+fn keep_record(label: &str, name: &str) -> PathBuf {
+    keeps_dir().join(label).join(format!("{name}.json"))
+}
+
+/// A label or a name a keep may use: letters, digits, dashes and dots
+/// (not leading), up to 64.
+pub fn good_keep_word(w: &str) -> bool {
+    !w.is_empty()
+        && w.len() <= 64
+        && !w.starts_with('.')
+        && w.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
+}
+
+/// Every copy kept in the tin, as their records say.
+pub fn kept_copies() -> Vec<KeptCopy> {
+    let mut out = Vec::new();
+    let Ok(labels) = fs::read_dir(keeps_dir()) else {
+        return out;
+    };
+    for l in labels.flatten() {
+        let Ok(names) = fs::read_dir(l.path()) else {
+            continue;
+        };
+        for n in names.flatten() {
+            if let Ok(text) = fs::read_to_string(n.path()) {
+                if let Ok(k) = serde_json::from_str::<KeptCopy>(&text) {
+                    out.push(k);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Keep a sealed copy of `file` under `label` and `name`, replacing the one
+/// kept before, and say so in the ledger.
+pub fn keep_copy(file: &Path, label: &str, name: &str) -> io::Result<KeptCopy> {
+    if !good_keep_word(label) || !good_keep_word(name) {
+        return Err(io::Error::other(
+            "a label and a name are letters, digits, dashes, dots and underscores, up to 64",
+        ));
+    }
+    let meta = fs::metadata(file)?;
+    if !meta.is_file() {
+        return Err(io::Error::other(format!(
+            "{} is not a file",
+            file.display()
+        )));
+    }
+    let st = prepare_sealed(file)?.commit()?;
+    let rec = KeptCopy {
+        label: label.to_string(),
+        name: name.to_string(),
+        sha256: st.sha256.clone(),
+        object: st.object.clone(),
+        bytes: st.bytes,
+        at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    };
+    let path = keep_record(label, name);
+    let parent = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    fs::create_dir_all(&parent)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(keeps_dir(), fs::Permissions::from_mode(0o700));
+        let _ = fs::set_permissions(&parent, fs::Permissions::from_mode(0o700));
+    }
+    let tmp = parent.join(format!(".{name}.tmp"));
+    let _ = fs::remove_file(&tmp);
+    fs::write(
+        &tmp,
+        serde_json::to_string_pretty(&rec).map_err(io::Error::other)?,
+    )?;
+    fs::rename(&tmp, &path)?;
+    super::ledger::append(
+        "keep",
+        &format!("{label}/{name}"),
+        &st.sha256,
+        "kept",
+        st.bytes,
+    )
+    .map_err(io::Error::other)?;
+    Ok(rec)
+}
+
+/// What `cig tin give` finds for a label and a name.
+pub enum Given {
+    /// The copy, as it was kept.
+    Copy(Vec<u8>, KeptCopy),
+    /// Nothing was ever kept under that name.
+    Nothing,
+    /// The ledger says a copy was kept, and the tin no longer holds it as
+    /// kept (the record or the object is gone, or does not match).
+    Gone(String),
+}
+
+pub fn give_copy(label: &str, name: &str) -> Given {
+    let last = super::ledger::load().ok().and_then(|l| {
+        l.lines
+            .iter()
+            .rev()
+            .find(|x| x.kind == "keep" && x.run == format!("{label}/{name}"))
+            .cloned()
+    });
+    let rec = fs::read_to_string(keep_record(label, name))
+        .ok()
+        .and_then(|t| serde_json::from_str::<KeptCopy>(&t).ok());
+    let Some(rec) = rec else {
+        return match last {
+            Some(l) => Given::Gone(format!(
+                "the ledger says {name} was kept under {label} on {}, and the tin no longer holds its record",
+                l.t
+            )),
+            None => Given::Nothing,
+        };
+    };
+    if let Some(l) = &last {
+        if l.head != rec.sha256 {
+            return Given::Gone(format!(
+                "the record of {name} under {label} names other bytes than the ledger's last keep ({})",
+                l.t
+            ));
+        }
+    } else {
+        return Given::Gone(format!(
+            "the record of {name} under {label} has no keep in the ledger: it was not written by cig tin keep"
+        ));
+    }
+    let tmp = std::env::temp_dir().join(format!(
+        "cig-give-{}-{}",
+        std::process::id(),
+        rec.sha256.get(..12).unwrap_or("x")
+    ));
+    let got = materialize(&rec.object, &rec.sha256, &tmp).and_then(|()| fs::read(&tmp));
+    let _ = fs::remove_file(&tmp);
+    match got {
+        Ok(bytes) => Given::Copy(bytes, rec),
+        Err(e) => Given::Gone(format!(
+            "the tin no longer holds the copy of {name} under {label} as it was kept: {e}"
+        )),
     }
 }

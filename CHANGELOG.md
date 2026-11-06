@@ -3,6 +3,35 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.14.0 — 2026-11-06
+
+What cig-orchestrator needs to close the holes found testing it
+(cig-orchestrator #80).
+
+- **A contained hop's home writes, applied by name.** The home layer of a
+  contained hop was never applied. `proc.apply_layer(layer, {home:
+  ["~/.cache/**"]})` now also places the home writes the globs name (a
+  tool's cache, its own config), so a guard can box an agent's command,
+  keep its writes to startup files and the guard's own files from landing,
+  and still let the rest through. They are checked against a digest of the
+  home layer taken when it was judged (a home layer changed since applies
+  nothing, `E782`), placed outside the pack as they are, and named in the
+  result's `home`.
+- **`cig tin keep` and `cig tin give`.** Another tool keeps a sealed copy
+  of a file in the tin under its own label (the last list it verified, the
+  entry it wrote in someone else's file) and reads it back. Each keep is a
+  line in the ledger, so a copy deleted from the tin is missed (`give`
+  exits 4 and says when it was kept), never taken for nothing kept (exit
+  1); `cig tin gc` leaves kept copies alone.
+- **A hop that only reads: `reads: true`.** Not journaled as a change, so
+  a run of only such hops (a check, a lookup) prints no burn line; the pack
+  is still watched around it, and anything it does change there is
+  journaled as usual.
+- **Codes for #80:** `E588` the blacklist file is gone; `E897` the agent
+  went for the guard; `E898` a rehearsal that could not see. `E897` and
+  `E898` were reserved for guard_scope's level 5 since 1.13.0 and never
+  reported for it; level 5 takes codes of its own when it is built.
+
 ## 1.13.2 — 2026-11-06
 
 - **Every run starts in milliseconds again, however long the history.**

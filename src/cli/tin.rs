@@ -34,6 +34,26 @@ pub enum TinCommand {
         #[arg(long, value_name = "HEX")]
         check: Option<String>,
     },
+    /// Keep a sealed copy of a file in the tin under a label of the caller's: what another tool keeps where the file it backs could be deleted (the last list it verified). The ledger records each keep.
+    Keep {
+        /// The file to keep.
+        file: std::path::PathBuf,
+        /// The caller's label: letters, digits, dashes, dots and underscores, up to 64.
+        #[arg(long)]
+        label: String,
+        /// The name it is kept under (default: the file's name).
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// The copy kept under a label and a name, on stdout: exit 1 when nothing was kept, 4 when the ledger says one was and the tin no longer holds it as kept.
+    Give {
+        /// The caller's label.
+        #[arg(long)]
+        label: String,
+        /// The name it was kept under.
+        #[arg(long)]
+        name: String,
+    },
     /// Remove every object no run in the history still refers to.
     Gc {
         /// Also remove sealed objects the tin's key cannot open (sealed under a key that is gone).
@@ -315,6 +335,48 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
                 exit::SCRIPT_ERROR
             }
         }
+        TinCommand::Keep { file, label, name } => {
+            let name = name.unwrap_or_else(|| {
+                file.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
+            match tin::keep_copy(&file, &label, &name) {
+                Ok(k) => {
+                    println!(
+                        "kept {} under {}/{} ({} bytes, sha256 {})",
+                        file.display(),
+                        k.label,
+                        k.name,
+                        k.bytes,
+                        k.sha256
+                    );
+                    exit::OK
+                }
+                Err(e) => {
+                    eprintln!("{} cig tin keep: {e}", ctx.red("error[E803 usage]:"));
+                    exit::USAGE
+                }
+            }
+        }
+        TinCommand::Give { label, name } => match tin::give_copy(&label, &name) {
+            tin::Given::Copy(bytes, _) => {
+                use std::io::Write;
+                let mut out = std::io::stdout().lock();
+                if out.write_all(&bytes).and_then(|()| out.flush()).is_err() {
+                    return exit::SCRIPT_ERROR;
+                }
+                exit::OK
+            }
+            tin::Given::Nothing => {
+                eprintln!("nothing is kept under {label}/{name}");
+                exit::SCRIPT_ERROR
+            }
+            tin::Given::Gone(why) => {
+                eprintln!("{} {why}", ctx.red("error:"));
+                4
+            }
+        },
         TinCommand::Gc { sealed_orphans } => {
             if sealed_orphans {
                 // Without the key nothing opens, and "what nothing opens" would

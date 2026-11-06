@@ -79,6 +79,7 @@ E580-E589  the blacklist: what cig-orchestrator stops wherever it shows up, from
   E585  an entry held for review           runtime  (planned)
   E586  the list is old                    runtime  (planned)
   E587  a list that does not verify        runtime  (cigo)
+  E588  the blacklist file is gone         runtime  (cigo)
 
 E600-E699  raised by the script: cough, assert, chains, process checks
   E600  raised by the script               cough
@@ -170,8 +171,8 @@ E870-E899  what cig-orchestrator's guard found in someone else's code: a rehears
   E894  an agent needs a human             usage  (cigo)
   E895  an agent tried to approve itself   usage  (cigo)
   E896  the guard is paused or off         usage  (cigo)
-  E897  level 5 blocked a program          usage  (planned)
-  E898  a suspicious launch chain          usage  (planned)
+  E897  the agent went for the guard       usage  (cigo)
+  E898  a rehearsal that could not see     usage  (cigo)
   E899  the guard loaded without enforcement usage  (planned)
 
 E900-E999  internal: a bug in CigScript itself
@@ -1373,6 +1374,23 @@ E587 a list that does not verify  (runtime, blacklist family, since 1.12.3)
      remedy: cigo blacklist reload once you have read the change
 
   arises in: run, check  ·  related: E580
+
+======== E588 ========
+E588 the blacklist file is gone  (runtime, blacklist family, since 1.14.0)
+  from cig-orchestrator: its guard reports it, cig itself never does
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A blacklist file, or its signature, was deleted. Its entries still count in full, from the copy cigo keeps in the tin, and every guarded call says so until cigo blacklist reload puts the file back or signs its removal: an empty or missing list never takes entries out. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: cigo blacklist reload, at a terminal, puts the file back from the tin
+
+  known causes, ranked; doctor checks them in this order
+  1. mine.list or mine.list.mac was removed outside cigo blacklist (cig-orchestrator #80)
+     probe: none; a suggestion, not a finding
+     remedy: cigo blacklist reload
+
+  arises in: run, check  ·  related: E580, E587
 
 ======== E604 ========
 E604 chain lights itself  (cough, cough family, since 1.1.0)
@@ -2637,38 +2655,38 @@ E896 the guard is paused or off  (usage, finding family, since 1.13.0)
   arises in: run
 
 ======== E897 ========
-E897 level 5 blocked a program  (usage, finding family, since 1.13.0)
-  planned: reserved for a feature that has not shipped yet
+E897 the agent went for the guard  (usage, finding family, since 1.13.0)
+  from cig-orchestrator: its guard reports it, cig itself never does
 
-  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
 
-  At guard_scope system, a program marked as downloaded and known to nothing on this machine was stopped before it started. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+  An AI agent's command (or a file it would write) would change the guard's own files: Claude Code's settings where the hook lives, cigscript's config and blacklists, the tin and cig's state, cig's and cigo's own install folders, the shims on PATH, or a PATH line in a startup file. It is refused, and no approval applies it. Risk: critical. Reserved for guard_scope's level 5 until cig 1.14.0, never reported for it. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
 
-  what to type next: cigo rehearse <path>; a clean rehearsal lets it start
+  what to type next: nothing to do: nothing ran; if you meant the change, make it yourself, outside the agent
 
   known causes, ranked; doctor checks them in this order
-  1. an unknown downloaded program started (guard_scope system)
+  1. an agent's command or file write named the guard's own files (cig-orchestrator #80)
      probe: none; a suggestion, not a finding
-     remedy: cigo guard log names the program and its hash
+     remedy: cigo agent log shows the command and its session
 
-  arises in: run  ·  related: E893
+  arises in: run  ·  related: E895, E879
 
 ======== E898 ========
-E898 a suspicious launch chain  (usage, finding family, since 1.13.0)
-  planned: reserved for a feature that has not shipped yet
+E898 a rehearsal that could not see  (usage, finding family, since 1.13.0)
+  from cig-orchestrator: its guard reports it, cig itself never does
 
-  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
 
-  A program that does not start shells or interpreters (a browser, a mail or chat app, a document viewer) just started one: the shape of an exploited program running its payload. The child runs boxed and rehearsed. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+  A rehearsal found nothing, but the box it ran in does not report what the code read or which connections it tried, so finding nothing is not evidence of nothing: the verdict is low, not none, and it is not kept. Risk: low. Reserved for guard_scope's level 5 until cig 1.14.0, never reported for it. A finding of cig-orchestrator's guard, registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
 
-  what to type next: cigo guard log shows the chain; nothing it did is real until the rehearsal says so
+  what to type next: nothing to do: it runs where low runs, and is rehearsed again each time until cig's box watches reads and connections
 
   known causes, ranked; doctor checks them in this order
-  1. a parent-chain rule matched (guard_scope system)
+  1. the rehearsal's box reports writes, not reads or refused connections (CigScript #106)
      probe: none; a suggestion, not a finding
-     remedy: cigo guard log shows the launcher and the child
+     remedy: cig update once the box gains the watch; a new cig voids kept verdicts
 
-  arises in: run  ·  related: E897
+  arises in: run  ·  related: E871, E872
 
 ======== E899 ========
 E899 the guard loaded without enforcement  (usage, finding family, since 1.13.0)

@@ -41,6 +41,7 @@ to die in step C.
 | `ok` | the exit-code contract: an int or a list of ints; `null` for none. It wins over `check` whatever the order of the keys |
 | `check` | `true` means the contract `[0]`, `false` none; ignored when `ok` is given |
 | `encoding` | `utf-8` (strict, the default), `lossy`, `latin1`, `utf-16` |
+| `reads` | `true` for a hop that only reads (a check, a lookup): it is not journaled as a change, so a run of such hops prints no burn line. The pack is still watched around it, and anything it does change there is journaled as usual. It takes no `box` or `touches` |
 | `stream` | `true` shows the child's output as it arrives, its stdout on cig's stdout and its stderr on cig's stderr, while still capturing both whole: a long install read live. What is shown is display only; the value, the contract and every rule below are the same as without it |
 | `header`, `sep` | for `proc.csv` |
 

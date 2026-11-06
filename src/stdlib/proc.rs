@@ -46,7 +46,7 @@ pub static TABLE: &[Builtin] = &[
     b("proc.pipe", Effect::Proc, 1, Some(2), pipe),
     b("proc.shell", Effect::Proc, 1, Some(2), shell),
     b("proc.which", Effect::Read, 1, Some(1), which),
-    b("proc.apply_layer", Effect::Write, 1, Some(1), apply_layer),
+    b("proc.apply_layer", Effect::Write, 1, Some(2), apply_layer),
     b(
         "proc.discard_layer",
         Effect::Write,
@@ -96,6 +96,9 @@ struct Options {
     /// Show the child's output as it arrives (stdout on cig's stdout, stderr
     /// on cig's stderr) as well as capturing it: a long install read live.
     stream: bool,
+    /// The hop only reads (a check, a lookup): it is not journaled as a
+    /// change. What it does change in the pack is still seen and journaled.
+    reads: bool,
 }
 
 impl Options {
@@ -122,6 +125,7 @@ impl Options {
             boxed: false,
             box_spec: crate::burn::overlay::BoxSpec::default(),
             stream: false,
+            reads: false,
         };
         let Some(opts) = opt_map(a, index, name, s)? else {
             return Ok(o);
@@ -218,6 +222,7 @@ impl Options {
                 }
                 ("header", v) => o.header = v.truthy(),
                 ("stream", v) => o.stream = v.truthy(),
+                ("reads", v) => o.reads = v.truthy(),
                 ("sep", Value::Str(c)) => {
                     let mut chars = c.chars();
                     match (chars.next(), chars.next()) {
@@ -2031,8 +2036,20 @@ fn hop(
         .at(s)
         .with_hint("declare pack { \".\" } (or the roots the hop writes under) as the first statement"));
     }
+    if o.reads && (o.boxed || !o.touches.is_empty()) {
+        return Err(type_error(format!(
+            "{name}: `reads: true` is for a hop that only reads; it takes no `box` or `touches`"
+        ))
+        .at(s));
+    }
     let mark = i.kernel.mark();
-    if i.effect(name, op, s)? == Decision::Simulate {
+    if o.reads {
+        // Not journaled as a change (nothing of it to undo); the pack is
+        // still watched around it, so anything it does change there is.
+        if !i.burning(name, s)? {
+            return Ok(None);
+        }
+    } else if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
     }
     // The box: the hop writes into a layer over the pack. Where the box
@@ -2416,11 +2433,127 @@ fn e782(name: &str, why: &str) -> Diagnostic {
 /// journaled with their before-states, so the run unburns it like any other;
 /// only while the layer still holds exactly what it held when it was judged.
 /// A contained hop's home layer is never applied: it is dropped with the rest.
+/// The `home` globs of `proc.apply_layer(layer, {home: [...]})`: the
+/// contained hop's home writes to apply, `~/`-relative.
+fn home_globs_of(a: &[Value], name: &str, s: Span) -> Result<Vec<String>, Diagnostic> {
+    let Some(opts) = opt_map(a, 1, name, s)? else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for (k, v) in opts.borrow().iter() {
+        match (k.as_str(), v) {
+            ("home", Value::List(l)) => {
+                for item in l.borrow().iter() {
+                    match item {
+                        Value::Str(g) => {
+                            let g = g.to_string();
+                            let rel = g.strip_prefix("~/").unwrap_or(&g).to_string();
+                            if rel.is_empty()
+                                || rel.starts_with('/')
+                                || rel.split('/').any(|c| c == "..")
+                            {
+                                return Err(type_error(format!(
+                                    "{name}: home glob `{g}` must name paths under the home (`~/.cache/**`)"
+                                ))
+                                .at(s));
+                            }
+                            out.push(rel);
+                        }
+                        other => {
+                            return Err(type_error(format!(
+                                "{name}: `home` holds a {}; want globs as strings",
+                                other.type_name()
+                            ))
+                            .at(s))
+                        }
+                    }
+                }
+            }
+            (other, _) => {
+                return Err(type_error(format!("{name}: unknown option `{other}` (home)")).at(s))
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The changes a contained hop's home layer holds that `globs` name, after
+/// checking the layer still holds what was judged.
+fn home_changes(
+    kept: &crate::burn::overlay::Kept,
+    globs: &[String],
+    name: &str,
+    s: Span,
+) -> Result<Vec<crate::burn::overlay::Change>, Diagnostic> {
+    if globs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some((home, upper)) = crate::burn::overlay::home_layer_of(&kept.dir) else {
+        return Ok(Vec::new());
+    };
+    let Some(judged) = &kept.home_digest else {
+        return Err(e782(
+            name,
+            &format!(
+                "the layer {}/{} kept no record of its home writes as judged, so none of them is applied",
+                kept.run, kept.seq
+            ),
+        )
+        .at(s));
+    };
+    match crate::burn::overlay::home_digest(&kept.dir) {
+        Ok(Some(now)) if &now == judged => {}
+        _ => {
+            return Err(e782(
+                name,
+                &format!(
+                    "the home writes of the layer {}/{} changed since they were judged, so none of them is applied",
+                    kept.run, kept.seq
+                ),
+            )
+            .at(s))
+        }
+    }
+    let mut b = globset::GlobSetBuilder::new();
+    for g in globs {
+        let glob = globset::GlobBuilder::new(g)
+            .literal_separator(true)
+            .build()
+            .map_err(|e| type_error(format!("{name}: home glob `{g}`: {e}")).at(s))?;
+        b.add(glob);
+    }
+    let set = b
+        .build()
+        .map_err(|e| type_error(format!("{name}: {e}")).at(s))?;
+    let all = crate::burn::overlay::changes(&home, &upper).map_err(|e| {
+        e782(
+            name,
+            &format!(
+                "the home layer of {}/{} cannot be read: {e}",
+                kept.run, kept.seq
+            ),
+        )
+        .at(s)
+    })?;
+    Ok(all
+        .into_iter()
+        .filter(|c| {
+            c.real()
+                .strip_prefix(&home)
+                .map(|rel| set.is_match(rel))
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
 fn apply_layer(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic> {
     let name = "proc.apply_layer";
     let kept = this_runs_layer(a, name, s)?;
+    let home_globs = home_globs_of(a, name, s)?;
     let real = i.burning(name, s)?;
     let layers = crate::burn::overlay::layers_of(&kept);
+    // The home writes asked for, checked as judged before anything lands.
+    let home = home_changes(&kept, &home_globs, name, s)?;
     if let Some(d) = &kept.digest {
         match crate::burn::overlay::layer_digest(&layers) {
             Ok(now) if &now == d => {}
@@ -2444,11 +2577,34 @@ fn apply_layer(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic
         }
     }
     let mut m = IndexMap::new();
+    let home_paths = |cs: &[crate::burn::overlay::Change]| -> Value {
+        Value::list(
+            cs.iter()
+                .map(|c| Value::str(crate::crash::tilde(c.real())))
+                .collect(),
+        )
+    };
     if !real {
         m.insert("written".to_string(), Value::Int(kept.written as i64));
         m.insert("removed".to_string(), Value::Int(kept.removed as i64));
+        m.insert("home".to_string(), home_paths(&home));
         m.insert("simulated".to_string(), Value::Bool(true));
         return Ok(Value::map(m));
+    }
+    // The home writes asked for go first (the pack's apply drops the layer,
+    // its home with it): outside the pack, so placed as they are and named
+    // in the result, never journaled (nothing could put them back).
+    let mut placed = Vec::new();
+    for c in home {
+        crate::burn::overlay::place(&c).map_err(|e| {
+            cigscript_burn(format!(
+                "{name}: the home write {} could not be applied: {e}",
+                crate::crash::tilde(c.real())
+            ))
+            .code("E763")
+            .at(s)
+        })?;
+        placed.push(c);
     }
     let applied = i.kernel.box_apply(&layers, &kept.touches_sealed).map_err(|e| {
         cigscript_burn(format!("{name}: {e}"))
@@ -2464,6 +2620,7 @@ fn apply_layer(i: &mut Interp, a: &[Value], s: Span) -> Result<Value, Diagnostic
         "removed".to_string(),
         Value::Int(applied.deleted.len() as i64),
     );
+    m.insert("home".to_string(), home_paths(&placed));
     Ok(Value::map(m))
 }
 

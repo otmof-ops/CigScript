@@ -2014,48 +2014,7 @@ impl Kernel {
                             real.display()
                         )
                     })?;
-                let done: std::io::Result<()> = match &c {
-                    overlay::Change::Dir { mode, .. } => (|| -> std::io::Result<()> {
-                        std::fs::create_dir_all(&real)?;
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            std::fs::set_permissions(
-                                &real,
-                                std::fs::Permissions::from_mode(*mode),
-                            )?;
-                        }
-                        #[cfg(not(unix))]
-                        let _ = mode;
-                        Ok(())
-                    })(),
-                    overlay::Change::Replaced { .. } | overlay::Change::Removed { .. } => {
-                        journal::remove_any_pub(&real)
-                    }
-                    overlay::Change::File { upper, .. } => (|| -> std::io::Result<()> {
-                        if std::fs::symlink_metadata(&real)
-                            .map(|m| !m.is_file())
-                            .unwrap_or(false)
-                        {
-                            journal::remove_any_pub(&real)?;
-                        }
-                        if let Some(parent) = real.parent() {
-                            std::fs::create_dir_all(parent)?;
-                        }
-                        std::fs::copy(upper, &real)?;
-                        let meta = std::fs::metadata(upper)?;
-                        #[cfg(unix)]
-                        std::fs::set_permissions(&real, meta.permissions())?;
-                        if let Some(ns) = journal::mtime_ns(&meta) {
-                            let _ = journal::set_mtime(&real, ns);
-                        }
-                        Ok(())
-                    })(),
-                    overlay::Change::Link { target, .. } => (|| -> std::io::Result<()> {
-                        journal::remove_any_pub(&real)?;
-                        journal::make_symlink_pub(target, &real)
-                    })(),
-                };
+                let done: std::io::Result<()> = overlay::place(&c);
                 match done {
                     Ok(()) => {
                         // The tripwire: the file applied hashes as the layer's.

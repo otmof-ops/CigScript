@@ -306,6 +306,11 @@ pub struct Kept {
     /// later checks it still holds exactly that.
     #[serde(default)]
     pub digest: Option<String>,
+    /// What a contained hop's home layer held when it was judged
+    /// (`home_digest`): applying some of it later (`proc.apply_layer(layer,
+    /// {home: [...]})`) checks it still holds exactly that.
+    #[serde(default)]
+    pub home_digest: Option<String>,
     #[serde(skip)]
     pub dir: PathBuf,
 }
@@ -374,6 +379,7 @@ pub fn keep(
         at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         scratch: scratch.map(Path::to_path_buf),
         digest: Some(layer_digest(layers)?),
+        home_digest: home_digest(&layers.dir)?,
         dir: layers.dir.clone(),
     };
     let text = serde_json::to_string_pretty(&kept).map_err(io::Error::other)?;
@@ -2112,6 +2118,53 @@ impl Change {
     }
 }
 
+/// Put one change of a layer in place on the real disk: a directory made
+/// with its mode, a path removed, a file's bytes copied with its mode and
+/// modification time, a link made. Shared by the pack's apply (journaled
+/// first) and a contained hop's home writes applied on request.
+pub fn place(c: &Change) -> io::Result<()> {
+    let real = c.real().to_path_buf();
+    match c {
+        Change::Dir { mode, .. } => {
+            fs::create_dir_all(&real)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&real, fs::Permissions::from_mode(*mode))?;
+            }
+            #[cfg(not(unix))]
+            let _ = mode;
+            Ok(())
+        }
+        Change::Replaced { .. } | Change::Removed { .. } => {
+            crate::burn::journal::remove_any_pub(&real)
+        }
+        Change::File { upper, .. } => {
+            if fs::symlink_metadata(&real)
+                .map(|m| !m.is_file())
+                .unwrap_or(false)
+            {
+                crate::burn::journal::remove_any_pub(&real)?;
+            }
+            if let Some(parent) = real.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(upper, &real)?;
+            let meta = fs::metadata(upper)?;
+            #[cfg(unix)]
+            fs::set_permissions(&real, meta.permissions())?;
+            if let Some(ns) = crate::burn::journal::mtime_ns(&meta) {
+                let _ = crate::burn::journal::set_mtime(&real, ns);
+            }
+            Ok(())
+        }
+        Change::Link { target, .. } => {
+            crate::burn::journal::remove_any_pub(&real)?;
+            crate::burn::journal::make_symlink_pub(target, &real)
+        }
+    }
+}
+
 /// Is this entry overlayfs's whiteout: a character device 0/0?
 #[cfg(target_os = "linux")]
 fn is_whiteout(meta: &fs::Metadata) -> bool {
@@ -2439,12 +2492,33 @@ fn lexical(p: &Path) -> PathBuf {
 /// bytes, link target or mode, in path order. A kept layer is applied only
 /// while it still holds exactly what was judged.
 pub fn layer_digest(layers: &Layers) -> io::Result<String> {
+    let pairs: Vec<(&Path, &Path)> = layers
+        .roots
+        .iter()
+        .map(|(r, u, _)| (r.as_path(), u.as_path()))
+        .collect();
+    let fine = |p: &Path| layers.roots.iter().any(|(r, _, _)| p.starts_with(r));
+    digest_of(&pairs, &fine)
+}
+
+/// A contained hop's home layer, digested the way `layer_digest` digests
+/// the pack's: none when the hop had no home layer (not contained, or not
+/// Linux).
+pub fn home_digest(layers_dir: &Path) -> io::Result<Option<String>> {
+    let Some((home, upper)) = home_layer_of(layers_dir) else {
+        return Ok(None);
+    };
+    let fine = |p: &Path| p.starts_with(&home);
+    digest_of(&[(home.as_path(), upper.as_path())], &fine).map(Some)
+}
+
+fn digest_of(pairs: &[(&Path, &Path)], fine: &dyn Fn(&Path) -> bool) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
-    for (i, (root, upper, _)) in layers.roots.iter().enumerate() {
+    for (i, (root, upper)) in pairs.iter().enumerate() {
+        let (root, upper) = (*root, *upper);
         let mut entries = Vec::new();
-        let fine = |p: &Path| layers.roots.iter().any(|(r, _, _)| p.starts_with(r));
-        walk_tolerant(root, upper, upper, &fine, &mut entries);
+        walk_tolerant(root, upper, upper, fine, &mut entries);
         for (real, kind) in entries {
             if kind == "unreadable" {
                 return Err(io::Error::other(format!(

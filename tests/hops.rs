@@ -692,3 +692,23 @@ fn stream_shows_a_hops_output_as_it_arrives_and_still_captures_it_whole() {
     assert_eq!(lines.next().expect("a line").expect("text"), "late");
     assert!(child.wait().expect("wait").success());
 }
+
+#[test]
+fn a_hop_that_only_reads_is_not_journaled_but_what_it_writes_is() {
+    let sb = Sandbox::new();
+    // Only reads: nothing journaled, so no burn line.
+    let (code, _, err) = sb.run(&burn("  proc.run(\"true\", [], {reads: true})"));
+    assert_eq!(code, 0, "{err}");
+    assert!(!err.contains("burned"), "{err}");
+    // Said it only reads, and wrote in the pack: the watch still journals it.
+    let (code, _, err) = sb.run(&format!(
+        "pack {{ \".\" }}\n{}",
+        burn("  proc.run(\"sh\", [\"-c\", \"echo x > made.txt\"], {reads: true})")
+    ));
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("burned 1 op"), "{err}");
+    // It takes no box or touches.
+    let (code, _, err) = sb.run(&burn("  proc.run(\"true\", [], {reads: true, box: true})"));
+    assert_eq!(code, 1);
+    assert!(err.contains("only reads"), "{err}");
+}
