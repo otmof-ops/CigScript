@@ -4,8 +4,8 @@
 //! `cig chains`: list the chains a script declares, without running it.
 
 use super::{exit, Ctx};
-use cigscript::syntax::ast::{ExprKind, Stmt};
-use cigscript::syntax::parse;
+use crate::syntax::ast::{ExprKind, Stmt};
+use crate::syntax::parse;
 use std::path::Path;
 
 pub struct ChainInfo {
@@ -15,7 +15,7 @@ pub struct ChainInfo {
 }
 
 /// Top-level chain declarations, in source order.
-pub fn declared(program: &cigscript::syntax::ast::Program) -> Vec<ChainInfo> {
+pub fn declared(program: &crate::syntax::ast::Program) -> Vec<ChainInfo> {
     program
         .body
         .iter()
@@ -46,7 +46,13 @@ pub fn chains(ctx: &Ctx, file: &Path) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
-    let name = file.to_string_lossy().to_string();
+    chains_source(ctx, &file.to_string_lossy(), &source)
+}
+
+/// The chains a script declares, from its text (a compiled program's own).
+pub fn chains_source(ctx: &Ctx, name: &str, source: &str) -> i32 {
+    let name = name.to_string();
+    let source = source.to_string();
     let program = match parse(&source) {
         Ok(p) => p,
         Err(d) => {
@@ -93,7 +99,7 @@ pub fn chains(ctx: &Ctx, file: &Path) -> i32 {
 }
 
 /// The literal roots of a script's `pack { }`, if it declares one.
-pub fn declared_pack(program: &cigscript::syntax::ast::Program) -> Option<Vec<String>> {
+pub fn declared_pack(program: &crate::syntax::ast::Program) -> Option<Vec<String>> {
     program.body.iter().find_map(|stmt| match stmt {
         Stmt::Pack(p) => Some(
             p.roots
@@ -102,8 +108,8 @@ pub fn declared_pack(program: &cigscript::syntax::ast::Program) -> Option<Vec<St
                     ExprKind::Str(pieces) => pieces
                         .iter()
                         .map(|piece| match piece {
-                            cigscript::syntax::ast::StrPiece::Lit(t) => t.clone(),
-                            cigscript::syntax::ast::StrPiece::Expr(_) => "${...}".to_string(),
+                            crate::syntax::ast::StrPiece::Lit(t) => t.clone(),
+                            crate::syntax::ast::StrPiece::Expr(_) => "${...}".to_string(),
                         })
                         .collect::<String>(),
                     _ => "(computed)".to_string(),

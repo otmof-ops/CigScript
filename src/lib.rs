@@ -12,11 +12,12 @@
 //! * [`burn`] is the kernel: it gates side effects, journals them and rolls
 //!   them back.
 //!
-//! The `cig` binary in `src/main.rs` is a thin CLI over these modules.
+//! The `cig` command line is [`cli`]; `src/main.rs` only starts it.
 
 pub mod ashtray;
 pub mod burn;
 pub mod check;
+pub mod cli;
 pub mod config;
 pub mod crash;
 pub mod diagnostics;
@@ -25,6 +26,7 @@ pub mod errors;
 pub mod humidor;
 pub mod interp;
 pub mod pin;
+pub mod program;
 pub mod repro;
 pub mod since;
 pub mod stdlib;

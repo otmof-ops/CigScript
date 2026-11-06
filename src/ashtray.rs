@@ -251,10 +251,10 @@ pub fn spawn_flush(cfg: &Config) {
     if due(cfg).is_empty() {
         return;
     }
-    let Ok(me) = std::env::current_exe() else {
+    // Marked as cig's call to itself: a program's binary is `cig` for it.
+    let Ok(mut c) = crate::program::self_command() else {
         return;
     };
-    let mut c = std::process::Command::new(me);
     c.args(["crash", "flush", "--quiet"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

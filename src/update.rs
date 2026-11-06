@@ -419,6 +419,9 @@ fn unsafe_geteuid() -> Option<u32> {
 
 /// Replace the running executable with `new_binary`, atomically.
 pub fn install(new_binary: &Path) -> Result<PathBuf, String> {
+    if crate::program::running() {
+        return Err("a compiled program never replaces itself with cig".to_string());
+    }
     let current = std::env::current_exe().map_err(|e| e.to_string())?;
     let current = fs::canonicalize(&current).unwrap_or(current);
     let dir = current

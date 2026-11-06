@@ -11,7 +11,7 @@
 //! registry nodes themselves.
 
 use super::{exit, Ctx};
-use cigscript::errors::{all, diagnostic_schema, lookup, lookup_probe, registry, Code};
+use crate::errors::{all, diagnostic_schema, lookup, lookup_probe, registry, Code};
 
 pub fn explain(ctx: &Ctx, code: Option<String>, schema: bool) -> i32 {
     if schema {
@@ -154,7 +154,7 @@ fn page(ctx: &Ctx, e: &Code) {
             ctx.dim("ranked; doctor checks them in this order")
         );
         for (i, c) in e.causes.iter().enumerate() {
-            match c.no.as_deref().and_then(cigscript::errors::lookup_no) {
+            match c.no.as_deref().and_then(crate::errors::lookup_no) {
                 Some(n) if ctx.plain => outln!(
                     "  {}. {}  {}",
                     i + 1,

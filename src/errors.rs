@@ -110,13 +110,32 @@ fn yes() -> bool {
     true
 }
 
+/// A code's number: `E502` is 502, `E1050` is 1050. Codes are compared
+/// by number, never as text (as text, `E1050` would sort among `E100`s).
+pub fn number(code: &str) -> Option<u32> {
+    let digits = code.strip_prefix('E')?;
+    if !(3..=4).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+impl Range {
+    /// Does this range hold the code numbered `n`?
+    pub fn holds(&self, n: u32) -> bool {
+        number(&self.from).is_some_and(|f| f <= n) && number(&self.to).is_some_and(|t| n <= t)
+    }
+}
+
 impl Code {
     /// The range this code sits in.
     pub fn range(&self) -> &'static Range {
+        let n = number(&self.code)
+            .expect("every registered code is E and 3 or 4 digits (tests/registry.rs)");
         registry()
             .ranges
             .iter()
-            .find(|r| r.from.as_str() <= self.code.as_str() && self.code.as_str() <= r.to.as_str())
+            .find(|r| r.holds(n))
             .expect("every registered code lies in a declared range (tests/registry.rs)")
     }
 
@@ -288,16 +307,21 @@ mod tests {
         assert!(reg.version >= 1);
         let mut seen = std::collections::HashSet::new();
         for c in all() {
-            assert!(c.code.len() == 4 && c.code.starts_with('E'), "{}", c.code);
+            assert!(number(&c.code).is_some(), "{}", c.code);
             assert!(seen.insert(c.code.as_str()), "duplicate {}", c.code);
             // range() panics when a code sits outside every range.
             let _ = c.range();
-            assert_eq!(
-                &c.code[1..2],
-                &default_code(c.kind())[1..2],
-                "{} kind",
-                c.code
-            );
+            // A three-digit code's first digit is its kind's; the
+            // four-digit families (E1000-E1999, cigcompile and CigarScript)
+            // say their kind in the range alone.
+            if c.code.len() == 4 {
+                assert_eq!(
+                    &c.code[1..2],
+                    &default_code(c.kind())[1..2],
+                    "{} kind",
+                    c.code
+                );
+            }
         }
         for kind in [
             Kind::Lex,

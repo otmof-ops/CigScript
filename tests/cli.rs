@@ -659,7 +659,7 @@ fn a_panic_writes_a_redacted_crash_report_and_never_sends_without_consent() {
     assert!(r["panic_location"]
         .as_str()
         .unwrap()
-        .starts_with("src/main.rs"));
+        .starts_with("src/cli/mod.rs"));
     let id = r["id"].as_str().unwrap().to_string();
     let shown = sb.run_ok(&["crash", "show", &id]);
     assert!(shown.contains("\"fingerprint\""));

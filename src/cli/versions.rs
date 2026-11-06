@@ -4,9 +4,9 @@
 //! `cig versions`: what is in the humidor, and putting versions there.
 
 use super::{exit, Ctx};
-use cigscript::config::Config;
-use cigscript::humidor;
-use cigscript::update::Version;
+use crate::config::Config;
+use crate::humidor;
+use crate::update::Version;
 
 #[derive(clap::Subcommand)]
 pub enum VersionsCommand {
@@ -156,7 +156,7 @@ fn list(ctx: &Ctx, repo: &str) -> i32 {
         "installed",
         "-",
         std::env::current_exe()
-            .map(|p| cigscript::crash::tilde(&p))
+            .map(|p| crate::crash::tilde(&p))
             .unwrap_or_default()
     );
     for (v, e) in &shelf {
@@ -169,7 +169,7 @@ fn list(ctx: &Ctx, repo: &str) -> i32 {
                 .as_deref()
                 .map(|t| t.get(..10).unwrap_or(t).to_string())
                 .unwrap_or_else(|| "never".to_string()),
-            cigscript::crash::tilde(&humidor::dir().join(v.to_string()))
+            crate::crash::tilde(&humidor::dir().join(v.to_string()))
         );
     }
     if shelf.is_empty() {

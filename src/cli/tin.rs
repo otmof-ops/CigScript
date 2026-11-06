@@ -5,7 +5,7 @@
 //! no run still needs.
 
 use super::{exit, Ctx};
-use cigscript::burn::{seal, tin};
+use crate::burn::{seal, tin};
 use std::path::PathBuf;
 
 #[derive(clap::Subcommand)]
@@ -182,7 +182,7 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
                     } else {
                         format!(", {} sealed ({} bytes)", u.sealed, u.sealed_bytes)
                     },
-                    cigscript::crash::tilde(&tin::dir())
+                    crate::crash::tilde(&tin::dir())
                 );
             }
             exit::OK
@@ -257,7 +257,7 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
                 }
             }
         }
-        TinCommand::Head => match cigscript::burn::ledger::load() {
+        TinCommand::Head => match crate::burn::ledger::load() {
             Ok(l) => {
                 let seq = l.lines.last().map(|x| x.seq).unwrap_or(0);
                 if ctx.json {
@@ -281,7 +281,7 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
         },
         TinCommand::Verify { quick, head } => {
             let mut problems = tin::verify(quick);
-            match cigscript::burn::ledger::load() {
+            match crate::burn::ledger::load() {
                 Ok(l) => {
                     if let Some(at) = l.broken_at {
                         problems.push(format!(
@@ -381,7 +381,7 @@ pub fn tin_cmd(ctx: &Ctx, cmd: Option<TinCommand>) -> i32 {
             if sealed_orphans {
                 // Without the key nothing opens, and "what nothing opens" would
                 // be every sealed object a run still needs.
-                if let Err(e) = cigscript::burn::seal::key() {
+                if let Err(e) = crate::burn::seal::key() {
                     eprintln!(
                         "{} --sealed-orphans needs the tin's key to tell a sealed object that opens from one that does not: {e}",
                         ctx.red("error[E703 burn]:")

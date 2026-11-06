@@ -4,19 +4,19 @@
 //! `cig run`, `cig check`, `cig eval`.
 
 use super::{exit, Ctx};
-use cigscript::burn::{runs::RunRecord, Kernel, Mode, PlannedOp};
-use cigscript::check;
-use cigscript::config::Config;
-use cigscript::crash::Kind as ReportKind;
-use cigscript::diagnostics::{Diagnostic, Kind};
-use cigscript::humidor;
-use cigscript::interp::Interp;
-use cigscript::pin::{self, Pin};
-use cigscript::syntax::ast::Program;
-use cigscript::syntax::{parse, parse_expr_src};
-use cigscript::trial;
-use cigscript::update::Version;
-use cigscript::NO_CIGARETTES;
+use crate::burn::{runs::RunRecord, Kernel, Mode, PlannedOp};
+use crate::check;
+use crate::config::Config;
+use crate::crash::Kind as ReportKind;
+use crate::diagnostics::{Diagnostic, Kind};
+use crate::humidor;
+use crate::interp::Interp;
+use crate::pin::{self, Pin};
+use crate::syntax::ast::Program;
+use crate::syntax::{parse, parse_expr_src};
+use crate::trial;
+use crate::update::Version;
+use crate::NO_CIGARETTES;
 use std::io::Write;
 use std::path::Path;
 
@@ -52,7 +52,7 @@ pub fn read_source(ctx: &Ctx, file: &Path) -> Result<String, i32> {
             std::io::ErrorKind::PermissionDenied => "chmod +r the file, or run as its owner",
             _ => "the operating system's reason is in the message",
         };
-        let d = cigscript::diagnostics::usage(format!("cannot read {}: {e}", file.display()))
+        let d = crate::diagnostics::usage(format!("cannot read {}: {e}", file.display()))
             .code("E801")
             .with_subject(file.display().to_string())
             .with_hint(hint);
@@ -66,7 +66,7 @@ pub fn read_source(ctx: &Ctx, file: &Path) -> Result<String, i32> {
 /// unless `--no-doctor` or `CIG_DOCTOR=0` switched it off.
 pub fn report(ctx: &Ctx, diag: &Diagnostic, file: Option<&str>, source: Option<&str>) {
     let diagnosis = if ctx.doctor {
-        cigscript::doctor::diagnose(diag, &cigscript::doctor::Context::here(source))
+        crate::doctor::diagnose(diag, &crate::doctor::Context::here(source))
     } else {
         None
     };
@@ -103,7 +103,7 @@ pub fn report_all(ctx: &Ctx, diags: &[Diagnostic], file: &str, source: &str) {
         eprint!("{}", d.render(Some(file), Some(source)));
         if ctx.doctor {
             if let Some(dx) =
-                cigscript::doctor::diagnose(d, &cigscript::doctor::Context::here(Some(source)))
+                crate::doctor::diagnose(d, &crate::doctor::Context::here(Some(source)))
             {
                 eprint!("{}", super::doctor::render_diagnosis(ctx, &dx));
             }
@@ -120,7 +120,7 @@ pub fn diags_json(ctx: &Ctx, diags: &[Diagnostic], source: &str) -> Vec<serde_js
             let mut v = serde_json::to_value(d).unwrap_or_default();
             if ctx.doctor {
                 if let Some(dx) =
-                    cigscript::doctor::diagnose(d, &cigscript::doctor::Context::here(Some(source)))
+                    crate::doctor::diagnose(d, &crate::doctor::Context::here(Some(source)))
                 {
                     v["diagnosis"] = serde_json::to_value(dx).unwrap_or_default();
                 }
@@ -156,9 +156,9 @@ pub fn check(ctx: &Ctx, file: &Path, deny_warnings: bool) -> i32 {
             "warnings": rep.warnings,
             "warnings_denied": denied,
             "pin": pin.as_ref().map(|p| p.constraint.to_string()),
-            "needs": cigscript::since::minimum(&program).to_string(),
-            "uses": cigscript::since::uses(&program).iter().map(|u| serde_json::json!({"what": u.what, "since": u.since.to_string()})).collect::<Vec<_>>(),
-            "last_good": cigscript::burn::runs::last_good(&sha256(&source)).map(|(v, _)| v.to_string()),
+            "needs": crate::since::minimum(&program).to_string(),
+            "uses": crate::since::uses(&program).iter().map(|u| serde_json::json!({"what": u.what, "since": u.since.to_string()})).collect::<Vec<_>>(),
+            "last_good": crate::burn::runs::last_good(&sha256(&source)).map(|(v, _)| v.to_string()),
         });
         outln!("{}", serde_json::to_string(&obj).unwrap_or_default());
         return if rep.ok() && !denied {
@@ -206,8 +206,8 @@ pub fn eval(ctx: &Ctx, code: &str) -> i32 {
     let mut interp = Interp::new(kernel);
     // Try as an expression first so `cig eval "1 + 1"` prints 2.
     if let Ok(expr) = parse_expr_src(code, Default::default()) {
-        let program = cigscript::syntax::ast::Program {
-            body: vec![cigscript::syntax::ast::Stmt::Expr(expr)],
+        let program = crate::syntax::ast::Program {
+            body: vec![crate::syntax::ast::Stmt::Expr(expr)],
         };
         return finish_eval(ctx, &mut interp, &program, code);
     }
@@ -223,13 +223,13 @@ pub fn eval(ctx: &Ctx, code: &str) -> i32 {
 fn finish_eval(
     ctx: &Ctx,
     interp: &mut Interp,
-    program: &cigscript::syntax::ast::Program,
+    program: &crate::syntax::ast::Program,
     code: &str,
 ) -> i32 {
     match interp.eval_program(program) {
         Ok(Some(v)) => {
             if ctx.json {
-                match cigscript::stdlib::json::from_value(&v, Default::default()) {
+                match crate::stdlib::json::from_value(&v, Default::default()) {
                     Ok(j) => outln!("{j}"),
                     Err(_) => outln!("{}", serde_json::Value::String(v.repr())),
                 }
@@ -251,6 +251,29 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         Ok(s) => s,
         Err(code) => return code,
     };
+    run_source(ctx, args, chain, source, None)
+}
+
+/// A compiled program's run (see [`crate::program`]): the script from the
+/// program's own binary, `args.file` the path it was compiled from, so an
+/// error points where `cig run` would. The same run in everything else;
+/// no pin (the program is its cig), and its record names the program.
+pub fn run_program(
+    ctx: &Ctx,
+    args: super::RunArgs,
+    program: &crate::program::Program,
+    chain: Option<String>,
+) -> i32 {
+    run_source(ctx, args, chain, program.source.clone(), Some(program))
+}
+
+fn run_source(
+    ctx: &Ctx,
+    args: super::RunArgs,
+    chain: Option<String>,
+    source: String,
+    compiled: Option<&crate::program::Program>,
+) -> i32 {
     let name = args.file.to_string_lossy().to_string();
     let program = match parse(&source) {
         Ok(p) => p,
@@ -259,7 +282,10 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             return exit::SYNTAX_ERROR;
         }
     };
-    let pin = pin::pin_for(&args.file, &source).ok().flatten();
+    let pin = match compiled {
+        Some(_) => None,
+        None => pin::pin_for(&args.file, &source).ok().flatten(),
+    };
     if !args.no_check {
         let mut rep = check::check(&program, &[]);
         rep.warnings
@@ -289,7 +315,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
 
     if let Ok(v) = std::env::var("CIG_MAX_STEPS") {
         if v.trim().parse::<u64>().is_err() {
-            let d = cigscript::diagnostics::usage(format!(
+            let d = crate::diagnostics::usage(format!(
                 "CIG_MAX_STEPS=`{v}` is not a step count"
             ))
             .code("E800")
@@ -309,17 +335,18 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         Config::load().get("trial")
     };
     let mut trial_note = None;
-    let last_good = if !args.dry_run && !pin::dispatched() && trial_mode != "never" {
-        let (handed, note, last) =
-            trial_before_run(ctx, &args, &source, &program, &name, &trial_mode);
-        if let Some(code) = handed {
-            return code;
-        }
-        trial_note = note;
-        last
-    } else {
-        None
-    };
+    let last_good =
+        if compiled.is_none() && !args.dry_run && !pin::dispatched() && trial_mode != "never" {
+            let (handed, note, last) =
+                trial_before_run(ctx, &args, &source, &program, &name, &trial_mode);
+            if let Some(code) = handed {
+                return code;
+            }
+            trial_note = note;
+            last
+        } else {
+            None
+        };
 
     let mode = if args.dry_run {
         Mode::DryRun
@@ -328,8 +355,8 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
     };
     // What a run that died in a boxed hop left behind goes before this one
     // starts: its layers were never the pack's.
-    cigscript::burn::runs::sweep_dead_layers();
-    if let Err(e) = cigscript::burn::ensure_private() {
+    crate::burn::runs::sweep_dead_layers();
+    if let Err(e) = crate::burn::ensure_private() {
         eprintln!("{} {e}", ctx.red("error[E707 burn]:"));
         eprintln!("  = explain: cig explain E707");
         return exit::SCRIPT_ERROR;
@@ -340,6 +367,14 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         &args.args,
         if args.dry_run { "dry-run" } else { "run" },
     );
+    if let Some(p) = compiled {
+        record.script = p.name.clone();
+        let mut v = p.summary();
+        v["binary"] = serde_json::json!(std::env::current_exe()
+            .map(|e| e.to_string_lossy().to_string())
+            .unwrap_or_default());
+        record.program = Some(v);
+    }
     let run_dir = if args.dry_run {
         None
     } else {
@@ -347,7 +382,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             eprintln!(
                 "{} cannot create the run record under {}: {e}",
                 ctx.red("error[E802 usage]:"),
-                cigscript::burn::runs::runs_dir().display()
+                crate::burn::runs::runs_dir().display()
             );
             eprintln!("  = hint: set CIGSCRIPT_HOME to a directory you can write");
             eprintln!("  = explain: cig explain E802");
@@ -362,7 +397,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             return exit::USAGE;
         }
     };
-    cigscript::crash::set_active_run(if args.dry_run {
+    crate::crash::set_active_run(if args.dry_run {
         None
     } else {
         Some(record.id.clone())
@@ -386,7 +421,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         Ok(()) => interp.exit_requested.unwrap_or(exit::OK),
         // A check-family error reached at run time (`--no-check`, or a
         // name the checker could not see) exits like the checker would.
-        Err(d) if d.kind == cigscript::diagnostics::Kind::Check => exit::SYNTAX_ERROR,
+        Err(d) if d.kind == crate::diagnostics::Kind::Check => exit::SYNTAX_ERROR,
         Err(_) => exit::SCRIPT_ERROR,
     };
     let mut rolled_back = None;
@@ -430,6 +465,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
 
     if !args.dry_run {
         record.burns = interp.kernel.journal().len();
+        record.no_rollback = args.no_rollback;
         record.irreversible = interp.kernel.irreversible;
         record.pack = interp
             .kernel
@@ -466,7 +502,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         // The ledger: where this run's record ended, under this machine's
         // key, so a journal cut short or swapped is caught later.
         if interp.kernel.journal().format() >= 3 {
-            if let Err(e) = cigscript::burn::ledger::append(
+            if let Err(e) = crate::burn::ledger::append(
                 "run",
                 &record.id,
                 interp.kernel.journal().head(),
@@ -491,7 +527,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
             );
         }
         // The inbox of this run's hops, if a hop died with it still there.
-        let _ = cigscript::burn::overlay::remove_tree_force(&cigscript::burn::overlay::inbox_dir(
+        let _ = crate::burn::overlay::remove_tree_force(&crate::burn::overlay::inbox_dir(
             &record.dir(),
         ));
         save_intents(&record, &interp);
@@ -500,15 +536,23 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
         // (the burn protocol): the parent's rollback puts this run back
         // through this run's own journal, which is exact.
         if result.is_ok() && !interp.kernel.journal().is_empty() {
-            if let Some(report) = std::env::var_os(cigscript::burn::protocol::ENV) {
+            if let Some(report) = std::env::var_os(crate::burn::protocol::ENV) {
                 let me = std::env::current_exe()
                     .map(|p| p.to_string_lossy().to_string())
                     .unwrap_or_else(|_| "cig".to_string());
-                let line = serde_json::json!({
-                    "op": "compensate",
-                    "label": format!("cig run {name} (run {})", record.id),
-                    "undo": [me, "unburn", record.id],
-                });
+                // A program takes `--unburn`: its first word is its own.
+                let line = match compiled {
+                    Some(p) => serde_json::json!({
+                        "op": "compensate",
+                        "label": format!("{} (run {})", p.name, record.id),
+                        "undo": [me, "--unburn", record.id],
+                    }),
+                    None => serde_json::json!({
+                        "op": "compensate",
+                        "label": format!("cig run {name} (run {})", record.id),
+                        "undo": [me, "unburn", record.id],
+                    }),
+                };
                 use std::io::Write as _;
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true)
@@ -620,7 +664,7 @@ pub fn run(ctx: &Ctx, args: super::RunArgs, chain: Option<String>) -> i32 {
 fn settle_own_bugs(
     ctx: &Ctx,
     result: &Result<(), Diagnostic>,
-    rolled_back: Option<&cigscript::burn::journal::RollbackReport>,
+    rolled_back: Option<&crate::burn::journal::RollbackReport>,
     interp: &Interp,
     record: &RunRecord,
 ) {
@@ -638,14 +682,14 @@ fn settle_own_bugs(
     let journal = interp.kernel.journal();
     let mut trips = Vec::new();
     if let Some(rep) = rolled_back {
-        trips.extend(cigscript::tripwire::after_rollback(journal, rep));
+        trips.extend(crate::tripwire::after_rollback(journal, rep));
     }
     if !journal.is_empty() {
-        trips.extend(cigscript::tripwire::journal_reread(journal));
-        trips.extend(cigscript::tripwire::tin_sample(journal));
+        trips.extend(crate::tripwire::journal_reread(journal));
+        trips.extend(crate::tripwire::tin_sample(journal));
     }
     for (check, what) in &interp.kernel.trips {
-        trips.push(cigscript::tripwire::Trip {
+        trips.push(crate::tripwire::Trip {
             check,
             what: what.clone(),
             details: serde_json::json!({}),
@@ -665,7 +709,7 @@ pub(crate) struct Finding {
 }
 
 impl Finding {
-    fn from_trip(t: cigscript::tripwire::Trip) -> Finding {
+    fn from_trip(t: crate::tripwire::Trip) -> Finding {
         Finding {
             kind: ReportKind::Tripwire,
             location: format!("tripwire {}", t.check),
@@ -679,9 +723,9 @@ impl Finding {
 /// reports, like a run's.
 pub(crate) fn settle_trips(
     ctx: &Ctx,
-    trips: Vec<cigscript::tripwire::Trip>,
+    trips: Vec<crate::tripwire::Trip>,
     record: &RunRecord,
-    journal: &cigscript::burn::journal::Journal,
+    journal: &crate::burn::journal::Journal,
 ) {
     settle_findings(
         ctx,
@@ -700,9 +744,9 @@ fn settle_findings(
     ctx: &Ctx,
     found: Vec<Finding>,
     record: &RunRecord,
-    journal: &cigscript::burn::journal::Journal,
+    journal: &crate::burn::journal::Journal,
 ) {
-    use cigscript::crash::CrashReport;
+    use crate::crash::CrashReport;
     for f in found {
         let (check, expect) = match f.kind {
             ReportKind::Tripwire => {
@@ -720,9 +764,9 @@ fn settle_findings(
             ),
             _ => ("crash".to_string(), "a crash".to_string()),
         };
-        let (repro, mut mapping) = match cigscript::repro::build(record, journal, &check, &expect) {
+        let (repro, mut mapping) = match crate::repro::build(record, journal, &check, &expect) {
             Some((x, m)) => (Some(x), m),
-            None => (None, cigscript::repro::Mapping::for_run(record, journal)),
+            None => (None, crate::repro::Mapping::for_run(record, journal)),
         };
         let title = mapping.anonymise_text(&f.title);
         let details = f.details.map(|mut d| {
@@ -738,7 +782,7 @@ fn settle_findings(
         );
         r.cwd = mapping.map(std::path::Path::new(&record.cwd));
         r.repro = repro;
-        if let Err(e) = cigscript::ashtray::queue(&mut r) {
+        if let Err(e) = crate::ashtray::queue(&mut r) {
             eprintln!(
                 "{} cig noticed something it got wrong and could not save the report: {e}",
                 ctx.yellow("warning:")
@@ -790,7 +834,7 @@ fn print_plan_with_pack(
             ctx.dim("pack:"),
             roots
                 .iter()
-                .map(|r| cigscript::crash::tilde(r))
+                .map(|r| crate::crash::tilde(r))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -819,14 +863,14 @@ fn print_plan_with_pack(
 fn light_named_chain(
     interp: &mut Interp,
     name: &str,
-    program: &cigscript::syntax::ast::Program,
+    program: &crate::syntax::ast::Program,
 ) -> Result<(), Diagnostic> {
     let declared: Vec<String> = super::chains::declared(program)
         .into_iter()
         .map(|c| c.name)
         .collect();
     let value = match interp.globals.get(name) {
-        Some(v @ cigscript::value::Value::Chain(_)) => v,
+        Some(v @ crate::value::Value::Chain(_)) => v,
         Some(other) => {
             return Err(Diagnostic::new(
                 Kind::Runtime,
@@ -862,7 +906,7 @@ fn sha256(source: &str) -> String {
 }
 
 fn truncate_message(m: &str) -> String {
-    cigscript::crash::truncate(m, 120)
+    crate::crash::truncate(m, 120)
 }
 
 /// E309: the script uses something newer than its pin allows.
@@ -871,7 +915,7 @@ fn pin_warnings(program: &Program, pin: Option<&Pin>, name: &str) -> Vec<Diagnos
         return Vec::new();
     };
     let floor = pin.constraint.floor();
-    cigscript::since::uses(program)
+    crate::since::uses(program)
         .into_iter()
         .filter(|u| u.since > floor)
         .map(|u| {
@@ -909,7 +953,7 @@ fn trial_before_run(
     Option<serde_json::Value>,
     Option<(Version, std::path::PathBuf)>,
 ) {
-    let Some((last, run_id)) = cigscript::burn::runs::last_good(&sha256(source)) else {
+    let Some((last, run_id)) = crate::burn::runs::last_good(&sha256(source)) else {
         return (None, None, None);
     };
     let current = Version::current();

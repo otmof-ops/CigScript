@@ -5,10 +5,10 @@
 //! and the dispatch that honours a pin before any command runs.
 
 use super::{exit, Ctx};
-use cigscript::config::Config;
-use cigscript::humidor;
-use cigscript::pin::{self, Constraint, Pin};
-use cigscript::update::Version;
+use crate::config::Config;
+use crate::humidor;
+use crate::pin::{self, Constraint, Pin};
+use crate::update::Version;
 use std::path::Path;
 
 /// `cig pin <file> [--to 1.1]`: write a `# cig:` header. Without `--to`,
@@ -28,10 +28,10 @@ pub fn pin_cmd(ctx: &Ctx, file: &Path, to: Option<String>) -> i32 {
                 return exit::USAGE;
             }
         },
-        None => match cigscript::syntax::parse(&source) {
+        None => match crate::syntax::parse(&source) {
             Ok(program) => {
-                let min = cigscript::since::minimum(&program);
-                let uses = cigscript::since::uses(&program);
+                let min = crate::since::minimum(&program);
+                let uses = crate::since::uses(&program);
                 if !ctx.json && !uses.is_empty() {
                     eprintln!(
                         "{}",
@@ -94,7 +94,7 @@ pub fn pin_of(ctx: &Ctx, file: &Path) -> Result<Option<Pin>, i32> {
     match pin::pin_for(file, &source) {
         Ok(p) => Ok(p),
         Err(e) => {
-            let d = cigscript::diagnostics::usage(format!(
+            let d = crate::diagnostics::usage(format!(
                 "{}: the pin cannot be read: {e}",
                 file.display()
             ))
@@ -138,7 +138,7 @@ pub fn dispatch_if_pinned(ctx: &Ctx, file: &Path, verb: &str) -> Option<i32> {
         None => fetch_for(ctx, &repo, &pin.constraint, &yanked),
     };
     let Some((version, bin)) = picked else {
-        let d = cigscript::diagnostics::usage(format!(
+        let d = crate::diagnostics::usage(format!(
             "{} asks for cig {} and this is {current}; no cig that satisfies it is in the humidor",
             pin.describe(file),
             pin.constraint
@@ -186,7 +186,7 @@ fn fetch_for(
     c: &Constraint,
     yanked: &[Version],
 ) -> Option<(Version, std::path::PathBuf)> {
-    let candidates = cigscript::update::released(repo).ok()?;
+    let candidates = crate::update::released(repo).ok()?;
     let mut matching: Vec<Version> = candidates
         .into_iter()
         .filter(|v| c.satisfied_by(v) && (c.is_exact() || !yanked.contains(v)))

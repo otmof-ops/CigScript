@@ -7,6 +7,18 @@ E100-E199  lexing: the source cannot be turned into tokens
   E102  unknown escape                     lex
   E103  unexpected character               lex
   E104  malformed number                   lex
+  E1000  nothing to compile                 usage
+  E1001  no runtime for the target          usage
+  E1002  the runtime is another cig         usage
+  E1003  the script's pin is not met        usage
+  E1004  the program cannot be written      usage
+  E1005  the runtime already carries a program usage
+  E1006  an unknown target                  usage
+  E1007  two programs would share one name  usage
+  E1050  a damaged program                  usage
+  E1051  a program for another cig          usage
+  E1052  not one of the program's run flags usage
+  E1053  not this program's run             usage
 
 E200-E299  parsing: the tokens do not follow the grammar
   E200  syntax error                       syntax
@@ -179,6 +191,42 @@ E900-E999  internal: a bug in CigScript itself
   E900  internal error                     internal
   E901  crash                              internal
   E902  tripwire                           internal
+
+E1000-E1099  building and running compiled programs: the path, the runtime, the target, and a program's own command line (cigcompile, and the programs it makes)
+  E101  unterminated string                lex
+  E102  unknown escape                     lex
+  E103  unexpected character               lex
+  E104  malformed number                   lex
+  E1000  nothing to compile                 usage
+  E1001  no runtime for the target          usage
+  E1002  the runtime is another cig         usage
+  E1003  the script's pin is not met        usage
+  E1004  the program cannot be written      usage
+  E1005  the runtime already carries a program usage
+  E1006  an unknown target                  usage
+  E1007  two programs would share one name  usage
+  E1050  a damaged program                  usage
+  E1051  a program for another cig          usage
+  E1052  not one of the program's run flags usage
+  E1053  not this program's run             usage
+
+E1100-E1199  CigarScript: a feature above the strength a file declares
+  reserved; nothing emitted yet
+
+E1200-E1399  CigarScript: types, inference and checked boundaries at medium strength
+  reserved; nothing emitted yet
+
+E1400-E1499  CigarScript: layered depth and scripts that read each other by context
+  reserved; nothing emitted yet
+
+E1500-E1599  CigarScript: ownership and concurrency at full strength
+  reserved; nothing emitted yet
+
+E1600-E1699  CigarScript: calling Rust and C, and the burn rule at that boundary
+  reserved; nothing emitted yet
+
+E1700-E1799  carton: packages, manifests and the lock file
+  reserved; nothing emitted yet
 
 cig explain <code> for the page; cig explain --schema for the JSON schema
 
@@ -2752,3 +2800,204 @@ E902 tripwire  (internal, internal family, since 1.7.0)
      remedy: `cig crash list` shows the report; it carries an anonymised repro when one reproduced in a sandbox, and the fix is announced on `cig update --check`
 
   arises in: any
+
+======== E1000 ========
+E1000 nothing to compile  (usage, build family, since 1.15.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  The path given to `cigcompile build` holds no CigScript program: no `.cig` file there, or a folder with none at its top level.
+
+  what to type next: name a `.cig` file, or a folder that holds them: cigcompile build tools/tidy.cig
+
+  known causes, ranked; doctor checks them in this order
+  1. the path is mistyped, or names the wrong folder
+     probe: path-exists (stat of the path named in the message)
+     remedy: check the path, then give the script itself
+
+  arises in: compile  ·  tags: compiler, beginner-likely
+
+======== E1001 ========
+E1001 no runtime for the target  (usage, build family, since 1.15.0)
+
+  kind of no: can't see any ciggies bro  (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT)
+
+  A program is its script appended to the cig of the compiler's own version, built for the target. That cig could not be found.
+
+  what to type next: give it with --runtime path/to/cig, or install the cig of that version on this machine (cig update)
+
+  known causes, ranked; doctor checks them in this order
+  1. no cig of the compiler's version is installed here or on PATH
+     probe: on-path (each directory on PATH, looking for the program named in the message)
+     remedy: install it (cig update), or pass the binary with --runtime
+  2. the target is another machine's and its cig was never fetched
+     probe: none; a suggestion, not a finding
+     remedy: download that cig release asset, check its sha256, and pass it with --runtime
+
+  arises in: compile  ·  tags: compiler
+
+======== E1002 ========
+E1002 the runtime is another cig  (usage, build family, since 1.15.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The cig given as the runtime is not the version the compiler was built with. A program runs only on the cig it was compiled for, so the two must agree.
+
+  what to type next: pass the cig of the compiler's version with --runtime, or use the cigcompile built for that cig
+
+  known causes, ranked; doctor checks them in this order
+  1. --runtime names an older or a newer cig than the compiler's
+     probe: none; a suggestion, not a finding
+     remedy: compare cig --version with cigcompile --version and pick the matching cig
+
+  arises in: compile  ·  related: E1051  ·  tags: compiler
+
+======== E1003 ========
+E1003 the script's pin is not met  (usage, build family, since 1.15.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The script pins a cig version (a `# cig` line or a .cig-version file) that the runtime it would be appended to does not satisfy.
+
+  what to type next: build with a cigcompile whose cig meets the pin, or move the pin once the script works on this cig
+
+  known causes, ranked; doctor checks them in this order
+  1. the script asks for a newer cig than this compiler's
+     probe: source-line (the source line under the caret)
+     remedy: update cig and cigcompile together, or lower the pin after testing the script
+
+  arises in: compile  ·  tags: compiler
+
+======== E1004 ========
+E1004 the program cannot be written  (usage, build family, since 1.15.0)
+
+  kind of no: one of the four; the message says which  (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below)
+
+  The compiled program could not be written where it was asked to go. Nothing was left half-written there: the output is written beside it and moved into place whole.
+
+  what to type next: write it somewhere you can with -o, or free the space the message names
+
+  known causes, ranked; doctor checks them in this order
+  1. the output folder is not writable by you  (these are MY ciggies; 403 Forbidden; permission denied; a lock; a refusal by policy)
+     probe: path-permissions (mode bits and owner of the path, or of its nearest existing ancestor)
+     remedy: pick another folder with -o, or fix the folder's permissions
+  2. the disk is full  (don't have any over here; 404 from the server's side; an empty result)
+     probe: disk-free (free space on the filesystem holding the path or the state directory)
+     remedy: free some space, then build again
+
+  arises in: compile  ·  tags: compiler, resource
+
+======== E1005 ========
+E1005 the runtime already carries a program  (usage, build family, since 1.15.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The file given as the runtime ends in a program's trailer: it is a compiled program, not cig, and a program is never appended to another.
+
+  what to type next: give the cig binary itself with --runtime, not a program compiled from it
+
+  known causes, ranked; doctor checks them in this order
+  1. --runtime points at a compiled program
+     probe: file-hash (the current hash of a file against the hash the journal recorded)
+     remedy: point it at cig itself (`command -v cig` shows where it is)
+
+  arises in: compile  ·  tags: compiler
+
+======== E1006 ========
+E1006 an unknown target  (usage, build family, since 1.15.0)
+
+  kind of no: never heard of you  (the door: it doesn't know you; 401 Unauthorized; authentication failure)
+
+  The target named with --target is not one cig is released for, so there is no cig to append the program to.
+
+  what to type next: pick one cigcompile targets lists, e.g. --target x86_64-unknown-linux-musl
+
+  known causes, ranked; doctor checks them in this order
+  1. the target triple is mistyped, or is one cig does not ship
+     probe: none; a suggestion, not a finding
+     remedy: copy the triple from cigcompile targets
+
+  arises in: compile  ·  tags: compiler
+
+======== E1007 ========
+E1007 two programs would share one name  (usage, build family, since 1.15.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  Two scripts in the folder would compile to the same program: their names differ only in case, on a folder that does not tell case apart.
+
+  what to type next: rename one of the scripts, or build each with its own -o
+
+  known causes, ranked; doctor checks them in this order
+  1. tool.cig and Tool.cig compiled into one folder
+     probe: none; a suggestion, not a finding
+     remedy: rename one of them
+
+  arises in: compile  ·  tags: compiler
+
+======== E1050 ========
+E1050 a damaged program  (usage, build family, since 1.15.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  This program's bytes do not match the sha256 in its trailer, or its record does not read: it was cut short, edited or damaged after it was compiled, and it refuses to run. The sha256 catches damage, not tampering: programs are unsigned.
+
+  what to type next: compile it again (cigcompile build), or fetch it again from where it came from
+
+  known causes, ranked; doctor checks them in this order
+  1. the file was cut short or changed after it was compiled: a partial download, a copy that stopped, a tool that rewrote it
+     probe: file-hash (the current hash of a file against the hash the journal recorded)
+     remedy: compare its sha256 with the one from the build, then rebuild it or fetch it again
+
+  arises in: run  ·  related: E1051
+
+======== E1051 ========
+E1051 a program for another cig  (usage, build family, since 1.15.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The program was compiled for one cig and appended to another. A program runs only on the cig it was compiled for, so the kernel it expects is the kernel it gets.
+
+  what to type next: compile it again with the cigcompile for this cig, or keep the binary cigcompile made
+
+  known causes, ranked; doctor checks them in this order
+  1. the program's script was appended to a different cig by hand or by an older tool
+     probe: none; a suggestion, not a finding
+     remedy: build it again with cigcompile build
+
+  arises in: run  ·  related: E1002
+
+======== E1052 ========
+E1052 not one of the program's run flags  (usage, build family, since 1.15.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A compiled program takes the run's flags first and its own arguments after them; this one is not a run flag, it lacks its value, or an argument is not valid UTF-8. Nothing ran.
+
+  what to type next: put the program's own arguments after --: tool -- --flag (tool --help lists the run flags)
+
+  known causes, ranked; doctor checks them in this order
+  1. a flag meant for the program itself, given before --
+     probe: none; a suggestion, not a finding
+     remedy: move it after --
+  2. a mistyped run flag (refused, so a mistyped --dry-run never becomes a real run)
+     probe: none; a suggestion, not a finding
+     remedy: spell it as tool --help shows it
+
+  arises in: run  ·  tags: beginner-likely
+
+======== E1053 ========
+E1053 not this program's run  (usage, build family, since 1.15.0)
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  A compiled program puts back only the runs it made (`--unburn`); the run named was made by a script or by another program.
+
+  what to type next: use cig unburn <run> for any run, or the program that made it
+
+  known causes, ranked; doctor checks them in this order
+  1. the run id belongs to another script's or program's run
+     probe: run-record (run.json for the run: status, pid, totals)
+     remedy: cig runs <run> shows which script or program made it
+
+  arises in: unburn

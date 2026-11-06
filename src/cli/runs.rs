@@ -4,8 +4,8 @@
 //! `cig runs` and `cig unburn`.
 
 use super::{exit, Ctx};
-use cigscript::burn::journal::{Before, Journal};
-use cigscript::burn::runs::{self, RunRecord};
+use crate::burn::journal::{Before, Journal};
+use crate::burn::runs::{self, RunRecord};
 
 pub fn runs(
     ctx: &Ctx,
@@ -20,7 +20,7 @@ pub fn runs(
     if let Some(gone) = forget {
         // The user says the run is gone on purpose: the ledger records it,
         // and the missing-run note stops.
-        return match cigscript::burn::ledger::append("forgotten", &gone, "", "forgotten", 0) {
+        return match crate::burn::ledger::append("forgotten", &gone, "", "forgotten", 0) {
             Ok(()) => {
                 eprintln!(
                     "{} {gone} will not be noted as missing again",
@@ -53,7 +53,7 @@ pub fn runs(
             // cig was not there to apply them, so they go (the ones kept
             // on purpose stay).
             for r in all.iter().filter(|r| r.is_interrupted()) {
-                let n = cigscript::burn::overlay::drop_unapplied(&r.dir());
+                let n = crate::burn::overlay::drop_unapplied(&r.dir());
                 if n > 0 {
                     eprintln!(
                         "{} {} died in a boxed hop; the layer{} it never applied {} removed (cig unburn {} puts its earlier burns back)",
@@ -88,13 +88,18 @@ pub fn runs(
                     "running" => ctx.dim(&r.status),
                     _ => ctx.red(&r.status),
                 };
+                let script = if r.program.is_some() {
+                    format!("{} (program)", r.script)
+                } else {
+                    r.script.clone()
+                };
                 outln!(
                     "{:<24} {:<12} {:>5} {:>4}  {}",
                     r.id,
                     status,
                     r.burns,
                     r.irreversible,
-                    r.script
+                    script
                 );
             }
             exit::OK
@@ -140,11 +145,24 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
         };
     }
     outln!("{}", ctx.bold(&rec.id));
-    outln!(
-        "  script    {}  (sha256 {})",
-        rec.script,
-        &rec.script_sha256[..rec.script_sha256.len().min(12)]
-    );
+    if let Some(p) = &rec.program {
+        outln!(
+            "  program   {}  (compiled from {}, sha256 {}, by {})",
+            rec.script,
+            p["file"].as_str().unwrap_or("?"),
+            &rec.script_sha256[..rec.script_sha256.len().min(12)],
+            p["compiler"].as_str().unwrap_or("?")
+        );
+        if let Some(b) = p["binary"].as_str().filter(|b| !b.is_empty()) {
+            outln!("  binary    {b}");
+        }
+    } else {
+        outln!(
+            "  script    {}  (sha256 {})",
+            rec.script,
+            &rec.script_sha256[..rec.script_sha256.len().min(12)]
+        );
+    }
     if !rec.args.is_empty() {
         outln!("  args      {}", rec.args.join(" "));
     }
@@ -234,7 +252,7 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
                 }
             );
         }
-        let taken: Vec<&cigscript::burn::journal::BeforeState> =
+        let taken: Vec<&crate::burn::journal::BeforeState> =
             j.entries().iter().flat_map(|e| e.took.iter()).collect();
         if !taken.is_empty() {
             outln!(
@@ -305,7 +323,7 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
 /// What `cig runs <id> --verify` found.
 #[derive(serde::Serialize)]
 struct Verified {
-    chain: cigscript::burn::journal::Chain,
+    chain: crate::burn::journal::Chain,
     chain_ok: bool,
     chain_text: String,
     head_recorded: Option<String>,
@@ -335,7 +353,7 @@ struct Verified {
 /// forgotten: one calm note (E710), never an alarm. Only a ledger line that
 /// fails its MAC is a tripwire, and that is reported by the verify path.
 fn note_missing_runs(ctx: &Ctx, all: &[RunRecord]) {
-    let Ok(ledger) = cigscript::burn::ledger::load() else {
+    let Ok(ledger) = crate::burn::ledger::load() else {
         return;
     };
     let mut seen = std::collections::BTreeSet::new();
@@ -349,8 +367,7 @@ fn note_missing_runs(ctx: &Ctx, all: &[RunRecord]) {
         if !seen.insert(l.run.clone()) {
             continue;
         }
-        if all.iter().any(|r| r.id == l.run) || cigscript::burn::ledger::is_let_go(&ledger, &l.run)
-        {
+        if all.iter().any(|r| r.id == l.run) || crate::burn::ledger::is_let_go(&ledger, &l.run) {
             continue;
         }
         missing.push(l.run.clone());
@@ -408,7 +425,7 @@ fn ledger_check(rec: &RunRecord, journal: &Journal) -> (Option<String>, String) 
             "not consulted: the journal already disagrees with its own record (above)".to_string(),
         );
     }
-    let Ok(ledger) = cigscript::burn::ledger::load() else {
+    let Ok(ledger) = crate::burn::ledger::load() else {
         return (
             None,
             "not checked: the ledger cannot be read here".to_string(),
@@ -420,7 +437,7 @@ fn ledger_check(rec: &RunRecord, journal: &Journal) -> (Option<String>, String) 
             "not checked: the ledger's own chain is broken (cig tin verify says where)".to_string(),
         );
     }
-    let Some(line) = cigscript::burn::ledger::last_record_of(&ledger, &rec.id) else {
+    let Some(line) = crate::burn::ledger::last_record_of(&ledger, &rec.id) else {
         return (
             None,
             "no line for this run (a run from before the ledger, or another machine's)".to_string(),
@@ -656,8 +673,7 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         );
     }
     let plan = journal.give_back_plan();
-    let changed: Vec<&cigscript::burn::journal::GiveBack> =
-        plan.iter().filter(|g| g.changed).collect();
+    let changed: Vec<&crate::burn::journal::GiveBack> = plan.iter().filter(|g| g.changed).collect();
     if dry_run {
         if ctx.json {
             outln!(
@@ -734,9 +750,9 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             changed.len()
         );
     }
-    let _lock = match cigscript::burn::lock::acquire(&rec.pack, &rec.id) {
+    let _lock = match crate::burn::lock::acquire(&rec.pack, &rec.id) {
         Ok(l) => Some(l),
-        Err(cigscript::burn::lock::Busy::Held { root, holder }) => {
+        Err(crate::burn::lock::Busy::Held { root, holder }) => {
             eprintln!(
                 "{} the pack {} is in use by {holder}",
                 ctx.red("error[E759 burn]:"),
@@ -748,7 +764,7 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
             eprintln!("  = explain: cig explain E759");
             return exit::SCRIPT_ERROR;
         }
-        Err(cigscript::burn::lock::Busy::Io(_)) => None,
+        Err(crate::burn::lock::Busy::Io(_)) => None,
     };
     let report = journal.give_back();
     if ctx.json {
@@ -760,7 +776,7 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     }
     let mut rec = rec;
     rec.journal_head = Some(journal.head().to_string());
-    let _ = cigscript::burn::ledger::append(
+    let _ = crate::burn::ledger::append(
         "unburn",
         &rec.id,
         journal.head(),
@@ -792,20 +808,20 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
     let mut removed = 0;
     for r in all.iter().skip(keep) {
         // The blobs the run pinned in git go free with its record.
-        if let Ok(text) = std::fs::read_to_string(r.dir().join(cigscript::burn::git::PINS)) {
+        if let Ok(text) = std::fs::read_to_string(r.dir().join(crate::burn::git::PINS)) {
             for wt in text.lines().filter(|l| !l.trim().is_empty()) {
-                cigscript::burn::git::unpin(std::path::Path::new(wt.trim()), &r.id);
+                crate::burn::git::unpin(std::path::Path::new(wt.trim()), &r.id);
             }
         }
         #[cfg(target_os = "linux")]
         {
-            let _ = cigscript::burn::overlay::remove_tree_force(&r.dir().join("box"));
-            cigscript::burn::overlay::sweep_scratch(&r.dir());
+            let _ = crate::burn::overlay::remove_tree_force(&r.dir().join("box"));
+            crate::burn::overlay::sweep_scratch(&r.dir());
         }
-        if cigscript::burn::overlay::remove_tree_force(&r.dir()).is_ok() {
+        if crate::burn::overlay::remove_tree_force(&r.dir()).is_ok() {
             removed += 1;
             // Recorded, so the missing-run note never fires for it.
-            let _ = cigscript::burn::ledger::append("pruned", &r.id, "", "pruned", 0);
+            let _ = crate::burn::ledger::append("pruned", &r.id, "", "pruned", 0);
         }
     }
     if ctx.json {
@@ -826,7 +842,7 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
 pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: bool) -> i32 {
     // A rollback writes run state: the state directory must be ours alone.
     if !dry_run {
-        if let Err(e) = cigscript::burn::ensure_private() {
+        if let Err(e) = crate::burn::ensure_private() {
             eprintln!("{} {e}", ctx.red("error[E707 burn]:"));
             eprintln!("  = explain: cig explain E707");
             return exit::SCRIPT_ERROR;
@@ -1016,9 +1032,9 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     let _lock = if dry_run {
         None
     } else {
-        match cigscript::burn::lock::acquire(&rec.pack, &rec.id) {
+        match crate::burn::lock::acquire(&rec.pack, &rec.id) {
             Ok(l) => Some(l),
-            Err(cigscript::burn::lock::Busy::Held { root, holder }) => {
+            Err(crate::burn::lock::Busy::Held { root, holder }) => {
                 eprintln!(
                     "{} the pack {} is in use by {holder}",
                     ctx.red("error[E759 burn]:"),
@@ -1028,7 +1044,7 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
                 eprintln!("  = explain: cig explain E759");
                 return exit::SCRIPT_ERROR;
             }
-            Err(cigscript::burn::lock::Busy::Io(_)) => None,
+            Err(crate::burn::lock::Busy::Io(_)) => None,
         }
     };
     let problems = journal.verify();
@@ -1191,8 +1207,8 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     // command among them (a hop's own undo) sees this run's id, so a cig it
     // starts may enter the pack this unburn holds.
     std::env::set_var("CIG_RUN_ID", &rec.id);
-    let kernel = cigscript::burn::Kernel::ephemeral(cigscript::burn::Mode::Run);
-    let mut interp = cigscript::interp::Interp::new(kernel);
+    let kernel = crate::burn::Kernel::ephemeral(crate::burn::Mode::Run);
+    let mut interp = crate::interp::Interp::new(kernel);
     // The compensation sees the run's own arguments, as it did in the run.
     interp.set_args(&rec.args);
     let mut entered = true;
@@ -1206,7 +1222,7 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
             entered = false;
         }
     }
-    let mut runner = |c: &cigscript::burn::journal::Compensation| -> Result<(), String> {
+    let mut runner = |c: &crate::burn::journal::Compensation| -> Result<(), String> {
         if !entered {
             return Err(format!("cannot enter {} to run it", rec.cwd));
         }
@@ -1229,7 +1245,7 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     }
     rec.rolled_back = true;
     rec.rollback_failed = report.failed.clone();
-    if let Err(e) = cigscript::burn::ledger::append(
+    if let Err(e) = crate::burn::ledger::append(
         "unburn",
         &rec.id,
         journal.head(),
@@ -1244,12 +1260,10 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     }
     // The layers of a boxed hop the run never got to apply (it died in the
     // hop) were never the pack's: they go with the rollback.
-    let _ = cigscript::burn::overlay::remove_tree_force(&rec.dir().join("box"));
+    let _ = crate::burn::overlay::remove_tree_force(&rec.dir().join("box"));
     #[cfg(target_os = "linux")]
-    cigscript::burn::overlay::sweep_scratch(&rec.dir());
-    let _ = cigscript::burn::overlay::remove_tree_force(&cigscript::burn::overlay::inbox_dir(
-        &rec.dir(),
-    ));
+    crate::burn::overlay::sweep_scratch(&rec.dir());
+    let _ = crate::burn::overlay::remove_tree_force(&crate::burn::overlay::inbox_dir(&rec.dir()));
     rec.rollback_took = report.took.len();
     rec.journal_head = Some(journal.head().to_string());
     rec.status = if report.clean() {
@@ -1268,8 +1282,8 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     // read back against the journal, a sample of the tin re-hashed. A
     // broken promise is a report; the unburn's outcome is what it was.
     let mut trips = Vec::new();
-    trips.extend(cigscript::tripwire::after_rollback(&journal, &report));
-    trips.extend(cigscript::tripwire::tin_sample(&journal));
+    trips.extend(crate::tripwire::after_rollback(&journal, &report));
+    trips.extend(crate::tripwire::tin_sample(&journal));
     super::run::settle_trips(ctx, trips, &rec, &journal);
     if report.clean() {
         exit::OK
@@ -1283,25 +1297,35 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
 /// the command that fetches it. Nothing is parsed by guess.
 fn hand_back(ctx: &Ctx, rec: &RunRecord, e: &std::io::Error) -> i32 {
     let wrote = rec.written_by();
-    if cigscript::pin::dispatched() {
+    // A program's command line is not cig's: never hand it to another cig.
+    if crate::program::running() {
+        eprintln!("{} {e}", ctx.red("error[E808 usage]:"));
+        eprintln!(
+            "  = hint: cig unburn {} with the cig that journaled it puts it back",
+            rec.id
+        );
+        eprintln!("  = explain: cig explain E808");
+        return exit::USAGE;
+    }
+    if crate::pin::dispatched() {
         eprintln!("{} {e}", ctx.red("error[E808 usage]:"));
         eprintln!("  = explain: cig explain E808");
         return exit::USAGE;
     }
     if let Some(v) = &wrote {
-        if let Some(bin) = cigscript::humidor::binary(v) {
+        if let Some(bin) = crate::humidor::binary(v) {
             if !ctx.json {
                 eprintln!(
                     "{}",
                     ctx.dim(&format!(
                         "unburn handed to cig {v}, which wrote this journal; installed is {}",
-                        cigscript::VERSION
+                        crate::VERSION
                     ))
                 );
             }
             let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-            cigscript::humidor::touch(v);
-            return match cigscript::humidor::dispatch(&bin, &args) {
+            crate::humidor::touch(v);
+            return match crate::humidor::dispatch(&bin, &args) {
                 Ok(code) => code,
                 Err(e) => {
                     eprintln!("{} {e}", ctx.red("error[E808 usage]:"));

@@ -4,8 +4,8 @@
 //! `cig update`: check for and install a newer release.
 
 use super::{exit, Ctx};
-use cigscript::config::Config;
-use cigscript::update::{self, Version};
+use crate::config::Config;
+use crate::update::{self, Version};
 use std::cmp::Ordering;
 
 pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<String>) -> i32 {
@@ -35,8 +35,7 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
     let _ = update::write_cache(&release);
     let ordering = target.cmp(&current);
     // Close the loop: a bug this machine reported, fixed in a release.
-    let fixed =
-        cigscript::ashtray::announce_fixed(&cfg, &update::releases(&repo).unwrap_or_default());
+    let fixed = crate::ashtray::announce_fixed(&cfg, &update::releases(&repo).unwrap_or_default());
 
     if ctx.json {
         outln!(
@@ -106,7 +105,7 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
         return exit::USAGE;
     };
 
-    let tmp = cigscript::burn::runs::home_dir().join("tmp");
+    let tmp = crate::burn::runs::home_dir().join("tmp");
     if let Err(e) = std::fs::create_dir_all(&tmp) {
         eprintln!(
             "{} cannot create {}: {e}",
@@ -131,7 +130,7 @@ pub fn update(ctx: &Ctx, check_only: bool, allow_downgrade: bool, to: Option<Str
         let _ = std::fs::remove_file(&bin);
         return exit::USAGE;
     }
-    if cigscript::humidor::attest(&repo, &bin) {
+    if crate::humidor::attest(&repo, &bin) {
         eprintln!(
             "{} the checksum matches and the build attestation names {repo}'s release workflow",
             ctx.green("attested:")

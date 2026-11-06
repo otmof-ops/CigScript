@@ -55,6 +55,10 @@ pub struct RunRecord {
     pub diagnostic: Option<serde_json::Value>,
     #[serde(default)]
     pub burns: usize,
+    /// The run was asked to leave its burns in place on failure
+    /// (`--no-rollback`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_rollback: bool,
     #[serde(default)]
     pub irreversible: usize,
     #[serde(default)]
@@ -96,6 +100,11 @@ pub struct RunRecord {
     /// their plans agreed, and what was done about it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trial: Option<serde_json::Value>,
+    /// Set when a compiled program made the run (see `crate::program`): its
+    /// name, the script it was compiled from, sha256, the compiler, the cig
+    /// it runs on, and the binary. `script` is then the program's name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<serde_json::Value>,
     /// The directory this record was read from, which is where its journal
     /// is even when the directory no longer matches the id.
     #[serde(skip)]
@@ -151,6 +160,8 @@ impl RunRecord {
                 process_started(std::process::id())
             },
             trial: None,
+            program: None,
+            no_rollback: false,
             loaded_from: None,
         }
     }
@@ -193,6 +204,8 @@ impl RunRecord {
             pid: None,
             pid_started: None,
             trial: None,
+            program: None,
+            no_rollback: false,
             loaded_from: None,
         }
     }

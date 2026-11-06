@@ -24,6 +24,13 @@ A code never changes meaning. A retired code is never reused. A code marked *pla
 | `E850`–`E869` | update | `usage` | the updater and doctor |
 | `E870`–`E899` | finding | `usage` | what cig-orchestrator's guard found in someone else's code: a rehearsal's evidence or a static read |
 | `E900`–`E999` | internal | `internal` | internal: a bug in CigScript itself |
+| `E1000`–`E1099` | build | `usage` | building and running compiled programs: the path, the runtime, the target, and a program's own command line (cigcompile, and the programs it makes) |
+| `E1100`–`E1199` | strength | `check` | CigarScript: a feature above the strength a file declares |
+| `E1200`–`E1399` | types | `type` | CigarScript: types, inference and checked boundaries at medium strength |
+| `E1400`–`E1499` | layers | `check` | CigarScript: layered depth and scripts that read each other by context |
+| `E1500`–`E1599` | ownership | `check` | CigarScript: ownership and concurrency at full strength |
+| `E1600`–`E1699` | foreign | `check` | CigarScript: calling Rust and C, and the burn rule at that boundary |
+| `E1700`–`E1799` | carton | `usage` | carton: packages, manifests and the lock file |
 
 ## The four kinds of no
 
@@ -34,6 +41,7 @@ A code never changes meaning. A retired code is never reused. A code marked *pla
 | `these-are-mine` | these are MY ciggies | the door: it knows you and said no | 403 Forbidden; permission denied; a lock; a refusal by policy |
 | `dont-have-any` | don't have any over here | nobody's: right place, right you, nothing there | 404 from the server's side; an empty result |
 | `depends` | one of the four; the message says which | read the operating-system reason in the message | ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below |
+| `never-heard-of-you` | never heard of you | the door: it doesn't know you | 401 Unauthorized; authentication failure |
 
 ## lex (`E100`–`E199`)
 
@@ -2733,3 +2741,247 @@ After the work, cig checked one of its own promises (a restore, its journal, the
 
 1. a restored path is not as the journal recorded it, the journal does not read back as written, a tin object or an applied box file does not hash as it should (probe `crash-reports`). **Remedy:** `cig crash list` shows the report; it carries an anonymised repro when one reproduced in a sandbox, and the fix is announced on `cig update --check`
 
+
+## build (`E1000`–`E1099`)
+
+building and running compiled programs: the path, the runtime, the target, and a program's own command line (cigcompile, and the programs it makes).
+
+| code | title | kind of no | what to type next |
+|---|---|---|---|
+| [`E1000`](#e1000-nothing-to-compile) | nothing to compile *(cigcompile)* | can't see any ciggies bro | name a `.cig` file, or a folder that holds them: cigcompile build tools/tidy.cig |
+| [`E1001`](#e1001-no-runtime-for-the-target) | no runtime for the target *(cigcompile)* | can't see any ciggies bro | give it with --runtime path/to/cig, or install the cig of that version on this machine (cig update) |
+| [`E1002`](#e1002-the-runtime-is-another-cig) | the runtime is another cig *(cigcompile)* | not one of the four | pass the cig of the compiler's version with --runtime, or use the cigcompile built for that cig |
+| [`E1003`](#e1003-the-script's-pin-is-not-met) | the script's pin is not met *(cigcompile)* | not one of the four | build with a cigcompile whose cig meets the pin, or move the pin once the script works on this cig |
+| [`E1004`](#e1004-the-program-cannot-be-written) | the program cannot be written *(cigcompile)* | one of the four; the message says which | write it somewhere you can with -o, or free the space the message names |
+| [`E1005`](#e1005-the-runtime-already-carries-a-program) | the runtime already carries a program *(cigcompile)* | not one of the four | give the cig binary itself with --runtime, not a program compiled from it |
+| [`E1006`](#e1006-an-unknown-target) | an unknown target *(cigcompile)* | never heard of you | pick one cigcompile targets lists, e.g. --target x86_64-unknown-linux-musl |
+| [`E1007`](#e1007-two-programs-would-share-one-name) | two programs would share one name *(cigcompile)* | not one of the four | rename one of the scripts, or build each with its own -o |
+| [`E1050`](#e1050-a-damaged-program) | a damaged program | not one of the four | compile it again (cigcompile build), or fetch it again from where it came from |
+| [`E1051`](#e1051-a-program-for-another-cig) | a program for another cig | not one of the four | compile it again with the cigcompile for this cig, or keep the binary cigcompile made |
+| [`E1052`](#e1052-not-one-of-the-program's-run-flags) | not one of the program's run flags | not one of the four | put the program's own arguments after --: tool -- --flag (tool --help lists the run flags) |
+| [`E1053`](#e1053-not-this-program's-run) | not this program's run | these are MY ciggies | use cig unburn <run> for any run, or the program that made it |
+
+### E1000 nothing to compile
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+The path given to `cigcompile build` holds no CigScript program: no `.cig` file there, or a folder with none at its top level.
+
+**What to type next:** name a `.cig` file, or a folder that holds them: cigcompile build tools/tidy.cig
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the path is mistyped, or names the wrong folder (probe `path-exists`). **Remedy:** check the path, then give the script itself
+
+
+### E1001 no runtime for the target
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** can't see any ciggies bro (yours: you're pointed at the wrong place; wrong address: a path, a name, a directory not on PATH; ENOENT).
+
+A program is its script appended to the cig of the compiler's own version, built for the target. That cig could not be found.
+
+**What to type next:** give it with --runtime path/to/cig, or install the cig of that version on this machine (cig update)
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. no cig of the compiler's version is installed here or on PATH (probe `on-path`). **Remedy:** install it (cig update), or pass the binary with --runtime
+2. the target is another machine's and its cig was never fetched (no probe; a suggestion, not a finding). **Remedy:** download that cig release asset, check its sha256, and pass it with --runtime
+
+
+### E1002 the runtime is another cig
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The cig given as the runtime is not the version the compiler was built with. A program runs only on the cig it was compiled for, so the two must agree.
+
+**What to type next:** pass the cig of the compiler's version with --runtime, or use the cigcompile built for that cig
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. --runtime names an older or a newer cig than the compiler's (no probe; a suggestion, not a finding). **Remedy:** compare cig --version with cigcompile --version and pick the matching cig
+
+Related: `E1051`.
+
+
+### E1003 the script's pin is not met
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The script pins a cig version (a `# cig` line or a .cig-version file) that the runtime it would be appended to does not satisfy.
+
+**What to type next:** build with a cigcompile whose cig meets the pin, or move the pin once the script works on this cig
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the script asks for a newer cig than this compiler's (probe `source-line`). **Remedy:** update cig and cigcompile together, or lower the pin after testing the script
+
+
+### E1004 the program cannot be written
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** one of the four; the message says which (read the operating-system reason in the message; ENOENT, EACCES, ENOSPC and friends, each mapped in the causes below).
+
+The compiled program could not be written where it was asked to go. Nothing was left half-written there: the output is written beside it and moved into place whole.
+
+**What to type next:** write it somewhere you can with -o, or free the space the message names
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the output folder is not writable by you (probe `path-permissions`). **Remedy:** pick another folder with -o, or fix the folder's permissions
+2. the disk is full (probe `disk-free`). **Remedy:** free some space, then build again
+
+
+### E1005 the runtime already carries a program
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The file given as the runtime ends in a program's trailer: it is a compiled program, not cig, and a program is never appended to another.
+
+**What to type next:** give the cig binary itself with --runtime, not a program compiled from it
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. --runtime points at a compiled program (probe `file-hash`). **Remedy:** point it at cig itself (`command -v cig` shows where it is)
+
+
+### E1006 an unknown target
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** never heard of you (the door: it doesn't know you; 401 Unauthorized; authentication failure).
+
+The target named with --target is not one cig is released for, so there is no cig to append the program to.
+
+**What to type next:** pick one cigcompile targets lists, e.g. --target x86_64-unknown-linux-musl
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the target triple is mistyped, or is one cig does not ship (no probe; a suggestion, not a finding). **Remedy:** copy the triple from cigcompile targets
+
+
+### E1007 two programs would share one name
+
+*usage · since 1.15.0 · arises in compile · from cigcompile*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+Two scripts in the folder would compile to the same program: their names differ only in case, on a folder that does not tell case apart.
+
+**What to type next:** rename one of the scripts, or build each with its own -o
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. tool.cig and Tool.cig compiled into one folder (no probe; a suggestion, not a finding). **Remedy:** rename one of them
+
+
+### E1050 a damaged program
+
+*usage · since 1.15.0 · arises in run*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+This program's bytes do not match the sha256 in its trailer, or its record does not read: it was cut short, edited or damaged after it was compiled, and it refuses to run. The sha256 catches damage, not tampering: programs are unsigned.
+
+**What to type next:** compile it again (cigcompile build), or fetch it again from where it came from
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the file was cut short or changed after it was compiled: a partial download, a copy that stopped, a tool that rewrote it (probe `file-hash`). **Remedy:** compare its sha256 with the one from the build, then rebuild it or fetch it again
+
+Related: `E1051`.
+
+
+### E1051 a program for another cig
+
+*usage · since 1.15.0 · arises in run*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The program was compiled for one cig and appended to another. A program runs only on the cig it was compiled for, so the kernel it expects is the kernel it gets.
+
+**What to type next:** compile it again with the cigcompile for this cig, or keep the binary cigcompile made
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program's script was appended to a different cig by hand or by an older tool (no probe; a suggestion, not a finding). **Remedy:** build it again with cigcompile build
+
+Related: `E1002`.
+
+
+### E1052 not one of the program's run flags
+
+*usage · since 1.15.0 · arises in run*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A compiled program takes the run's flags first and its own arguments after them; this one is not a run flag, it lacks its value, or an argument is not valid UTF-8. Nothing ran.
+
+**What to type next:** put the program's own arguments after --: tool -- --flag (tool --help lists the run flags)
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a flag meant for the program itself, given before -- (no probe; a suggestion, not a finding). **Remedy:** move it after --
+2. a mistyped run flag (refused, so a mistyped --dry-run never becomes a real run) (no probe; a suggestion, not a finding). **Remedy:** spell it as tool --help shows it
+
+
+### E1053 not this program's run
+
+*usage · since 1.15.0 · arises in unburn*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+A compiled program puts back only the runs it made (`--unburn`); the run named was made by a script or by another program.
+
+**What to type next:** use cig unburn <run> for any run, or the program that made it
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the run id belongs to another script's or program's run (probe `run-record`). **Remedy:** cig runs <run> shows which script or program made it
+
+
+## strength (`E1100`–`E1199`)
+
+CigarScript: a feature above the strength a file declares.
+
+*Reserved; nothing emitted yet.*
+
+## types (`E1200`–`E1399`)
+
+CigarScript: types, inference and checked boundaries at medium strength.
+
+*Reserved; nothing emitted yet.*
+
+## layers (`E1400`–`E1499`)
+
+CigarScript: layered depth and scripts that read each other by context.
+
+*Reserved; nothing emitted yet.*
+
+## ownership (`E1500`–`E1599`)
+
+CigarScript: ownership and concurrency at full strength.
+
+*Reserved; nothing emitted yet.*
+
+## foreign (`E1600`–`E1699`)
+
+CigarScript: calling Rust and C, and the burn rule at that boundary.
+
+*Reserved; nothing emitted yet.*
+
+## carton (`E1700`–`E1799`)
+
+carton: packages, manifests and the lock file.
+
+*Reserved; nothing emitted yet.*

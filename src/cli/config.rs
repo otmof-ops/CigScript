@@ -4,7 +4,7 @@
 //! `cig config`: show, set and unset the few keys in `~/.cigscript/config`.
 
 use super::{exit, Ctx};
-use cigscript::config::{self, Config, KEYS};
+use crate::config::{self, Config, KEYS};
 
 pub fn config(ctx: &Ctx, key: Option<String>, value: Option<String>, unset: bool) -> i32 {
     let mut cfg = Config::load();

@@ -490,6 +490,53 @@ pub fn drop_unapplied(run_dir: &Path) -> usize {
     n
 }
 
+/// An environment for an exec in a child that may not allocate: the
+/// strings and the pointer array, both built in the parent.
+#[cfg(target_os = "linux")]
+pub struct ExecEnv {
+    _strings: Vec<std::ffi::CString>,
+    ptrs: Vec<*const libc::c_char>,
+}
+
+// SAFETY: the pointers point into `_strings`, owned by the same value and
+// never changed after it is built (moving the value moves no heap buffer);
+// the forked child only reads them, for execve.
+#[cfg(target_os = "linux")]
+unsafe impl Send for ExecEnv {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for ExecEnv {}
+
+#[cfg(target_os = "linux")]
+impl ExecEnv {
+    /// This process's environment with cig's self-call marker set.
+    pub fn marked_self() -> ExecEnv {
+        use std::os::unix::ffi::OsStrExt;
+        let mut strings: Vec<std::ffi::CString> = std::env::vars_os()
+            .filter(|(k, _)| k.as_os_str() != crate::program::SELF_ENV)
+            .filter_map(|(k, v)| {
+                let mut b = k.as_bytes().to_vec();
+                b.push(b'=');
+                b.extend_from_slice(v.as_bytes());
+                std::ffi::CString::new(b).ok()
+            })
+            .collect();
+        strings.push(
+            std::ffi::CString::new(format!("{}=1", crate::program::SELF_ENV)).expect("plain"),
+        );
+        let mut ptrs: Vec<*const libc::c_char> = strings.iter().map(|c| c.as_ptr()).collect();
+        ptrs.push(std::ptr::null());
+        ExecEnv {
+            _strings: strings,
+            ptrs,
+        }
+    }
+
+    /// The `envp` for execve.
+    pub fn envp(&self) -> *const *const libc::c_char {
+        self.ptrs.as_ptr()
+    }
+}
+
 #[cfg(target_os = "linux")]
 pub struct Setup {
     pub uid_map: Vec<u8>,
@@ -519,6 +566,9 @@ pub struct Setup {
     /// The forwarder to start inside the namespace (`cig internal-forward
     /// <sock> <port>`), as the argv to exec.
     pub forward: Option<[std::ffi::CString; 4]>,
+    /// The forwarder's environment: cig's own, marked as a call to itself
+    /// (`crate::program::SELF_ENV`), so a program's binary is `cig` for it.
+    pub forward_env: Option<ExecEnv>,
     /// `contain`: the home layer, the read-only rest, a /dev of its own,
     /// the hop's syscall filter.
     pub contain: Option<Contain>,
@@ -1280,6 +1330,7 @@ impl Setup {
         let boxed = layers.is_some();
         let netns = boxed && spec.network != Network::On;
         let mut forward = None;
+        let mut forward_env = None;
         let mut sock_dir = None;
         if netns && spec.network == Network::Registry {
             let seq = layers.map(seq_of).unwrap_or(0);
@@ -1294,6 +1345,7 @@ impl Setup {
                 cstr(&sock)?,
                 std::ffi::CString::new(PROXY_PORT.to_string()).expect("digits"),
             ]);
+            forward_env = Some(ExecEnv::marked_self());
         }
         let contain = match (contained, layers) {
             (true, Some(l)) => {
@@ -1317,6 +1369,7 @@ impl Setup {
             resolv_null: netns,
             sock_dir,
             forward,
+            forward_env,
             contain,
         })
     }
@@ -1652,11 +1705,16 @@ impl Setup {
                     ];
                     // Through the descriptor held above, whatever covers
                     // the path now; by the path where none could be held.
+                    // Marked as cig's call to itself (built in the parent).
+                    let envp = match &self.forward_env {
+                        Some(e) => e.envp(),
+                        None => libc::_exit(127),
+                    };
                     if exe_fd >= 0 {
                         let from = fd_path(exe_fd);
-                        libc::execv(from.as_ptr() as *const libc::c_char, argv.as_ptr());
+                        libc::execve(from.as_ptr() as *const libc::c_char, argv.as_ptr(), envp);
                     }
-                    libc::execv(f[0].as_ptr(), argv.as_ptr());
+                    libc::execve(f[0].as_ptr(), argv.as_ptr(), envp);
                     libc::_exit(127);
                 }
             }

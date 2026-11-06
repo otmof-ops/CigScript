@@ -569,6 +569,7 @@ usage or environment problem, `70` `cig` itself crashed.
 - [docs/CHAINS.md](docs/CHAINS.md): chains, the automation layer.
 - [docs/HOPS.md](docs/HOPS.md): running other programs, and the rules that hold at the boundary.
 - [docs/BURN.md](docs/BURN.md): effects, modes, the journal, rollback, and what it can't undo and says so.
+- [docs/PROGRAMS.md](docs/PROGRAMS.md): compiled programs: a script appended to the `cig` that runs it, its command line, and what differs from `cig run`.
 - [docs/SCIENCE.md](docs/SCIENCE.md): CigScript in the lab.
 - [docs/STDLIB.md](docs/STDLIB.md): every function with its arity and effect (generated).
 - [docs/ERRORS.md](docs/ERRORS.md): every error code, its kind of no, what to type next, its causes (generated from the registry).

@@ -986,14 +986,18 @@ fn lay_out(case: &Path, repro: &Repro, script: &str) -> std::io::Result<()> {
 
 /// Run the repro in `scratch` and say whether it showed the finding.
 fn reproduces(repro: &Repro, script: &str, scratch: &Path) -> Result<bool, String> {
+    // A compiled program is not a general cig: it runs nothing but itself.
+    if crate::program::running() {
+        return Err("a compiled program does not run repros".to_string());
+    }
     let _ = std::fs::remove_dir_all(scratch);
     let case = scratch.join("case");
     let home = scratch.join("home");
     std::fs::create_dir_all(&case).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&home).map_err(|e| e.to_string())?;
     lay_out(&case, repro, script).map_err(|e| e.to_string())?;
-    let me = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut cmd = std::process::Command::new(me);
+    // Marked as cig's call to itself: a program's binary is `cig` for it.
+    let mut cmd = crate::program::self_command().map_err(|e| e.to_string())?;
     cmd.args(["run", "repro.cig"])
         .current_dir(&case)
         .env("CIGSCRIPT_HOME", &home)

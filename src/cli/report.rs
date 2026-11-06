@@ -14,13 +14,13 @@
 //! answer is as easy to send as a panic.
 
 use super::{exit, Ctx};
-use cigscript::burn::journal::{Before, Journal};
-use cigscript::burn::runs;
-use cigscript::burn::Op;
-use cigscript::crash::{redact_arg, tilde};
-use cigscript::diagnostics::Diagnostic;
-use cigscript::repro::Mapping;
-use cigscript::{doctor, update};
+use crate::burn::journal::{Before, Journal};
+use crate::burn::runs;
+use crate::burn::Op;
+use crate::crash::{redact_arg, tilde};
+use crate::diagnostics::Diagnostic;
+use crate::repro::Mapping;
+use crate::{doctor, update};
 use std::path::{Path, PathBuf};
 
 pub fn reports_dir() -> PathBuf {
@@ -80,7 +80,7 @@ pub fn report(ctx: &Ctx, id: &str, out: Option<PathBuf>, send: bool) -> i32 {
     );
     eprintln!(
         "  https://github.com/{}/issues/new?template=cheat.yml",
-        cigscript::config::Config::load().get("issues_repo")
+        crate::config::Config::load().get("issues_repo")
     );
     exit::OK
 }
@@ -94,13 +94,13 @@ fn send_bundle(
     bundle: serde_json::Value,
     mut mapping: Mapping,
 ) -> i32 {
-    use cigscript::crash::{Consent, CrashReport, Kind};
-    let cfg = cigscript::config::Config::load();
-    if cigscript::crash::consent(&cfg) == Consent::Never {
+    use crate::crash::{Consent, CrashReport, Kind};
+    let cfg = crate::config::Config::load();
+    if crate::crash::consent(&cfg) == Consent::Never {
         eprintln!(
             "{} reports is \"never\"{}, so nothing leaves this machine; `cig report {}` writes the bundle to a file instead",
             ctx.red("error[E800 usage]:"),
-            if cigscript::crash::under_ci() && !cfg.is_set("reports") && !cfg.is_set("crash_reports") {
+            if crate::crash::under_ci() && !cfg.is_set("reports") && !cfg.is_set("crash_reports") {
                 " under CI unless `cig config reports always` says otherwise"
             } else {
                 ""
@@ -130,31 +130,31 @@ fn send_bundle(
     );
     report.cwd = mapping.map(Path::new(&rec.cwd));
     report.queue.requested = true;
-    if let Err(e) = cigscript::ashtray::queue(&mut report) {
+    if let Err(e) = crate::ashtray::queue(&mut report) {
         eprintln!(
             "{} could not save the report: {e}",
             ctx.red("error[E802 usage]:")
         );
         return exit::USAGE;
     }
-    let repo = cigscript::ashtray::repo_for(&cfg, &report);
-    match cigscript::ashtray::try_send(&mut report, &cfg) {
-        Ok(cigscript::crash::SendOutcome::Filed(url)) => {
+    let repo = crate::ashtray::repo_for(&cfg, &report);
+    match crate::ashtray::try_send(&mut report, &cfg) {
+        Ok(crate::crash::SendOutcome::Filed(url)) => {
             eprintln!("{} run {} filed at {url}", ctx.green("sent:"), rec.id);
             exit::OK
         }
-        Ok(cigscript::crash::SendOutcome::Commented(url)) => {
+        Ok(crate::crash::SendOutcome::Commented(url)) => {
             eprintln!(
                 "{} this failure is already known; its count was updated on {url}",
                 ctx.green("sent:")
             );
             exit::OK
         }
-        Ok(cigscript::crash::SendOutcome::Manual(url)) => {
+        Ok(crate::crash::SendOutcome::Manual(url)) => {
             eprintln!(
                 "{} {}, so nothing was sent; the bundle waits in the ashtray as {} and goes with a later run once a tool is there.",
                 ctx.yellow("note:"),
-                cigscript::tracker::why_none(),
+                crate::tracker::why_none(),
                 report.id
             );
             eprintln!("open this link to file it yourself now (the report is prefilled):");
@@ -188,7 +188,7 @@ fn op_shape(op: &Op, m: &mut Mapping) -> String {
         } => {
             let mut s = format!(
                 "run {} ({} argument{})",
-                cigscript::crash::program_name(cmd),
+                crate::crash::program_name(cmd),
                 args.len(),
                 if args.len() == 1 { "" } else { "s" }
             );
@@ -215,7 +215,7 @@ fn op_shape(op: &Op, m: &mut Mapping) -> String {
 /// The state directory as the install facts name it: the default, or
 /// `<custom>` (`CIGSCRIPT_HOME` points elsewhere; where is nobody's business).
 fn state_dir_shape() -> String {
-    let default = cigscript::crash::home_path().map(|h| h.join(".cigscript"));
+    let default = crate::crash::home_path().map(|h| h.join(".cigscript"));
     if default.as_deref() == Some(runs::home_dir().as_path()) {
         "~/.cigscript".to_string()
     } else {
@@ -308,11 +308,11 @@ fn bundle(rec: &runs::RunRecord) -> (serde_json::Value, Mapping) {
             m.anonymise_value(&mut v);
             v
         });
-    let crashes = cigscript::crash::list().unwrap_or_default();
+    let crashes = crate::crash::list().unwrap_or_default();
     let error = rec.error.as_deref().map(|e| m.anonymise_text(e));
     let bundle = serde_json::json!({
         "kind": "cigscript-report",
-        "cig": cigscript::VERSION,
+        "cig": crate::VERSION,
         "generated": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "platform": {"os": std::env::consts::OS, "arch": std::env::consts::ARCH},
         "run": {

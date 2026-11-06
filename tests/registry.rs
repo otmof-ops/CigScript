@@ -6,14 +6,14 @@
 //! page" test from the update package.
 
 use cigscript::diagnostics::Kind;
-use cigscript::errors::{all, default_code, lookup, lookup_no, lookup_probe, registry};
+use cigscript::errors::{all, default_code, lookup, lookup_no, lookup_probe, number, registry};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 const ARISES: &[&str] = &[
     "parse", "check", "dry-run", "run", "light", "unburn", "runs", "doctor", "update", "crash",
-    "any",
+    "compile", "any",
 ];
 const TAGS: &[&str] = &[
     "beginner-likely",
@@ -27,9 +27,10 @@ const TAGS: &[&str] = &[
     "macos",
     "planned",
     "orchestrator",
+    "compiler",
 ];
 
-/// Every `Eddd` token in the Rust sources, comments stripped.
+/// Every `Eddd` and `Edddd` token in the Rust sources, comments stripped.
 fn emitted_codes() -> BTreeSet<String> {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut out = BTreeSet::new();
@@ -47,12 +48,20 @@ fn emitted_codes() -> BTreeSet<String> {
             let bytes = code_part.as_bytes();
             let mut i = 0;
             while i + 4 <= bytes.len() {
-                if bytes[i] == b'E'
-                    && bytes[i + 1..i + 4].iter().all(u8::is_ascii_digit)
-                    && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric())
-                    && (i + 4 == bytes.len() || !bytes[i + 4].is_ascii_alphanumeric())
-                {
-                    out.insert(code_part[i..i + 4].to_string());
+                if bytes[i] == b'E' && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric()) {
+                    let digits = bytes[i + 1..]
+                        .iter()
+                        .take_while(|b| b.is_ascii_digit())
+                        .count();
+                    let end = i + 1 + digits;
+                    // No code starts with a 0 (`lookup("E0000")` asks
+                    // for one that cannot exist).
+                    if (3..=4).contains(&digits)
+                        && bytes[i + 1] != b'0'
+                        && (end == bytes.len() || !bytes[end].is_ascii_alphanumeric())
+                    {
+                        out.insert(code_part[i..end].to_string());
+                    }
                 }
                 i += 1;
             }
@@ -87,12 +96,15 @@ fn every_emitted_code_is_registered_and_every_registered_code_is_emitted() {
         .difference(&emitted)
         .filter(|c| {
             let e = lookup(c).unwrap();
-            !e.has_tag("planned") && !e.has_tag("orchestrator") && !e.retired
+            !e.has_tag("planned")
+                && !e.has_tag("orchestrator")
+                && !e.has_tag("compiler")
+                && !e.retired
         })
         .collect();
     assert!(
         dead.is_empty(),
-        "codes in errors/registry.toml that nothing in src/ emits (tag them `planned` or `orchestrator`, or retire them): {dead:?}"
+        "codes in errors/registry.toml that nothing in src/ emits (tag them `planned`, `orchestrator` or `compiler`, or retire them): {dead:?}"
     );
 }
 
@@ -173,16 +185,17 @@ fn every_code_has_a_complete_page() {
             );
         }
     }
-    // Ranges: ordered, non-overlapping, one kind each.
-    let mut last_to = String::new();
+    // Ranges: ordered by number, non-overlapping, one kind each.
+    let mut last_to = 0;
     for r in &reg.ranges {
-        assert!(r.from < r.to, "range {}-{}", r.from, r.to);
+        let (from, to) = (number(&r.from).unwrap(), number(&r.to).unwrap());
+        assert!(from < to, "range {}-{}", r.from, r.to);
         assert!(
-            r.from > last_to,
+            from > last_to,
             "ranges overlap or are out of order at {}",
             r.from
         );
-        last_to = r.to.clone();
+        last_to = to;
         assert!(!r.meaning.is_empty());
     }
     // Probes: unique names, `none` present.

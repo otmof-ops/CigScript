@@ -3,6 +3,41 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.15.0 — 2026-11-07
+
+Compiled programs, the first stage of cigcompile (otmof-ops/cigcompile#2).
+See [PROGRAMS.md](docs/PROGRAMS.md).
+
+- **Compiled programs.** A script appended to the `cig` of the same version
+  runs as one executable, through the same run as `cig run`: same kernel,
+  journal, plan and rollback. It takes the run's flags before its own
+  arguments (`--dry-run`, `--no-rollback`, `--max-steps`, `--light`,
+  `--chains`, `--unburn`, `--explain`, `--cig-program`), `--` hands the rest
+  to the script, and a mistyped flag is refused rather than passed on. It
+  does not check itself at start, and it has no pin and no trial.
+- **`cig runs` and `unburn` know them.** A program's run is listed by the
+  program's name and shows its file, sha256, compiler and binary.
+  `--unburn` puts back the program's own runs only (`E1053`).
+- **The self-call marker.** `CIG_INTERNAL_SELF` marks cig's calls to itself.
+  A program's binary answers only the ashtray's `crash flush --quiet` and
+  the box forwarder's `internal-forward` as `cig`, never in a setuid
+  process, and removes the marker from its environment. It never updates
+  itself and never runs a repro.
+- **Refusals.** A damaged program refuses to run (`E1050`) and so does one
+  compiled for another cig (`E1051`). The sha256s are integrity, not
+  authenticity: programs are unsigned until cigcompile#10.
+- **`cigscript::cli::entry`.** The `cli` module is now in the library, and
+  `src/main.rs` calls it. Nothing changes for `cig`.
+- **Four-digit codes.** Codes compare as numbers, and `E1000` to `E1799`
+  are the new families from cigcompile#11 (build, strength, types, layers,
+  ownership, foreign, carton). `E1000` to `E1007` are cigcompile's and
+  `E1050` to `E1053` are the programs'.
+- **The runtime's version in its bytes.** Every cig carries
+  `cig-runtime-version=<version>`, so cigcompile can tell which cig a binary
+  is without running one built for another machine.
+- **`no_rollback` in run records.** A run started with `--no-rollback`
+  says so in its record.
+
 ## 1.14.0 — 2026-11-06
 
 What cig-orchestrator needs to close the holes found testing it

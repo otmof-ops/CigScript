@@ -66,15 +66,19 @@ for no in seen_no.values():
 def esc(s: str) -> str:
     return s.replace("|", "\\|")
 
+def num(code: str) -> int:
+    # Codes compare by number: as text, E1050 would sort among the E100s.
+    return int(code[1:])
+
 for r in ranges:
-    members = [n for n in nodes if r["from"] <= n["code"] <= r["to"]]
+    members = [n for n in nodes if num(r["from"]) <= num(n["code"]) <= num(r["to"])]
     out += ["", f"## {r['family']} (`{r['from']}`–`{r['to']}`)", "", r["meaning"] + ".", ""]
     if not members:
         out.append("*Reserved; nothing emitted yet.*")
         continue
     out += ["| code | title | kind of no | what to type next |", "|---|---|---|---|"]
     for n in members:
-        planned = " *(planned)*" if "planned" in n["tags"] else (" *(cigo)*" if "orchestrator" in n["tags"] else "")
+        planned = " *(planned)*" if "planned" in n["tags"] else (" *(cigo)*" if "orchestrator" in n["tags"] else (" *(cigcompile)*" if "compiler" in n["tags"] else ""))
         out.append(f"| [`{n['code']}`](#{n['code'].lower()}-{n['title'].replace(' ', '-').replace('`','')}) | {esc(n['title'])}{planned} | {n['no']['hear']} | {esc(n['fix'])} |")
     for n in members:
         flags = []
@@ -82,6 +86,8 @@ for r in ranges:
             flags.append("planned")
         if "orchestrator" in n["tags"]:
             flags.append("from cig-orchestrator")
+        if "compiler" in n["tags"]:
+            flags.append("from cigcompile")
         if n.get("retired"):
             flags.append("retired")
         meta = f"*{n['kind']} · since {n['since']}"
