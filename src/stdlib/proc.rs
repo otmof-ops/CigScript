@@ -2017,6 +2017,20 @@ fn hop(
         .at(s)
         .with_hint("declare pack { \".\" } (or the roots the hop writes under) as the first statement"));
     }
+    // Isolation without a pack: there is nothing to put the box's layer
+    // over, and an isolated hop never runs without its box. Refused before
+    // it is journaled, since it never runs.
+    if o.boxed
+        && o.box_spec.network != crate::burn::overlay::Network::On
+        && i.kernel.pack().is_none()
+    {
+        return Err(runtime(format!(
+            "{name}: the box was asked to isolate this hop and cannot be made: the script declares no pack {{ }}, and the box is a layer over the pack; running it unprotected to check it defeats the point"
+        ))
+        .code("E777")
+        .at(s)
+        .with_hint("declare pack { \".\" } (or the roots the hop writes under) as the first statement"));
+    }
     let mark = i.kernel.mark();
     if i.effect(name, op, s)? == Decision::Simulate {
         return Ok(None);
@@ -2048,7 +2062,30 @@ fn hop(
                 );
                 None
             }
-            None => None,
+            None => {
+                // Nothing to put the layer over: no pack, or a run that keeps
+                // no directory for it. Isolation is never run without its
+                // box; a plain box falls back to the tin, and says so.
+                let why = if i.kernel.pack().is_none() {
+                    "the script declares no pack { }, and the box is a layer over the pack"
+                } else {
+                    "this run keeps no directory for the box's layer"
+                };
+                if isolation {
+                    return Err(runtime(format!(
+                        "{name}: the box was asked to isolate this hop and cannot be made: {why}; running it unprotected to check it defeats the point"
+                    ))
+                    .code("E777")
+                    .at(s)
+                    .with_hint("declare pack { \".\" } (or the roots the hop writes under) as the first statement"));
+                }
+                let _ = writeln!(
+                    i.err,
+                    "warning[E763 burn]: the box cannot be made here ({why}); `{}` runs on the tin instead",
+                    hop_label(cmd, args)
+                );
+                None
+            }
         }
     } else {
         None

@@ -3,6 +3,19 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.13.1 — 2026-11-06
+
+- **A box with no pack is never a silent no-op.** In a script that
+  declares no `pack { }`, a hop asked to run in the box ran on the real
+  disk without a word, and one asked to be isolated (`box: {network:
+  "off"}` or `"registry"`, `contain: true`) ran unprotected: no layer, no
+  containment, no warning, against the box's own rule that an isolated hop
+  is refused rather than run without it. An isolated hop with no pack is
+  now refused before it runs (`E777`, naming the missing pack), and a plain
+  `box: true` says it runs on the tin (`E763`), as it does where the kernel
+  refuses the box. Scripts that declare a pack, cig-orchestrator among
+  them, are unaffected.
+
 ## 1.13.0 — 2026-11-06
 
 - **A hop's output, live: `stream: true`.** `proc.run` and `proc.shell`

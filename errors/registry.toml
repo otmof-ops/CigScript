@@ -1712,6 +1712,10 @@ remedy = "cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user
 why = "the contained box (contain: true) refused its setup: cig runs as root, where a hop keeps its capabilities in the box, or there is no scratch folder outside your home and the pack (HOME=/, as in a service account or a container run as any user)"
 probe = "none"
 remedy = "run cig as an ordinary user whose HOME is a directory of its own; the message names which"
+[[code.cause]]
+why = "the script declares no pack { }, and the box is a layer over the pack, so there is nothing to put it over"
+probe = "none"
+remedy = "declare pack { \".\" } (or the roots the hop writes under) as the script's first statement"
 
 [[code]]
 code = "E780"
@@ -2010,6 +2014,10 @@ remedy = "`sysctl kernel.apparmor_restrict_unprivileged_userns=0` and `kernel.un
 why = "the operating system has no overlayfs (macOS, Windows, the BSDs)"
 probe = "none"
 remedy = "the hop runs on the tin there; `touches` keeps what it may change"
+[[code.cause]]
+why = "the script declares no pack { }: the box is a layer over the pack, so there is nothing to put it over"
+probe = "none"
+remedy = "declare pack { \".\" } as the script's first statement"
 [[code.cause]]
 why = "a path in the layer could not be written to the pack (permissions, a device full)"
 probe = "path-permissions"
