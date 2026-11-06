@@ -1015,6 +1015,7 @@ fn parse_box_spec(
             }
             ("pidns", v) => spec.pidns = v.truthy(),
             ("contain", v) => spec.contain = v.truthy(),
+            ("quiet", v) => spec.quiet = v.truthy(),
             ("expect", Value::List(l)) => {
                 for item in l.borrow().iter() {
                     match item {
@@ -1044,7 +1045,7 @@ fn parse_box_spec(
             }
             (other, _) => {
                 return Err(type_error(format!(
-                    "{name}: box has no option `{other}` (network, allow_hosts, pidns, apply, contain, expect)"
+                    "{name}: box has no option `{other}` (network, allow_hosts, pidns, apply, contain, expect, quiet)"
                 ))
                 .at(s))
             }
@@ -2173,14 +2174,16 @@ fn hop(
                         }
                     }
                     crate::burn::overlay::discard(l);
-                    let _ = writeln!(
-                        i.err,
-                        "{}",
-                        format_args!(
-                            "box: `{}` failed, so its layer was dropped; nothing of it reached the pack",
-                            hop_label(cmd, args)
-                        )
-                    );
+                    if !o.box_spec.quiet {
+                        let _ = writeln!(
+                            i.err,
+                            "{}",
+                            format_args!(
+                                "box: `{}` failed, so its layer was dropped; nothing of it reached the pack",
+                                hop_label(cmd, args)
+                            )
+                        );
+                    }
                     return Err(d);
                 }
             };
@@ -2207,11 +2210,13 @@ fn hop(
                     }
                 }
                 crate::burn::overlay::discard(l);
-                let _ = writeln!(
-                    i.err,
-                    "box: `{}` exited outside its contract, so its layer was dropped; nothing of it reached the pack",
-                    hop_label(cmd, args)
-                );
+                if !o.box_spec.quiet {
+                    let _ = writeln!(
+                        i.err,
+                        "box: `{}` exited outside its contract, so its layer was dropped; nothing of it reached the pack",
+                        hop_label(cmd, args)
+                    );
+                }
                 return Err(d);
             }
             // The judgement, then the layer's fate: applied (the default),
@@ -2225,7 +2230,7 @@ fn hop(
                 crate::burn::overlay::Apply::Never => true,
                 crate::burn::overlay::Apply::Ask => !ask_to_apply(i, l, &hop_label(cmd, args)),
             };
-            if let Some(j) = &judgement {
+            if let Some(j) = judgement.as_ref().filter(|_| !o.box_spec.quiet) {
                 j.note(&mut i.err, &hop_label(cmd, args), keep);
             }
             if keep {
@@ -2242,18 +2247,20 @@ fn hop(
                         .code("E763")
                         .at(s)
                 })?;
-                let _ = writeln!(
-                    i.err,
-                    "note[E780 burn]: held back: `{}` changed {} path{} and removed {} in the box, not in the pack; cig box apply {} {} keeps them, cig box discard {} {} drops them",
-                    hop_label(cmd, args),
-                    kept.written,
-                    if kept.written == 1 { "" } else { "s" },
-                    kept.removed,
-                    kept.run,
-                    kept.seq,
-                    kept.run,
-                    kept.seq
-                );
+                if !o.box_spec.quiet {
+                    let _ = writeln!(
+                        i.err,
+                        "note[E780 burn]: held back: `{}` changed {} path{} and removed {} in the box, not in the pack; cig box apply {} {} keeps them, cig box discard {} {} drops them",
+                        hop_label(cmd, args),
+                        kept.written,
+                        if kept.written == 1 { "" } else { "s" },
+                        kept.removed,
+                        kept.run,
+                        kept.seq,
+                        kept.run,
+                        kept.seq
+                    );
+                }
                 let mut raw = raw;
                 raw.layer = Some(format!("{}/{}", kept.run, kept.seq));
                 raw.judged = judgement;
@@ -2269,17 +2276,19 @@ fn hop(
                 i.kernel
                     .hop_compensations(compensations, o.cwd.as_deref(), mark);
             }
-            let _ = writeln!(
-                i.err,
-                "{}",
-                format_args!(
-                    "box: `{}` applied: {} path{} written, {} removed",
-                    hop_label(cmd, args),
-                    applied.created.len(),
-                    if applied.created.len() == 1 { "" } else { "s" },
-                    applied.deleted.len()
-                )
-            );
+            if !o.box_spec.quiet {
+                let _ = writeln!(
+                    i.err,
+                    "{}",
+                    format_args!(
+                        "box: `{}` applied: {} path{} written, {} removed",
+                        hop_label(cmd, args),
+                        applied.created.len(),
+                        if applied.created.len() == 1 { "" } else { "s" },
+                        applied.deleted.len()
+                    )
+                );
+            }
             let mut raw = raw;
             raw.judged = judgement;
             return Ok(Some((raw, out, err)));
@@ -2454,16 +2463,20 @@ fn keep_as_evidence(
     )
     .ok()?;
     if let Some(j) = &judgement {
-        j.note(&mut i.err, &hop_label(cmd, args), true);
+        if !o.box_spec.quiet {
+            j.note(&mut i.err, &hop_label(cmd, args), true);
+        }
         j.insert(&mut base);
     }
-    let _ = writeln!(
-        i.err,
-        "note[E780 burn]: `{}` failed in the box; its layer is kept to be read: cig box list shows it, cig box discard {} {} drops it",
-        hop_label(cmd, args),
-        kept.run,
-        kept.seq
-    );
+    if !o.box_spec.quiet {
+        let _ = writeln!(
+            i.err,
+            "note[E780 burn]: `{}` failed in the box; its layer is kept to be read: cig box list shows it, cig box discard {} {} drops it",
+            hop_label(cmd, args),
+            kept.run,
+            kept.seq
+        );
+    }
     base.insert(
         "layer".to_string(),
         Value::str(format!("{}/{}", kept.run, kept.seq)),

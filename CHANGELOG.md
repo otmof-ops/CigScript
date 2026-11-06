@@ -13,6 +13,11 @@ project follows semantic versioning.
   display only: the value, the exit-code contract, the timeout and every
   other rule in HOPS.md are the same as without it. cig-orchestrator's guard
   uses it for the package-manager commands it runs (cig-orchestrator #57).
+- **`box: {quiet: true}`** for a script that judges a box's layer itself:
+  it reads `layer`, `outside`, `refused` and `changed` and says what they
+  mean in its own words, so cig's own lines about the layer (`E781`,
+  `E780`, applied, dropped) are left out. A rehearsal that cig-orchestrator
+  discarded right after no longer tells you to `cig box apply` it.
 - **The guard_scope codes, `E892`–`E899`**, registered for
   cig-orchestrator's guard levels (cig-orchestrator #57) so `cig explain`
   and doctor know them: `E892` a piped download-and-execute cancelled,
