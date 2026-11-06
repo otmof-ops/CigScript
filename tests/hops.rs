@@ -649,3 +649,46 @@ fn pipe_stdin_write_does_not_disable_the_timeout() {
         "the write blocked the timeout: {wall:?}"
     );
 }
+
+#[test]
+fn stream_shows_a_hops_output_as_it_arrives_and_still_captures_it_whole() {
+    use std::io::{BufRead, BufReader};
+    let sb = Sandbox::new();
+    // Shown on the matching stream, then the value is the same as without it.
+    let (code, out, err) = sb.run(&burn(
+        "  stick r = proc.run(\"sh\", [\"-c\", \"echo early; echo warned 1>&2; echo late\"], {stream: true})\n  exhale \"got:\", r.out.trim().replace(\"\\n\", \"|\"), r.err.trim()",
+    ));
+    assert_eq!(code, 0, "{err}");
+    assert!(out.starts_with("early\nlate\n"), "{out}");
+    assert!(out.contains("got: early|late warned"), "{out}");
+    assert!(err.contains("warned\n"), "{err}");
+    // proc.shell takes it too; without it nothing is shown.
+    let (code, out, _) = sb.run(&burn(
+        "  stick a = proc.shell(\"echo shown\", {stream: true})\n  stick b = proc.shell(\"echo kept\")\n  exhale a.out.trim(), b.out.trim()",
+    ));
+    assert_eq!((code, out.as_str()), (0, "shown\nshown kept\n"));
+    // Live: the first line is on cig's stdout while the child still runs.
+    sb.write(
+        "live.cig",
+        &burn("  proc.run(\"sh\", [\"-c\", \"echo early; sleep 3; echo late\"], {stream: true})"),
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args(["run", "live.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.path().join("home"))
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("run cig");
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let first = lines.next().expect("a line").expect("text");
+    assert_eq!(first, "early");
+    assert!(
+        child.try_wait().expect("wait").is_none(),
+        "the first line came only after the hop ended"
+    );
+    assert_eq!(lines.next().expect("a line").expect("text"), "late");
+    assert!(child.wait().expect("wait").success());
+}

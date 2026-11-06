@@ -5582,6 +5582,29 @@ fn a_contained_hop_off_its_footprint_is_held_back() {
     assert!(err.contains("held back"), "{err}");
 }
 
+/// `quiet: true`: a script that reads the layer and says what it means
+/// itself gets the same result, without cig's own lines about the layer.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_quiet_box_leaves_its_layer_to_the_script() {
+    let sb = Sandbox::new();
+    sb.write("p/keep.txt", "v1\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  stick a = proc.run(\"sh\", [\"-c\", \"echo a > made.txt\"], {cwd: \"p\", box: {network: \"off\", contain: true, quiet: true, expect: [\"made.txt\"]}})\n  stick b = proc.run(\"sh\", [\"-c\", \"echo b > stray.txt\"], {cwd: \"p\", box: {network: \"off\", contain: true, quiet: true, apply: \"never\", expect: [\"made.txt\"]}})\n  fs.write_text(\"p/said.txt\", str(b.layer != null) + \" \" + b.outside.map(pack(u) => u.path).join(\",\"))\n  proc.discard_layer(b.layer)\n}\n",
+    );
+    let Some((out, err)) = run_contained(&sb, "s.cig") else {
+        return;
+    };
+    assert!(out.status.success(), "{err}");
+    assert_eq!(sb.read("p/made.txt"), "a\n", "{err}");
+    assert!(!sb.exists("p/stray.txt"), "{err}");
+    assert!(sb.read("p/said.txt").starts_with("true "), "{err}");
+    assert!(sb.read("p/said.txt").contains("stray.txt"), "{err}");
+    assert!(!err.contains("E780") && !err.contains("E781"), "{err}");
+    assert!(!err.contains("box: `"), "{err}");
+}
+
 /// A rehearsal (`apply: "never"`) applies in the same run with
 /// `proc.apply_layer`, journaled, so the run's unburn takes it back out; a
 /// layer changed after it was judged is not applied (E782).

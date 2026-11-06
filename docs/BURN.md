@@ -661,6 +661,11 @@ if r.outside.is_empty() { proc.apply_layer(r.layer) } else { proc.discard_layer(
   exactly what it held when it was judged (a digest of every change is
   kept with it), and `E782` otherwise. `proc.discard_layer(r.layer)` drops
   one. The home layer is never applied: it goes with the rest.
+- **`quiet: true`.** A script that reads the layer, `outside`, `refused`
+  and `changed` itself and says what they mean in its own words (a guard
+  rating what a package did) leaves out cig's own lines about the layer:
+  the `E781` and `E780` notes, `applied` and `dropped`. The result, the
+  layer's fate and the journal are the same as without it.
 - **A cig inside.** A cig started in a contained hop keeps a throwaway state
   in the box's temp; nothing of it is taken in as a child run (its records
   could name any path with any before-image), and it could not have

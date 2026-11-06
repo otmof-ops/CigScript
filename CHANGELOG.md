@@ -3,6 +3,30 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## 1.13.0 — 2026-11-06
+
+- **A hop's output, live: `stream: true`.** `proc.run` and `proc.shell`
+  take `stream: true` to show the child's output as it arrives (its stdout
+  on cig's stdout, its stderr on cig's stderr) while still capturing both
+  whole, so a long install that runs through cig reads the way it does in a
+  terminal instead of arriving all at once when it ends. What is shown is
+  display only: the value, the exit-code contract, the timeout and every
+  other rule in HOPS.md are the same as without it. cig-orchestrator's guard
+  uses it for the package-manager commands it runs (cig-orchestrator #57).
+- **`box: {quiet: true}`** for a script that judges a box's layer itself:
+  it reads `layer`, `outside`, `refused` and `changed` and says what they
+  mean in its own words, so cig's own lines about the layer (`E781`,
+  `E780`, applied, dropped) are left out. A rehearsal that cig-orchestrator
+  discarded right after no longer tells you to `cig box apply` it.
+- **The guard_scope codes, `E892`–`E899`**, registered for
+  cig-orchestrator's guard levels (cig-orchestrator #57) so `cig explain`
+  and doctor know them: `E892` a piped download-and-execute cancelled,
+  `E894` an agent's command waiting for a person, `E895` an agent that tried
+  to approve itself, and `E896` the guard paused or off come from
+  cig-orchestrator; the first run of a download, the system-wide gate's
+  block, a suspicious launch chain and the boot-loop breaker (`E893`,
+  `E897`–`E899`) are reserved for the parts not built yet.
+
 ## 1.12.3 — 2026-11-05
 
 - **The blacklist family, `E580`–`E589`**, registered for cig-orchestrator's

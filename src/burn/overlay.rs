@@ -197,6 +197,10 @@ pub struct BoxSpec {
     /// starting `~/` for the home. A change matching none is reported
     /// (`outside`) and, under `contain`, holds the layer back.
     pub expect: Vec<String>,
+    /// The script reads the layer, `outside`, `refused` and `changed` itself
+    /// and says what they mean: cig's own lines about the layer (E780,
+    /// E781, applied, dropped) are left out. Nothing else changes.
+    pub quiet: bool,
 }
 
 impl Default for BoxSpec {
@@ -208,6 +212,7 @@ impl Default for BoxSpec {
             apply: Apply::OnSuccess,
             contain: false,
             expect: Vec::new(),
+            quiet: false,
         }
     }
 }

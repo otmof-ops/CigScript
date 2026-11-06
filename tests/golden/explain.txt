@@ -165,6 +165,14 @@ E870-E899  what cig-orchestrator's guard found in someone else's code: a rehears
   E889  a forged approval                  usage  (cigo)
   E890  cigo was changed                   usage  (planned)
   E891  decoys changed the output          usage  (planned)
+  E892  fetch-and-run cancelled            usage  (cigo)
+  E893  first run of a download            usage  (planned)
+  E894  an agent needs a human             usage  (cigo)
+  E895  an agent tried to approve itself   usage  (cigo)
+  E896  the guard is paused or off         usage  (cigo)
+  E897  level 5 blocked a program          usage  (planned)
+  E898  a suspicious launch chain          usage  (planned)
+  E899  the guard loaded without enforcement usage  (planned)
 
 E900-E999  internal: a bug in CigScript itself
   E900  internal error                     internal
@@ -2536,6 +2544,142 @@ E891 decoys changed the output  (usage, finding family, since 1.11.0)
      remedy: cigo audit <task> re-shows the last verdict with its evidence
 
   arises in: run  ·  related: E871  ·  tags: ci-likely
+
+======== E892 ========
+E892 fetch-and-run cancelled  (usage, finding family, since 1.13.0)
+  from cig-orchestrator: its guard reports it, cig itself never does
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A command line piped a download straight into a shell or an interpreter (curl ... | sh, bash <(curl ...), iwr ... | iex): whatever that server sends today would run, unread. The shell hook cancelled it before it started and offered the rehearsed way. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: cigo run-url <url> downloads it, rehearses it in the box and runs it there with an undo after your yes
+
+  known causes, ranked; doctor checks them in this order
+  1. the shell hook matched a piped download-and-execute on the command line
+     probe: none; a suggestion, not a finding
+     remedy: cigo run-url <url> rehearses the same download
+
+  arises in: run  ·  related: E874
+
+======== E893 ========
+E893 first run of a download  (usage, finding family, since 1.13.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A file the operating system marks as downloaded (the quarantine attribute, Mark-of-the-Web, the browser's origin attribute) is being run for the first time from a shell, and it has never been rehearsed. It is rehearsed first; a clean rehearsal trusts its hash. Risk: medium. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: nothing: the rehearsal decides; cigo guard allow <path> trusts it as it is
+
+  known causes, ranked; doctor checks them in this order
+  1. the download mark on a file run for the first time (guard_scope downloads)
+     probe: none; a suggestion, not a finding
+     remedy: cigo rehearse <path> rehearses it by hand
+
+  arises in: run  ·  related: E870
+
+======== E894 ========
+E894 an agent needs a human  (usage, finding family, since 1.13.0)
+  from cig-orchestrator: its guard reports it, cig itself never does
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  An AI agent's command was rated high by the guard, so it waits for a person to approve it through the operating system's own prompt, never the agent's terminal. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: cigo approve <id> on a terminal the agent does not hold, or say no
+
+  known causes, ranked; doctor checks them in this order
+  1. an agent's command rated high (guard_scope agents)
+     probe: none; a suggestion, not a finding
+     remedy: cigo agent log shows the command and its verdict
+
+  arises in: run  ·  related: E895
+
+======== E895 ========
+E895 an agent tried to approve itself  (usage, finding family, since 1.13.0)
+  from cig-orchestrator: its guard reports it, cig itself never does
+
+  kind of no: these are MY ciggies  (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy)
+
+  An approval came from inside an AI agent's own session: agents cannot approve their own risky commands. The approval was refused, and the attempt is a finding. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: approve from your own terminal or the operating system's prompt
+
+  known causes, ranked; doctor checks them in this order
+  1. cigo approve run from an agent's session (CIGO_AGENT or the agent's own variables set)
+     probe: none; a suggestion, not a finding
+     remedy: cigo agent log --session <id> shows what that session ran
+
+  arises in: run  ·  related: E894
+
+======== E896 ========
+E896 the guard is paused or off  (usage, finding family, since 1.13.0)
+  from cig-orchestrator: its guard reports it, cig itself never does
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  cigo guard pause or cigo guard off is in force: the commands the guard would check run as they are, and every one of them says so until the guard is back. Risk: info. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: cigo guard on, or wait for the pause to end by itself
+
+  known causes, ranked; doctor checks them in this order
+  1. cigo guard pause [time] or cigo guard off
+     probe: none; a suggestion, not a finding
+     remedy: cigo guard shows the level and when the pause ends
+
+  arises in: run
+
+======== E897 ========
+E897 level 5 blocked a program  (usage, finding family, since 1.13.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  At guard_scope system, a program marked as downloaded and known to nothing on this machine was stopped before it started. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: cigo rehearse <path>; a clean rehearsal lets it start
+
+  known causes, ranked; doctor checks them in this order
+  1. an unknown downloaded program started (guard_scope system)
+     probe: none; a suggestion, not a finding
+     remedy: cigo guard log names the program and its hash
+
+  arises in: run  ·  related: E893
+
+======== E898 ========
+E898 a suspicious launch chain  (usage, finding family, since 1.13.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A program that does not start shells or interpreters (a browser, a mail or chat app, a document viewer) just started one: the shape of an exploited program running its payload. The child runs boxed and rehearsed. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: cigo guard log shows the chain; nothing it did is real until the rehearsal says so
+
+  known causes, ranked; doctor checks them in this order
+  1. a parent-chain rule matched (guard_scope system)
+     probe: none; a suggestion, not a finding
+     remedy: cigo guard log shows the launcher and the child
+
+  arises in: run  ·  related: E897
+
+======== E899 ========
+E899 the guard loaded without enforcement  (usage, finding family, since 1.13.0)
+  planned: reserved for a feature that has not shipped yet
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  The machine failed to finish booting twice in a row with the guard loaded, so the boot-loop breaker loaded it without enforcement this time. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+  what to type next: cigo doctor says why; cigo guard on enforces again once it is fixed
+
+  known causes, ranked; doctor checks them in this order
+  1. the boot-loop breaker tripped (guard_scope system)
+     probe: none; a suggestion, not a finding
+     remedy: cigo doctor shows the guard block
+
+  arises in: any  ·  related: E897
 
 ======== E900 ========
 E900 internal error  (internal, internal family, since 1.0.0)
