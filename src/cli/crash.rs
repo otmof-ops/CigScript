@@ -7,11 +7,11 @@
 //! `reports = always`, or a `send` typed for one report.
 
 use super::{exit, Ctx};
-use cigscript::ashtray;
-use cigscript::burn::journal::Journal;
-use cigscript::burn::runs;
-use cigscript::config::Config;
-use cigscript::crash::{self, Consent, CrashReport, Kind, SendOutcome};
+use crate::ashtray;
+use crate::burn::journal::Journal;
+use crate::burn::runs;
+use crate::config::Config;
+use crate::crash::{self, Consent, CrashReport, Kind, SendOutcome};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 
@@ -245,7 +245,7 @@ fn send(ctx: &Ctx, r: &mut CrashReport, typed: bool) -> i32 {
             eprintln!(
                 "{} {}, so nothing was sent; the report waits in the ashtray and goes with a later run once a tool is there.",
                 ctx.yellow("note:"),
-                cigscript::tracker::why_none()
+                crate::tracker::why_none()
             );
             eprintln!("open this link to file it yourself now (the report is prefilled):");
             eprintln!("  {url}");
@@ -366,7 +366,7 @@ fn submit(ctx: &Ctx, origin: &str, file: &PathBuf, repo: Option<String>, now: bo
     // gives every path in what it said its shape, and its command line is
     // reduced to the words cig knows.
     let cwd = std::env::current_dir().unwrap_or_default();
-    let mut mapping = cigscript::repro::Mapping::new(&[], &cwd);
+    let mut mapping = crate::repro::Mapping::new(&[], &cwd);
     let message = mapping.anonymise_text(
         v["panic_message"]
             .as_str()

@@ -5,9 +5,9 @@
 //! until the braces balance.
 
 use super::{exit, Ctx};
-use cigscript::burn::{Kernel, Mode};
-use cigscript::interp::Interp;
-use cigscript::syntax::parse;
+use crate::burn::{Kernel, Mode};
+use crate::interp::Interp;
+use crate::syntax::parse;
 use std::io::{self, BufRead, Write};
 
 pub fn repl(ctx: &Ctx) -> i32 {
@@ -15,7 +15,7 @@ pub fn repl(ctx: &Ctx) -> i32 {
     interp.set_args(&[]);
     eprintln!(
         "cig {} repl. Nothing real happens unless you burn. Ctrl-D to leave.",
-        cigscript::VERSION
+        crate::VERSION
     );
     let stdin = io::stdin();
     let mut buffer = String::new();

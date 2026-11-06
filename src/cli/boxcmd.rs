@@ -9,9 +9,9 @@
 use std::path::Path;
 
 use super::{exit, Ctx};
-use cigscript::burn::overlay::{self, Kept};
-use cigscript::burn::runs::RunRecord;
-use cigscript::burn::{Kernel, Mode};
+use crate::burn::overlay::{self, Kept};
+use crate::burn::runs::RunRecord;
+use crate::burn::{Kernel, Mode};
 
 #[derive(clap::Subcommand)]
 pub enum BoxCommand {
@@ -109,7 +109,7 @@ fn find(ctx: &Ctx, run: &str, seq: u64) -> Option<Kept> {
 /// with their before-images under a new record, so `cig unburn <id>` puts
 /// them back; the layer goes once it is in the pack.
 fn apply(ctx: &Ctx, k: &Kept) -> i32 {
-    if let Err(e) = cigscript::burn::ensure_private() {
+    if let Err(e) = crate::burn::ensure_private() {
         eprintln!("{} {e}", ctx.red("error[E707 burn]:"));
         return exit::SCRIPT_ERROR;
     }
@@ -161,7 +161,7 @@ fn apply(ctx: &Ctx, k: &Kept) -> i32 {
     };
     record.finish(status, applied.as_ref().err().cloned());
     if kernel.journal().format() >= 3 {
-        if let Err(e) = cigscript::burn::ledger::append(
+        if let Err(e) = crate::burn::ledger::append(
             "run",
             &record.id,
             kernel.journal().head(),

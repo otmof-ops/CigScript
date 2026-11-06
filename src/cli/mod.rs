@@ -13,6 +13,7 @@ macro_rules! outln {
 
 mod boxcmd;
 mod chains;
+mod compiled;
 mod config;
 mod crash;
 mod doctor;
@@ -28,6 +29,10 @@ mod runs;
 mod tin;
 mod update;
 mod versions;
+
+/// Diagnostics as `cig` prints them (the banner, the render, doctor's
+/// diagnosis, `--json`), for tools built on the library such as cigcompile.
+pub use run::{report, report_all};
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -309,12 +314,52 @@ fn known_words(cmd: &clap::Command, out: &mut Vec<String>) {
     }
 }
 
+/// What `cig` does when it starts: the program appended to this binary
+/// runs, when one is there (see [`crate::program`]); anything else is a
+/// command. `src/main.rs` is only this.
+pub fn entry() -> i32 {
+    // The mark itself, not its length (a constant LTO folds): its bytes
+    // stay in the binary for cigcompile to read.
+    std::hint::black_box(crate::program::RUNTIME_MARK);
+    crate::crash::install_hook();
+    let program = crate::program::own();
+    if program.is_none() {
+        crate::update::cleanup_old();
+    }
+    // Scripts recurse; give the evaluator a generous stack.
+    let handle = std::thread::Builder::new()
+        .name("cig".into())
+        .stack_size(256 * 1024 * 1024)
+        .spawn(move || {
+            // Test hook for the crash reporter: `1` panics here, `eval` inside
+            // the evaluator, `after-burn` in the kernel after the first burn.
+            if let Ok(v) = std::env::var("CIG_INTERNAL_PANIC") {
+                if v != "eval" && v != "after-burn" {
+                    panic!("deliberate test panic (CIG_INTERNAL_PANIC is set)");
+                }
+            }
+            match program {
+                None => main(),
+                Some(Ok(p)) => compiled::main(p),
+                Some(Err(why)) => compiled::refuse(&why),
+            }
+        })
+        .expect("could not start the interpreter thread");
+    match handle.join() {
+        Ok(code) => code,
+        Err(_) => {
+            after_crash();
+            70
+        }
+    }
+}
+
 pub fn main() -> i32 {
     {
         use clap::CommandFactory;
         let mut words = Vec::new();
         known_words(&Cli::command(), &mut words);
-        cigscript::crash::know_words(words);
+        crate::crash::know_words(words);
     }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -336,7 +381,7 @@ pub fn main() -> i32 {
     let ctx = Ctx {
         json: cli.json,
         color,
-        doctor: !cli.no_doctor && cigscript::doctor::enabled_by_env(),
+        doctor: !cli.no_doctor && crate::doctor::enabled_by_env(),
         plain: cli.plain || plain_by_env(),
     };
     // A pinned script is lit by the cig it asks for, whatever is installed.
@@ -362,7 +407,7 @@ pub fn main() -> i32 {
     // What the ashtray holds goes in the background, after the work: a run
     // never waits on the network.
     if flush_after {
-        cigscript::ashtray::spawn_flush(&cigscript::config::Config::load());
+        crate::ashtray::spawn_flush(&crate::config::Config::load());
     }
     code
 }

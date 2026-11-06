@@ -135,6 +135,59 @@ family = "internal"
 kind = "internal"
 meaning = "internal: a bug in CigScript itself"
 
+# ----- the four-digit families: cigcompile and CigarScript (cigcompile#11) --
+# A four-digit code's kind is its range's; the first-digit rule above is
+# the three-digit codes'. Codes compare by number, never as text.
+
+[[range]]
+from = "E1000"
+to = "E1099"
+family = "build"
+kind = "usage"
+meaning = "building and running compiled programs: the path, the runtime, the target, and a program's own command line (cigcompile, and the programs it makes)"
+
+[[range]]
+from = "E1100"
+to = "E1199"
+family = "strength"
+kind = "check"
+meaning = "CigarScript: a feature above the strength a file declares"
+
+[[range]]
+from = "E1200"
+to = "E1399"
+family = "types"
+kind = "type"
+meaning = "CigarScript: types, inference and checked boundaries at medium strength"
+
+[[range]]
+from = "E1400"
+to = "E1499"
+family = "layers"
+kind = "check"
+meaning = "CigarScript: layered depth and scripts that read each other by context"
+
+[[range]]
+from = "E1500"
+to = "E1599"
+family = "ownership"
+kind = "check"
+meaning = "CigarScript: ownership and concurrency at full strength"
+
+[[range]]
+from = "E1600"
+to = "E1699"
+family = "foreign"
+kind = "check"
+meaning = "CigarScript: calling Rust and C, and the burn rule at that boundary"
+
+[[range]]
+from = "E1700"
+to = "E1799"
+family = "carton"
+kind = "usage"
+meaning = "carton: packages, manifests and the lock file"
+
 # ----- the four kinds of no (docs/LEXICON.md, "Scrounging a ciggy") ---------
 
 [[no]]
@@ -2685,3 +2738,190 @@ since = "1.7.0"
 why = "a restored path is not as the journal recorded it, the journal does not read back as written, a tin object or an applied box file does not hash as it should"
 probe = "crash-reports"
 remedy = "`cig crash list` shows the report; it carries an anonymised repro when one reproduced in a sandbox, and the fix is announced on `cig update --check`"
+
+# ----- E1000-E1049: cigcompile (emitted by cigcompile, registered here so
+# `cig explain` knows them) ------------------------------------------------
+
+[[code]]
+code = "E1000"
+title = "nothing to compile"
+meaning = "The path given to `cigcompile build` holds no CigScript program: no `.cig` file there, or a folder with none at its top level."
+fix = "name a `.cig` file, or a folder that holds them: cigcompile build tools/tidy.cig"
+no = "cant-see-any"
+arises = ["compile"]
+tags = ["compiler", "beginner-likely"]
+since = "1.15.0"
+[[code.cause]]
+why = "the path is mistyped, or names the wrong folder"
+probe = "path-exists"
+remedy = "check the path, then give the script itself"
+
+[[code]]
+code = "E1001"
+title = "no runtime for the target"
+meaning = "A program is its script appended to the cig of the compiler's own version, built for the target. That cig could not be found."
+fix = "give it with --runtime path/to/cig, or install the cig of that version on this machine (cig update)"
+no = "cant-see-any"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.15.0"
+[[code.cause]]
+why = "no cig of the compiler's version is installed here or on PATH"
+probe = "on-path"
+remedy = "install it (cig update), or pass the binary with --runtime"
+[[code.cause]]
+why = "the target is another machine's and its cig was never fetched"
+probe = "none"
+remedy = "download that cig release asset, check its sha256, and pass it with --runtime"
+
+[[code]]
+code = "E1002"
+title = "the runtime is another cig"
+meaning = "The cig given as the runtime is not the version the compiler was built with. A program runs only on the cig it was compiled for, so the two must agree."
+fix = "pass the cig of the compiler's version with --runtime, or use the cigcompile built for that cig"
+no = "none"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.15.0"
+related = ["E1051"]
+[[code.cause]]
+why = "--runtime names an older or a newer cig than the compiler's"
+probe = "none"
+remedy = "compare cig --version with cigcompile --version and pick the matching cig"
+
+[[code]]
+code = "E1003"
+title = "the script's pin is not met"
+meaning = "The script pins a cig version (a `# cig` line or a .cig-version file) that the runtime it would be appended to does not satisfy."
+fix = "build with a cigcompile whose cig meets the pin, or move the pin once the script works on this cig"
+no = "none"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.15.0"
+[[code.cause]]
+why = "the script asks for a newer cig than this compiler's"
+probe = "source-line"
+remedy = "update cig and cigcompile together, or lower the pin after testing the script"
+
+[[code]]
+code = "E1004"
+title = "the program cannot be written"
+meaning = "The compiled program could not be written where it was asked to go. Nothing was left half-written there: the output is written beside it and moved into place whole."
+fix = "write it somewhere you can with -o, or free the space the message names"
+no = "depends"
+arises = ["compile"]
+tags = ["compiler", "resource"]
+since = "1.15.0"
+[[code.cause]]
+why = "the output folder is not writable by you"
+probe = "path-permissions"
+remedy = "pick another folder with -o, or fix the folder's permissions"
+no = "these-are-mine"
+[[code.cause]]
+why = "the disk is full"
+probe = "disk-free"
+remedy = "free some space, then build again"
+no = "dont-have-any"
+
+[[code]]
+code = "E1005"
+title = "the runtime already carries a program"
+meaning = "The file given as the runtime ends in a program's trailer: it is a compiled program, not cig, and a program is never appended to another."
+fix = "give the cig binary itself with --runtime, not a program compiled from it"
+no = "none"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.15.0"
+[[code.cause]]
+why = "--runtime points at a compiled program"
+probe = "file-hash"
+remedy = "point it at cig itself (`command -v cig` shows where it is)"
+
+[[code]]
+code = "E1006"
+title = "an unknown target"
+meaning = "The target named with --target is not one cig is released for, so there is no cig to append the program to."
+fix = "pick one cigcompile targets lists, e.g. --target x86_64-unknown-linux-musl"
+no = "never-heard-of-you"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.15.0"
+[[code.cause]]
+why = "the target triple is mistyped, or is one cig does not ship"
+probe = "none"
+remedy = "copy the triple from cigcompile targets"
+
+[[code]]
+code = "E1007"
+title = "two programs would share one name"
+meaning = "Two scripts in the folder would compile to the same program: their names differ only in case, on a folder that does not tell case apart."
+fix = "rename one of the scripts, or build each with its own -o"
+no = "none"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.15.0"
+[[code.cause]]
+why = "tool.cig and Tool.cig compiled into one folder"
+probe = "none"
+remedy = "rename one of them"
+
+# ----- E1050-E1099: a compiled program at run time (emitted by cig) -------
+
+[[code]]
+code = "E1050"
+title = "a damaged program"
+meaning = "This program's bytes do not match the sha256 in its trailer, or its record does not read: it was cut short, edited or damaged after it was compiled, and it refuses to run. The sha256 catches damage, not tampering: programs are unsigned."
+fix = "compile it again (cigcompile build), or fetch it again from where it came from"
+no = "none"
+arises = ["run"]
+since = "1.15.0"
+related = ["E1051"]
+[[code.cause]]
+why = "the file was cut short or changed after it was compiled: a partial download, a copy that stopped, a tool that rewrote it"
+probe = "file-hash"
+remedy = "compare its sha256 with the one from the build, then rebuild it or fetch it again"
+
+[[code]]
+code = "E1051"
+title = "a program for another cig"
+meaning = "The program was compiled for one cig and appended to another. A program runs only on the cig it was compiled for, so the kernel it expects is the kernel it gets."
+fix = "compile it again with the cigcompile for this cig, or keep the binary cigcompile made"
+no = "none"
+arises = ["run"]
+since = "1.15.0"
+related = ["E1002"]
+[[code.cause]]
+why = "the program's script was appended to a different cig by hand or by an older tool"
+probe = "none"
+remedy = "build it again with cigcompile build"
+
+[[code]]
+code = "E1052"
+title = "not one of the program's run flags"
+meaning = "A compiled program takes the run's flags first and its own arguments after them; this one is not a run flag, it lacks its value, or an argument is not valid UTF-8. Nothing ran."
+fix = "put the program's own arguments after --: tool -- --flag (tool --help lists the run flags)"
+no = "none"
+arises = ["run"]
+tags = ["beginner-likely"]
+since = "1.15.0"
+[[code.cause]]
+why = "a flag meant for the program itself, given before --"
+probe = "none"
+remedy = "move it after --"
+[[code.cause]]
+why = "a mistyped run flag (refused, so a mistyped --dry-run never becomes a real run)"
+probe = "none"
+remedy = "spell it as tool --help shows it"
+
+[[code]]
+code = "E1053"
+title = "not this program's run"
+meaning = "A compiled program puts back only the runs it made (`--unburn`); the run named was made by a script or by another program."
+fix = "use cig unburn <run> for any run, or the program that made it"
+no = "these-are-mine"
+arises = ["unburn"]
+since = "1.15.0"
+[[code.cause]]
+why = "the run id belongs to another script's or program's run"
+probe = "run-record"
+remedy = "cig runs <run> shows which script or program made it"

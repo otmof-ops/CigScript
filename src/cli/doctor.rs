@@ -5,12 +5,12 @@
 //! `--fix` offers to repair what it can, asking before each change.
 
 use super::{exit, Ctx};
-use cigscript::burn::runs;
-use cigscript::config::Config;
-use cigscript::diagnostics::{Diagnostic, Kind};
-use cigscript::doctor::{self, Diagnosis};
-use cigscript::errors::lookup_no;
-use cigscript::{crash, update};
+use crate::burn::runs;
+use crate::config::Config;
+use crate::diagnostics::{Diagnostic, Kind};
+use crate::doctor::{self, Diagnosis};
+use crate::errors::lookup_no;
+use crate::{crash, update};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
@@ -115,7 +115,7 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
 
     if ctx.json {
         let obj = serde_json::json!({
-            "version": cigscript::VERSION,
+            "version": crate::VERSION,
             "executable": exe,
             "on_path": on_path,
             "state_dir": home,
@@ -138,7 +138,7 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
         };
     }
 
-    outln!("cig {}", cigscript::VERSION);
+    outln!("cig {}", crate::VERSION);
     outln!("  executable    {}", exe.display());
     outln!("  on PATH       {}", yes_no(ctx, on_path));
     outln!(
@@ -209,19 +209,19 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
     // is, and whether a hop can read it out of cig's memory.
     outln!("  tin");
     {
-        use cigscript::burn::{seal, tin};
-        let home = cigscript::burn::runs::home_dir();
+        use crate::burn::{seal, tin};
+        let home = crate::burn::runs::home_dir();
         outln!(
             "    private       {}  {}",
             yes_no(ctx, home_is_private(&home)),
-            ctx.dim(&cigscript::crash::tilde(&home))
+            ctx.dim(&crate::crash::tilde(&home))
         );
         // Looked at, never made: doctor must not create a key by looking.
         let (keeper, where_) = match seal::peek_keeper() {
             Some(seal::Keeper::Keyring) => ("the OS keyring".to_string(), String::new()),
             Some(seal::Keeper::File) => (
                 "a key file".to_string(),
-                cigscript::crash::tilde(&seal::key_path()),
+                crate::crash::tilde(&seal::key_path()),
             ),
             None => (
                 "not made yet".to_string(),
@@ -255,7 +255,7 @@ pub fn doctor(ctx: &Ctx, fix: bool) -> i32 {
         );
         if seal::has_sealed()
             && !seal::was_exported()
-            && cigscript::config::Config::load().get("key_reminder") != "off"
+            && crate::config::Config::load().get("key_reminder") != "off"
         {
             outln!(
                 "    {}",
@@ -380,7 +380,7 @@ fn path_line(dir: &Path) -> Option<(PathBuf, String)> {
 /// Can the tin guard be made here: user and mount namespaces for this
 /// user, tried rather than guessed (`true` run inside them).
 fn guard_status() -> (bool, String) {
-    let setting = cigscript::burn::overlay::guard_setting();
+    let setting = crate::burn::overlay::guard_setting();
     if setting == "off" {
         return (
             false,
@@ -410,7 +410,7 @@ fn guard_status() -> (bool, String) {
                 format!(
                     "tin_guard = {setting}: {} see the tin read-only and no key{}",
                     if setting == "on" { "all hops" } else { "boxed hops" },
-                    if cigscript::burn::overlay::bus_cut() {
+                    if crate::burn::overlay::bus_cut() {
                         ", and no session bus while the key may be in the OS keyring (cig config seal_key file gives them the bus)"
                     } else {
                         ""

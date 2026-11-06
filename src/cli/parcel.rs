@@ -5,9 +5,9 @@
 //! another machine.
 
 use super::{exit, Ctx};
-use cigscript::burn::journal::Journal;
-use cigscript::burn::parcel;
-use cigscript::burn::runs;
+use crate::burn::journal::Journal;
+use crate::burn::parcel;
+use crate::burn::runs;
 use std::path::{Path, PathBuf};
 
 pub fn parcel(ctx: &Ctx, id: &str, out: Option<PathBuf>) -> i32 {

@@ -5,7 +5,7 @@
 //! same tables the interpreter uses so it can never drift.
 
 use super::{exit, Ctx};
-use cigscript::value::Effect;
+use crate::value::Effect;
 
 pub const LEGEND: &[(&str, &str)] = &[
     ("roll x = e", "declare a variable"),
@@ -58,10 +58,10 @@ pub const LEGEND: &[(&str, &str)] = &[
 ];
 
 pub fn language(ctx: &Ctx) -> i32 {
-    let catalogue = cigscript::stdlib::catalogue();
+    let catalogue = crate::stdlib::catalogue();
     if ctx.json {
         let obj = serde_json::json!({
-            "version": cigscript::VERSION,
+            "version": crate::VERSION,
             "legend": LEGEND.iter().map(|(s, m)| serde_json::json!({"syntax": s, "meaning": m})).collect::<Vec<_>>(),
             "library": catalogue.iter().map(|(group, rows)| serde_json::json!({
                 "group": group,
@@ -81,7 +81,7 @@ pub fn language(ctx: &Ctx) -> i32 {
         "{}",
         ctx.bold(&format!(
             "CigScript {} — nothing real happens unless you burn",
-            cigscript::VERSION
+            crate::VERSION
         ))
     );
     outln!();
