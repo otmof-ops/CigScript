@@ -93,6 +93,9 @@ struct Options {
     /// What the box is asked for beyond the layer (`box: {network, pidns,
     /// allow_hosts, apply}`).
     box_spec: crate::burn::overlay::BoxSpec,
+    /// Show the child's output as it arrives (stdout on cig's stdout, stderr
+    /// on cig's stderr) as well as capturing it: a long install read live.
+    stream: bool,
 }
 
 impl Options {
@@ -118,6 +121,7 @@ impl Options {
             touches_sealed: Vec::new(),
             boxed: false,
             box_spec: crate::burn::overlay::BoxSpec::default(),
+            stream: false,
         };
         let Some(opts) = opt_map(a, index, name, s)? else {
             return Ok(o);
@@ -213,6 +217,7 @@ impl Options {
                     }
                 }
                 ("header", v) => o.header = v.truthy(),
+                ("stream", v) => o.stream = v.truthy(),
                 ("sep", Value::Str(c)) => {
                     let mut chars = c.chars();
                     match (chars.next(), chars.next()) {
@@ -1576,7 +1581,7 @@ fn run_child(
     let _guard = ChildGuard::register(child.id());
     // Readers first, then a writer thread for stdin: writing before reading
     // deadlocks as soon as the child fills a pipe while waiting for its input.
-    let (out_cap, err_cap) = readers(&mut child);
+    let (out_cap, err_cap) = readers(&mut child, o.stream);
     let stdin_thread = child
         .stdin
         .take()
@@ -1715,8 +1720,38 @@ struct Capture {
     open: std::cell::Cell<bool>,
 }
 
+/// Where a streamed hop's bytes are shown as they arrive (`stream: true`):
+/// the child's stdout on cig's, its stderr on cig's.
+#[derive(Clone, Copy)]
+enum Tee {
+    Stdout,
+    Stderr,
+}
+
+impl Tee {
+    fn show(self, bytes: &[u8]) {
+        // A terminal that went away is not the hop's failure: what the child
+        // wrote is still captured, and the hop's result is the same.
+        let _ = match self {
+            Tee::Stdout => {
+                let mut o = std::io::stdout().lock();
+                o.write_all(bytes).and_then(|()| o.flush())
+            }
+            Tee::Stderr => {
+                let mut e = std::io::stderr().lock();
+                e.write_all(bytes).and_then(|()| e.flush())
+            }
+        };
+    }
+}
+
 impl Capture {
     fn new<R: Read + Send + 'static>(pipe: Option<R>) -> Capture {
+        Capture::shown(pipe, None)
+    }
+
+    /// A capture that also shows each chunk on `tee` as it is read.
+    fn shown<R: Read + Send + 'static>(pipe: Option<R>, tee: Option<Tee>) -> Capture {
         let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let (tx, rx) = std::sync::mpsc::channel();
         let into = buf.clone();
@@ -1726,10 +1761,14 @@ impl Capture {
                 loop {
                     match p.read(&mut chunk) {
                         Ok(0) | Err(_) => break,
-                        Ok(n) => into
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .extend_from_slice(&chunk[..n]),
+                        Ok(n) => {
+                            into.lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .extend_from_slice(&chunk[..n]);
+                            if let Some(t) = tee {
+                                t.show(&chunk[..n]);
+                            }
+                        }
                     }
                 }
             }
@@ -1777,10 +1816,10 @@ fn wait_closed(caps: &[&Capture], deadline: Instant) -> bool {
 
 /// Read both streams concurrently: a child filling stderr while stdout is
 /// awaited is the classic deadlock.
-fn readers(child: &mut Child) -> (Capture, Capture) {
+fn readers(child: &mut Child, stream: bool) -> (Capture, Capture) {
     (
-        Capture::new(child.stdout.take()),
-        Capture::new(child.stderr.take()),
+        Capture::shown(child.stdout.take(), stream.then_some(Tee::Stdout)),
+        Capture::shown(child.stderr.take(), stream.then_some(Tee::Stderr)),
     )
 }
 

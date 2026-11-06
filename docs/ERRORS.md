@@ -2148,6 +2148,14 @@ what cig-orchestrator's guard found in someone else's code: a rehearsal's eviden
 | [`E889`](#e889-a-forged-approval) | a forged approval *(cigo)* | these are MY ciggies | cigo trust list; remove the entry; the task is checked as if never approved |
 | [`E890`](#e890-cigo-was-changed) | cigo was changed *(planned)* | these are MY ciggies | cigo update --repair |
 | [`E891`](#e891-decoys-changed-the-output) | decoys changed the output *(planned)* | not one of the four | nothing: the real run follows your yes |
+| [`E892`](#e892-fetch-and-run-cancelled) | fetch-and-run cancelled *(cigo)* | not one of the four | cigo run-url <url> downloads it, rehearses it in the box and runs it there with an undo after your yes |
+| [`E893`](#e893-first-run-of-a-download) | first run of a download *(planned)* | not one of the four | nothing: the rehearsal decides; cigo guard allow <path> trusts it as it is |
+| [`E894`](#e894-an-agent-needs-a-human) | an agent needs a human *(cigo)* | not one of the four | cigo approve <id> on a terminal the agent does not hold, or say no |
+| [`E895`](#e895-an-agent-tried-to-approve-itself) | an agent tried to approve itself *(cigo)* | these are MY ciggies | approve from your own terminal or the operating system's prompt |
+| [`E896`](#e896-the-guard-is-paused-or-off) | the guard is paused or off *(cigo)* | not one of the four | cigo guard on, or wait for the pause to end by itself |
+| [`E897`](#e897-level-5-blocked-a-program) | level 5 blocked a program *(planned)* | not one of the four | cigo rehearse <path>; a clean rehearsal lets it start |
+| [`E898`](#e898-a-suspicious-launch-chain) | a suspicious launch chain *(planned)* | not one of the four | cigo guard log shows the chain; nothing it did is real until the rehearsal says so |
+| [`E899`](#e899-the-guard-loaded-without-enforcement) | the guard loaded without enforcement *(planned)* | not one of the four | cigo doctor says why; cigo guard on enforces again once it is fixed |
 
 ### E870 a known malicious package
 
@@ -2515,6 +2523,140 @@ The rehearsal read a decoy and wrote something after, so its result cannot be ke
 1. the guard's static read, OSV check or rehearsal found it (cig-orchestrator #55) (no probe; a suggestion, not a finding). **Remedy:** cigo audit <task> re-shows the last verdict with its evidence
 
 Related: `E871`.
+
+
+### E892 fetch-and-run cancelled
+
+*usage · since 1.13.0 · arises in run · from cig-orchestrator*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A command line piped a download straight into a shell or an interpreter (curl ... | sh, bash <(curl ...), iwr ... | iex): whatever that server sends today would run, unread. The shell hook cancelled it before it started and offered the rehearsed way. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** cigo run-url <url> downloads it, rehearses it in the box and runs it there with an undo after your yes
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the shell hook matched a piped download-and-execute on the command line (no probe; a suggestion, not a finding). **Remedy:** cigo run-url <url> rehearses the same download
+
+Related: `E874`.
+
+
+### E893 first run of a download
+
+*usage · since 1.13.0 · arises in run · planned*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A file the operating system marks as downloaded (the quarantine attribute, Mark-of-the-Web, the browser's origin attribute) is being run for the first time from a shell, and it has never been rehearsed. It is rehearsed first; a clean rehearsal trusts its hash. Risk: medium. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** nothing: the rehearsal decides; cigo guard allow <path> trusts it as it is
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the download mark on a file run for the first time (guard_scope downloads) (no probe; a suggestion, not a finding). **Remedy:** cigo rehearse <path> rehearses it by hand
+
+Related: `E870`.
+
+
+### E894 an agent needs a human
+
+*usage · since 1.13.0 · arises in run · from cig-orchestrator*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+An AI agent's command was rated high by the guard, so it waits for a person to approve it through the operating system's own prompt, never the agent's terminal. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** cigo approve <id> on a terminal the agent does not hold, or say no
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. an agent's command rated high (guard_scope agents) (no probe; a suggestion, not a finding). **Remedy:** cigo agent log shows the command and its verdict
+
+Related: `E895`.
+
+
+### E895 an agent tried to approve itself
+
+*usage · since 1.13.0 · arises in run · from cig-orchestrator*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+An approval came from inside an AI agent's own session: agents cannot approve their own risky commands. The approval was refused, and the attempt is a finding. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** approve from your own terminal or the operating system's prompt
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. cigo approve run from an agent's session (CIGO_AGENT or the agent's own variables set) (no probe; a suggestion, not a finding). **Remedy:** cigo agent log --session <id> shows what that session ran
+
+Related: `E894`.
+
+
+### E896 the guard is paused or off
+
+*usage · since 1.13.0 · arises in run · from cig-orchestrator*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+cigo guard pause or cigo guard off is in force: the commands the guard would check run as they are, and every one of them says so until the guard is back. Risk: info. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** cigo guard on, or wait for the pause to end by itself
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. cigo guard pause [time] or cigo guard off (no probe; a suggestion, not a finding). **Remedy:** cigo guard shows the level and when the pause ends
+
+
+### E897 level 5 blocked a program
+
+*usage · since 1.13.0 · arises in run · planned*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+At guard_scope system, a program marked as downloaded and known to nothing on this machine was stopped before it started. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** cigo rehearse <path>; a clean rehearsal lets it start
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. an unknown downloaded program started (guard_scope system) (no probe; a suggestion, not a finding). **Remedy:** cigo guard log names the program and its hash
+
+Related: `E893`.
+
+
+### E898 a suspicious launch chain
+
+*usage · since 1.13.0 · arises in run · planned*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A program that does not start shells or interpreters (a browser, a mail or chat app, a document viewer) just started one: the shape of an exploited program running its payload. The child runs boxed and rehearsed. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** cigo guard log shows the chain; nothing it did is real until the rehearsal says so
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. a parent-chain rule matched (guard_scope system) (no probe; a suggestion, not a finding). **Remedy:** cigo guard log shows the launcher and the child
+
+Related: `E897`.
+
+
+### E899 the guard loaded without enforcement
+
+*usage · since 1.13.0 · arises in any · planned*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+The machine failed to finish booting twice in a row with the guard loaded, so the boot-loop breaker loaded it without enforcement this time. Risk: high. A finding of cig-orchestrator's guard (guard_scope, cig-orchestrator #57), registered here so cig explain and doctor know it; the guard renders it in the cig voice at a terminal and plainly in CI, --plain and --json.
+
+**What to type next:** cigo doctor says why; cigo guard on enforces again once it is fixed
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the boot-loop breaker tripped (guard_scope system) (no probe; a suggestion, not a finding). **Remedy:** cigo doctor shows the guard block
+
+Related: `E897`.
 
 
 ## internal (`E900`–`E999`)

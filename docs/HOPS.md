@@ -41,6 +41,7 @@ to die in step C.
 | `ok` | the exit-code contract: an int or a list of ints; `null` for none. It wins over `check` whatever the order of the keys |
 | `check` | `true` means the contract `[0]`, `false` none; ignored when `ok` is given |
 | `encoding` | `utf-8` (strict, the default), `lossy`, `latin1`, `utf-16` |
+| `stream` | `true` shows the child's output as it arrives, its stdout on cig's stdout and its stderr on cig's stderr, while still capturing both whole: a long install read live. What is shown is display only; the value, the contract and every rule below are the same as without it |
 | `header`, `sep` | for `proc.csv` |
 
 Every child gets `NO_COLOR=1` (its output is captured, colour is noise) and
