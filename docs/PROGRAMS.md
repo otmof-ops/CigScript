@@ -54,7 +54,7 @@ The same: the kernel, burns, rollback, `--dry-run`, error positions (they point 
 
 ## Integrity, not authenticity
 
-The sha256s catch damage and truncation. They do not catch an edit, because anyone can recompute them, and they do not cover the runtime. Programs are unsigned until cigcompile#10. A program whose bytes, record, format or script do not match refuses to run (`E1050`). A program compiled for another cig refuses too (`E1051`).
+The sha256s catch damage and truncation. They do not catch an edit, because anyone can recompute them, and they do not cover the runtime. Programs are unsigned until cig-compile#10. A program whose bytes, record, format or script do not match refuses to run (`E1050`). A program compiled for another cig refuses too (`E1051`).
 
 ## A program is never a general `cig`
 
@@ -64,7 +64,7 @@ A program's binary is `cig` for two calls only: the ashtray's background send (`
 
 - **Linux:** the program reads its own image through `/proc/self/exe`, so replacing or removing its path while it runs changes nothing.
 - **Windows:** it reads the file `current_exe` names.
-- **macOS:** running is tested in CI; signing is cigcompile#10.
+- **macOS:** running is tested in CI; signing is cig-compile#10.
 
 ## Codes
 

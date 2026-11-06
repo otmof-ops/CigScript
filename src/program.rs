@@ -26,7 +26,7 @@
 //! The sha256s are integrity, not authenticity: they catch a damaged or
 //! truncated program, not an edited one (anyone can recompute them), and
 //! the runtime half is not covered. Programs are unsigned until
-//! cigcompile#10.
+//! cig-compile#10.
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};

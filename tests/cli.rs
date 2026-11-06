@@ -9031,7 +9031,7 @@ fn wait_filed(sb: &Sandbox, n: usize) {
 }
 
 fn issue_file(tracker: &Path, number: u64) -> serde_json::Value {
-    let text = fs::read_to_string(tracker.join(format!("otmof-ops__CigScript/{number}.json")))
+    let text = fs::read_to_string(tracker.join(format!("otmof-ops__cig-script/{number}.json")))
         .unwrap_or_else(|e| {
             let mut listing = Vec::new();
             fn walk(d: &Path, out: &mut Vec<String>) {
@@ -9088,7 +9088,7 @@ fn report_send_files_the_bundle() {
     );
     assert_eq!(out.status.code(), Some(3));
     assert!(String::from_utf8_lossy(&out.stderr).contains("reports is \"never\""));
-    assert!(!tracker.join("otmof-ops__CigScript/2.json").exists());
+    assert!(!tracker.join("otmof-ops__cig-script/2.json").exists());
 }
 
 #[test]
@@ -9126,7 +9126,7 @@ fn a_report_made_offline_is_sent_on_the_next_run() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let issue = tracker.join("otmof-ops__cig-script/1.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
         if issue.exists()
@@ -9184,7 +9184,7 @@ fn ci_never_files_without_the_setting() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(tracker.join("otmof-ops__CigScript/1.json").exists());
+    assert!(tracker.join("otmof-ops__cig-script/1.json").exists());
     // And `reports` is the one setting: the older name still reads.
     sb.run_ok(&["config", "reports", "--unset"]);
     sb.run_ok(&["config", "crash_reports", "never"]);
@@ -9238,7 +9238,7 @@ fn a_rollback_that_restores_the_wrong_mode_trips() {
         "{r}"
     );
     // Filed in the background, labelled for what it is.
-    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let issue = tracker.join("otmof-ops__cig-script/1.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !issue.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -9305,7 +9305,7 @@ fn a_cough_in_the_users_script_is_never_reported() {
         serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
     assert_eq!(reports.as_array().unwrap().len(), 1);
     assert_eq!(reports[0]["kind"], "internal");
-    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let issue = tracker.join("otmof-ops__cig-script/1.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !issue.exists() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -9346,7 +9346,7 @@ fn a_repro_contains_no_user_path_or_content() {
     );
     assert_eq!(out.status.code(), Some(1));
     // The flush verifies the repro in a sandbox and files it.
-    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let issue = tracker.join("otmof-ops__cig-script/1.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while std::time::Instant::now() < deadline {
         if issue.exists()
@@ -9427,7 +9427,7 @@ fn an_unverified_repro_is_not_attached() {
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stderr).contains("tripwire: cig noticed"));
     assert!(marker.exists());
-    let issue = tracker.join("otmof-ops__CigScript/1.json");
+    let issue = tracker.join("otmof-ops__cig-script/1.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while std::time::Instant::now() < deadline {
         if issue.exists()
@@ -9502,7 +9502,7 @@ fn a_second_report_updates_the_stats_not_a_comment() {
         Some(0),
         "{again}"
     );
-    assert!(!tracker.join("otmof-ops__CigScript/2.json").exists());
+    assert!(!tracker.join("otmof-ops__cig-script/2.json").exists());
     let list = sb.run_ok(&["--json", "crash", "list"]);
     let v: serde_json::Value = serde_json::from_str(&list).unwrap();
     assert_eq!(v.as_array().unwrap().len(), 2);
@@ -9535,7 +9535,7 @@ fn a_fixed_report_is_announced_on_update_check() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let issue_path = tracker.join("otmof-ops__CigScript/1.json");
+    let issue_path = tracker.join("otmof-ops__cig-script/1.json");
     // The maintainer closes the issue; a release's notes say it fixed #1.
     let mut issue: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&issue_path).unwrap()).unwrap();

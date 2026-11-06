@@ -135,7 +135,7 @@ family = "internal"
 kind = "internal"
 meaning = "internal: a bug in CigScript itself"
 
-# ----- the four-digit families: cigcompile and CigarScript (cigcompile#11) --
+# ----- the four-digit families: cigcompile and CigarScript (cig-compile#11) --
 # A four-digit code's kind is its range's; the first-digit rule above is
 # the three-digit codes'. Codes compare by number, never as text.
 
