@@ -5582,6 +5582,38 @@ fn a_contained_hop_off_its_footprint_is_held_back() {
     assert!(err.contains("held back"), "{err}");
 }
 
+/// A box with no pack to lay over: an isolated hop is refused before it
+/// runs (never run unprotected), and a plain box says it runs on the tin.
+#[test]
+fn a_box_without_a_pack_is_refused_when_isolated_and_said_when_plain() {
+    let sb = Sandbox::new();
+    sb.write(
+        "iso.cig",
+        "burn {\n  proc.run(\"sh\", [\"-c\", \"echo x > iso.txt\"], {box: {network: \"off\"}})\n}\n",
+    );
+    let out = sb.cig(&["run", "iso.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(
+        err.contains("E777") && err.contains("declares no pack"),
+        "{err}"
+    );
+    assert!(!sb.exists("iso.txt"), "an isolated hop ran without its box");
+    assert!(!err.contains("cannot undo run"), "{err}");
+    sb.write(
+        "plain.cig",
+        "burn {\n  proc.run(\"sh\", [\"-c\", \"echo x > plain.txt\"], {box: true})\n}\n",
+    );
+    let out = sb.cig(&["run", "plain.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains("warning[E763 burn]") && err.contains("declares no pack"),
+        "{err}"
+    );
+    assert_eq!(sb.read("plain.txt"), "x\n");
+}
+
 /// `quiet: true`: a script that reads the layer and says what it means
 /// itself gets the same result, without cig's own lines about the layer.
 #[cfg(target_os = "linux")]

@@ -1845,7 +1845,8 @@ A hop asked to run in the box (`{box: true}`): over a copy-on-write layer on the
 
 1. unprivileged user namespaces are off, or restricted by AppArmor (Ubuntu 23.10 and later), or the kernel is older than 5.11 (no probe; a suggestion, not a finding). **Remedy:** `sysctl kernel.apparmor_restrict_unprivileged_userns=0` and `kernel.unprivileged_userns_clone=1`, or run the hop without `box`
 2. the operating system has no overlayfs (macOS, Windows, the BSDs) (no probe; a suggestion, not a finding). **Remedy:** the hop runs on the tin there; `touches` keeps what it may change
-3. a path in the layer could not be written to the pack (permissions, a device full) (probe `path-permissions`). **Remedy:** the run rolled back what was applied; fix the path and run again
+3. the script declares no pack { }: the box is a layer over the pack, so there is nothing to put it over (no probe; a suggestion, not a finding). **Remedy:** declare pack { "." } as the script's first statement
+4. a path in the layer could not be written to the pack (permissions, a device full) (probe `path-permissions`). **Remedy:** the run rolled back what was applied; fix the path and run again
 
 Related: `E757`, `E752`.
 
@@ -1893,6 +1894,7 @@ The hop asked the box to isolate it (a network of its own: off or registry) and 
 
 1. unprivileged user namespaces are disabled, the kernel has no overlayfs, or the state directory sits on an overlay (a container's layer) (no probe; a suggestion, not a finding). **Remedy:** cig doctor says which; a CIGSCRIPT_HOME on a plain filesystem and user namespaces enabled let the box be made
 2. the contained box (contain: true) refused its setup: cig runs as root, where a hop keeps its capabilities in the box, or there is no scratch folder outside your home and the pack (HOME=/, as in a service account or a container run as any user) (no probe; a suggestion, not a finding). **Remedy:** run cig as an ordinary user whose HOME is a directory of its own; the message names which
+3. the script declares no pack { }, and the box is a layer over the pack, so there is nothing to put it over (no probe; a suggestion, not a finding). **Remedy:** declare pack { "." } (or the roots the hop writes under) as the script's first statement
 
 Related: `E763`, `E771`.
 
