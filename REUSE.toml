@@ -2,22 +2,22 @@
 version = 1
 SPDX-PackageName = "CigScript"
 SPDX-PackageSupplier = "Jay Taylor"
-SPDX-PackageDownloadLocation = "https://github.com/otmof-ops/CigScript"
+SPDX-PackageDownloadLocation = "https://github.com/otmof-ops/cig-script"
 
 [[annotations]]
 path = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "clippy.toml", "install.sh", "install.ps1", "YANKED", "scripts/**", "REUSE.toml", ".gitignore", ".gitattributes", ".github/**"]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/CigScript)"
+SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/cig-script)"
 SPDX-License-Identifier = "Apache-2.0"
 
 [[annotations]]
 path = ["docs/**", "README.md", "CHANGELOG.md", "CONTRIBUTING.md", "ROADMAP.md", "TRADEMARKS.md", "SECURITY.md", "NOTICE", "THIRD-PARTY-NOTICES.md", "HAMMER.md"]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/CigScript)"
+SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/cig-script)"
 SPDX-License-Identifier = "CC-BY-4.0"
 
 [[annotations]]
 path = ["examples/**"]
 precedence = "aggregate"
-SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/CigScript)"
+SPDX-FileCopyrightText = "2026 Jay Taylor (https://github.com/otmof-ops/cig-script)"
 SPDX-License-Identifier = "CC0-1.0"

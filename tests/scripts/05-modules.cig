@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 exhale json.stringify({a: [1, 2.5, "x", null, true]}), json.parse('{"k": [1]}').k
 exhale json.stringify({a: 1}, true)

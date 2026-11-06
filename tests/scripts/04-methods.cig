@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 stick s = "  Hello, World  "
 exhale s.trim().lower(), s.len(), s.trim().split(", "), s.contains("World"), s.trim().starts_with("He")

@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-6b7280"></a>
-  <a href="https://github.com/otmof-ops/CigScript/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/otmof-ops/CigScript?color=f97316&label=release"></a>
+  <a href="https://github.com/otmof-ops/cig-script/releases/latest"><img alt="release" src="https://img.shields.io/github/v/release/otmof-ops/cig-script?color=f97316&label=release"></a>
   <img alt="built with Rust" src="https://img.shields.io/badge/built%20with-Rust-6b7280">
   <img alt="burns journaled" src="https://img.shields.io/badge/burns-journaled%20%26%20reversible-f97316">
   <img alt="nicotine 0 mg" src="https://img.shields.io/badge/nicotine-0%20mg-2ea44f">
@@ -251,7 +251,7 @@ them; anything else builds from source in about a minute.
 
 ```sh
 # Review, then run (pinned to a release; never asks for sudo)
-curl -fsSL https://raw.githubusercontent.com/otmof-ops/CigScript/v1.7.1/install.sh -o install.sh
+curl -fsSL https://raw.githubusercontent.com/otmof-ops/cig-script/v1.7.1/install.sh -o install.sh
 less install.sh && sh install.sh
 ```
 
@@ -261,18 +261,18 @@ download, puts `cig` in `~/.local/bin`, offers to add that to your PATH, and
 runs `cig doctor`. From source, with a Rust toolchain (1.82+):
 
 ```sh
-cargo install --git https://github.com/otmof-ops/CigScript --tag v1.7.1 cigscript
+cargo install --git https://github.com/otmof-ops/cig-script --tag v1.7.1 cigscript
 ```
 
 On Windows, PowerShell installs it the same way (`-Version`, `-Prefix`,
 `-NoModifyPath`, `-Yes`, or the `CIG_*` environment variables when piped):
 
 ```powershell
-irm https://raw.githubusercontent.com/otmof-ops/CigScript/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/otmof-ops/cig-script/main/install.ps1 | iex
 ```
 
 Every release asset carries a build attestation from this repository's release
-workflow: `gh attestation verify cig-v1.7.1-linux-x86_64 -R otmof-ops/CigScript`
+workflow: `gh attestation verify cig-v1.7.1-linux-x86_64 -R otmof-ops/cig-script`
 checks it, and `install.sh`, `install.ps1` and `cig update` check it themselves
 when `gh` is installed; the checksum is the floor without it. The Linux assets
 are static musl builds (any glibc, Alpine, Android under Termux); there are
@@ -370,7 +370,7 @@ restored", wrong file): `cig runs` for the run id, then `cig report <run>
 --send` files the script's hash, the plan, the journal, the diagnostic and
 doctor's diagnosis as one redacted issue; `cig report <run>` writes the same
 to a file to attach to [a cheat
-issue](https://github.com/otmof-ops/CigScript/issues/new?template=cheat.yml)
+issue](https://github.com/otmof-ops/cig-script/issues/new?template=cheat.yml)
 with the script, the command, what the plan said, and what happened.
 
 **What you get back:** a fix, a regression test with the cheat's name on it,
@@ -613,4 +613,4 @@ Third-party crates in the binary are listed in
 under a contributor licence agreement; see [CONTRIBUTING.md](CONTRIBUTING.md).
 Security reports: [SECURITY.md](SECURITY.md).
 
-Copyright (c) 2026 Jay Taylor (https://github.com/otmof-ops/CigScript).
+Copyright (c) 2026 Jay Taylor (https://github.com/otmof-ops/cig-script).

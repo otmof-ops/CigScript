@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+# SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 # SPDX-License-Identifier: Apache-2.0
 name: Coined a term
 description: A word for one of the lexicon's gaps, or a new one. The manual's name is required; the joke is the mnemonic, the real name is the receipt.

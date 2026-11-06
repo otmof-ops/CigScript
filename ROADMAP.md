@@ -1,7 +1,7 @@
 # Roadmap
 
 What the next updates hold, in the order the first operations scripts asked for them
-([issue #18](https://github.com/otmof-ops/CigScript/issues/18), from a Go project whose
+([issue #18](https://github.com/otmof-ops/cig-script/issues/18), from a Go project whose
 operations are CigScript files, and [cig-orchestrator #12 and #13](https://github.com/otmof-ops/cig-orchestrator/issues)).
 Each lands with a wall row and a test named after it, like everything else.
 

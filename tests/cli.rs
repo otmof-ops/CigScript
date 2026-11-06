@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 // SPDX-License-Identifier: Apache-2.0
 
 //! End-to-end tests against the built `cig` binary.
@@ -623,7 +623,7 @@ fn config_reads_validates_and_persists() {
     sb.run_ok(&["config", "crash_reports", "--unset"]);
     assert_eq!(sb.run_ok(&["config", "crash_reports"]), "ask\n");
     let v: serde_json::Value = serde_json::from_str(&sb.run_ok(&["--json", "config"])).unwrap();
-    assert_eq!(v["config"]["issues_repo"]["value"], "otmof-ops/CigScript");
+    assert_eq!(v["config"]["issues_repo"]["value"], "otmof-ops/cig-script");
 }
 
 #[test]

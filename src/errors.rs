@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/CigScript)
+// SPDX-FileCopyrightText: 2026 Jay Taylor (https://github.com/otmof-ops/cig-script)
 // SPDX-License-Identifier: Apache-2.0
 
 //! The error-code registry, read from `errors/registry.toml`.
@@ -245,7 +245,7 @@ pub fn diagnostic_schema() -> serde_json::Value {
     let nos: Vec<&str> = registry().nos.iter().map(|n| n.id.as_str()).collect();
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "$id": "https://github.com/otmof-ops/CigScript/blob/main/docs/diagnostic.schema.json",
+        "$id": "https://github.com/otmof-ops/cig-script/blob/main/docs/diagnostic.schema.json",
         "title": "CigScript diagnostic",
         "description": format!("One diagnostic as `cig --json` prints it. Generated from errors/registry.toml (registry version {}) for cigscript {}.", registry().version, crate::VERSION),
         "type": "object",
