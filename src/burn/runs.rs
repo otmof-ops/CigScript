@@ -550,12 +550,21 @@ pub fn list() -> io::Result<Vec<RunRecord>> {
 
 /// The last good version of a script: the cig that lit the newest run of
 /// this exact source (by hash) that went through, with that run's id.
+/// Asked before every run, so it reads each run's record alone and never a
+/// journal: everything it needs (the script's hash, the status, the mode,
+/// the version) is in the record, and a history of a thousand runs must not
+/// make every start slower.
 pub fn last_good(script_sha256: &str) -> Option<(crate::update::Version, String)> {
-    list().ok()?.into_iter().find_map(|r| {
-        (r.script_sha256 == script_sha256 && r.status == "ok" && r.mode == "run")
-            .then(|| r.written_by().map(|v| (v, r.id.clone())))
-            .flatten()
-    })
+    let mut records: Vec<RunRecord> = fs::read_dir(runs_dir())
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| RunRecord::load(&e.path()).ok())
+        .filter(|r| r.script_sha256 == script_sha256 && r.status == "ok" && r.mode == "run")
+        .collect();
+    records.sort_by(|a, b| b.started.cmp(&a.started).then_with(|| b.id.cmp(&a.id)));
+    records
+        .into_iter()
+        .find_map(|r| r.written_by().map(|v| (v, r.id.clone())))
 }
 
 /// Resolve a full id or a unique prefix to a run directory.

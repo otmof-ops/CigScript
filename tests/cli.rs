@@ -10013,3 +10013,79 @@ fn a_hop_under_nested_roots_is_journaled_once() {
     // The hop, and the one file it made: seen through both roots, one effect.
     assert_eq!(sb.runs()[0]["burns"], 2, "{}", sb.runs()[0]);
 }
+
+/// Every start asks for the script's last good version, and that must not
+/// read the journal of every run in the history: a history of a thousand
+/// runs made each start two seconds slower (1.13.2). A journal that would
+/// block a reader forever (a FIFO) proves no journal is opened.
+#[cfg(unix)]
+#[test]
+fn a_run_starts_without_reading_other_runs_journals() {
+    let sb = Sandbox::new();
+    sb.write("s.cig", "exhale \"started\"\n");
+    let other = sb.home().join("runs").join("20200101T000000-aaaaaa");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(
+        other.join("run.json"),
+        r#"{"id":"20200101T000000-aaaaaa","script":"other.cig","script_sha256":"0000","started":"2020-01-01T00:00:00Z","status":"ok","mode":"run","version":"1.0.0","format":1}"#,
+    )
+    .unwrap();
+    let fifo = other.join("journal.jsonl");
+    let made = Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+    assert!(made.success());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
+        .args(["run", "s.cig"])
+        .current_dir(sb.path())
+        .env("CIGSCRIPT_HOME", sb.home())
+        .env("NO_COLOR", "1")
+        .env("CIG_SEAL_KEY", "file")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("run cig");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("wait") {
+            break Some(s);
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    // A cig that opened the FIFO is blocked in it, and was killed above.
+    let status = status.expect("cig run blocked: it opened another run's journal at start");
+    assert!(status.success());
+}
+
+/// A door out of the pack that leads to the pack's own ancestors (a Wine
+/// prefix's `z:` leads to `/`) is not watched: the whole machine changes by
+/// itself, and a shallow watch reported the system's writes as the hop's.
+/// A door to a tree too big for the shallow watch reports only what both
+/// walks saw (1.13.2).
+#[cfg(unix)]
+#[test]
+fn doors_to_the_whole_machine_or_past_the_cap_report_no_writes_the_hop_did_not_make() {
+    let sb = Sandbox::new();
+    fs::create_dir_all(sb.path().join("p")).unwrap();
+    std::os::unix::fs::symlink("/", sb.path().join("p/z")).unwrap();
+    let big = sb.path().join("big");
+    fs::create_dir_all(big.join("a")).unwrap();
+    fs::create_dir_all(big.join("b")).unwrap();
+    for i in 0..6000 {
+        fs::write(big.join("b").join(format!("f{i:05}")), "x").unwrap();
+    }
+    std::os::unix::fs::symlink(&big, sb.path().join("p/big")).unwrap();
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo new > big/a/new.txt; echo kept > here.txt\"], {cwd: \"p\"})\n}\n",
+    );
+    let out = sb.cig(&["run", "s.cig"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(!err.contains("/etc/"), "{err}");
+    assert!(!err.contains("/proc/"), "{err}");
+    assert!(!err.contains("/b/f"), "{err}");
+    assert_eq!(sb.read("p/here.txt"), "kept\n");
+}

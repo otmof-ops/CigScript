@@ -440,6 +440,18 @@ pub struct PackWatch {
     pub warnings: Vec<String>,
 }
 
+/// Is a place a door out of the pack leads to worth watching? Not one that
+/// holds the pack (`/`, the home above a project), and not the kernel's own
+/// trees, where files change whatever the hop does.
+fn watchable_door(target: &Path, roots: &[PathBuf]) -> bool {
+    if roots.iter().any(|r| r.starts_with(target)) {
+        return false;
+    }
+    !["/proc", "/sys", "/dev", "/run"]
+        .iter()
+        .any(|k| target.starts_with(k))
+}
+
 /// How many entries hop watching reads of a pack before it stops: a memory
 /// guard, five million by default (about 300 MB of scan), which the
 /// `watch_cap` setting moves. The safety rule at the cap holds at any size:
@@ -1066,8 +1078,15 @@ impl Kernel {
             partial |= !s.complete;
             // A directory link that leads out of the pack: the hop may
             // write through it, so where it leads is watched for the report.
+            // Not a link to the pack's own ancestors (a Wine prefix's `z:`
+            // leads to `/`) or into the kernel's own trees: there the whole
+            // machine changes by itself, and a shallow watch reports the
+            // system's writes as the hop's.
             for (_, target) in &s.dir_links {
-                if !inside_roots(target, roots) && !outside.iter().any(|o| o.root == *target) {
+                if !inside_roots(target, roots)
+                    && watchable_door(target, roots)
+                    && !outside.iter().any(|o| o.root == *target)
+                {
                     outside.push(scan::scan(target, 3, 5_000, None));
                 }
             }
@@ -1508,8 +1527,14 @@ impl Kernel {
         }
         for before in &watch.outside {
             let now = scan::scan(&before.root, 3, 5_000, None);
+            // A shallow scan that stopped at its cap (a door to `/`, as a
+            // Wine prefix's `z:` is) cannot tell a file the hop made or
+            // removed from one the other walk did not reach: only what both
+            // walks saw is compared.
+            let whole = before.complete && now.complete;
             for step in scan::merge(before, &now) {
                 match step {
+                    scan::Step::Created(..) | scan::Step::Gone(..) if !whole => continue,
                     scan::Step::Created(rel, meta) => {
                         if meta.is_dir() {
                             continue;

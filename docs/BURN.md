@@ -193,7 +193,11 @@ points outside is outside, and the refusal says where the write would land.
 The same holds for a hop: a link inside the pack that leads outside it is a
 door, not a part of the pack, so nothing behind it is walked or journaled,
 a write through it is reported as outside the pack (`E752`), and a rollback
-never removes a path whose real place is outside the pack. An empty root
+never removes a path whose real place is outside the pack. Where a door
+leads is watched shallowly (three levels, five thousand entries); a door
+to the pack's own ancestors (a Wine prefix's `z:` leads to `/`) or into
+`/proc`, `/sys`, `/dev` or `/run` is not watched, since the machine changes
+there by itself, and past the cap only what both walks saw is compared. An empty root
 is refused (`E755`): it would have meant the whole working directory.
 A **hop** inside a pack is *observed*: the pack's files (mtime, size,
 mode), directories (mode) and links (target, and what the link leads to)
