@@ -78,11 +78,23 @@ impl Sandbox {
     }
 
     fn prog(&self, exe: &Path, args: &[&str]) -> Output {
-        self.command(exe)
-            .args(args)
-            .output()
-            .expect("run the program")
+        output(self.command(exe).args(args)).expect("run the program")
     }
+}
+
+/// Run a program just written. A multithreaded test process can hit
+/// ETXTBSY: another test's fork still holds the file open for writing
+/// between its fork and its exec. That passes in a moment; try again.
+fn output(c: &mut Command) -> std::io::Result<Output> {
+    for _ in 0..80 {
+        match c.output() {
+            Err(e) if cfg!(unix) && e.raw_os_error() == Some(26) => {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            other => return other,
+        }
+    }
+    c.output()
 }
 
 fn text(b: &[u8]) -> String {
@@ -295,12 +307,7 @@ fn the_self_call_marker_never_turns_a_program_into_cig() {
         &["explain", "E1050"],
         &["crash", "flush"],
     ] {
-        let out = s
-            .command(&exe)
-            .env(program::SELF_ENV, "1")
-            .args(words)
-            .output()
-            .unwrap();
+        let out = output(s.command(&exe).env(program::SELF_ENV, "1").args(words)).unwrap();
         assert_eq!(
             text(&out.stdout),
             format!("args: {}\n", words.join(" ")),

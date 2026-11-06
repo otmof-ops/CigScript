@@ -306,6 +306,8 @@ fn internal_call(args: &[std::ffi::OsString]) -> bool {
     }
     match words.as_slice() {
         ["crash", "flush", "--quiet"] => true,
+        // The box, and so its forwarder, is Linux's.
+        #[cfg(target_os = "linux")]
         ["internal-forward", sock, port] => {
             std::path::Path::new(sock).is_absolute() && port.parse::<u16>().is_ok()
         }
@@ -489,11 +491,11 @@ mod tests {
     fn only_cigs_own_internal_calls_count() {
         let w = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
         assert!(internal_call(&w(&["crash", "flush", "--quiet"])));
-        assert!(internal_call(&w(&[
-            "internal-forward",
-            "/run/x.sock",
-            "3128"
-        ])));
+        assert_eq!(
+            internal_call(&w(&["internal-forward", "/run/x.sock", "3128"])),
+            cfg!(target_os = "linux"),
+            "the forwarder is the box's, and the box is Linux's"
+        );
         assert!(!internal_call(&w(&["internal-forward", "x.sock", "3128"])));
         assert!(!internal_call(&w(&["internal-forward", "/x", "port"])));
         assert!(!internal_call(&w(&["run", "evil.cig"])));
