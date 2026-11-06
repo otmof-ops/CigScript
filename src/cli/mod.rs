@@ -30,6 +30,10 @@ mod tin;
 mod update;
 mod versions;
 
+/// Diagnostics as `cig` prints them (the banner, the render, doctor's
+/// diagnosis, `--json`), for tools built on the library such as cigcompile.
+pub use run::{report, report_all};
+
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
