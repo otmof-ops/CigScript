@@ -2865,6 +2865,24 @@ why = "tool.cig and Tool.cig compiled into one folder"
 probe = "none"
 remedy = "rename one of them"
 
+[[code]]
+code = "E1008"
+title = "the runtime would tie programs to this machine's libc"
+meaning = "A Linux program runs anywhere because its runtime is static: cig's Linux releases need nothing from the machine. The only cig found here is dynamically linked, so a program made from it would start only where the same C library, of the same version or newer, is installed."
+fix = "fetch cig's static release (cigcompile fetch), or build cigcompile for this machine's -musl target"
+no = "dont-have-any"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.15.1"
+[[code.cause]]
+why = "cigcompile was built with a plain cargo build, so the cig-runtime beside it links this machine's glibc, and cig's release could not be fetched (CIGCOMPILE_OFFLINE, or no network)"
+probe = "none"
+remedy = "cigcompile fetch while online, or cargo build --release --target x86_64-unknown-linux-musl"
+[[code.cause]]
+why = "the cig on PATH was built from source rather than installed from the release"
+probe = "on-path"
+remedy = "cig update installs the static release; or pass a static cig with --runtime"
+
 # ----- E1050-E1099: a compiled program at run time (emitted by cig) -------
 
 [[code]]

@@ -15,6 +15,7 @@ E100-E199  lexing: the source cannot be turned into tokens
   E1005  the runtime already carries a program usage
   E1006  an unknown target                  usage
   E1007  two programs would share one name  usage
+  E1008  the runtime would tie programs to this machine's libc usage
   E1050  a damaged program                  usage
   E1051  a program for another cig          usage
   E1052  not one of the program's run flags usage
@@ -205,6 +206,7 @@ E1000-E1099  building and running compiled programs: the path, the runtime, the 
   E1005  the runtime already carries a program usage
   E1006  an unknown target                  usage
   E1007  two programs would share one name  usage
+  E1008  the runtime would tie programs to this machine's libc usage
   E1050  a damaged program                  usage
   E1051  a program for another cig          usage
   E1052  not one of the program's run flags usage
@@ -2932,6 +2934,25 @@ E1007 two programs would share one name  (usage, build family, since 1.15.0)
   1. tool.cig and Tool.cig compiled into one folder
      probe: none; a suggestion, not a finding
      remedy: rename one of them
+
+  arises in: compile  ·  tags: compiler
+
+======== E1008 ========
+E1008 the runtime would tie programs to this machine's libc  (usage, build family, since 1.15.1)
+
+  kind of no: don't have any over here  (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result)
+
+  A Linux program runs anywhere because its runtime is static: cig's Linux releases need nothing from the machine. The only cig found here is dynamically linked, so a program made from it would start only where the same C library, of the same version or newer, is installed.
+
+  what to type next: fetch cig's static release (cigcompile fetch), or build cigcompile for this machine's -musl target
+
+  known causes, ranked; doctor checks them in this order
+  1. cigcompile was built with a plain cargo build, so the cig-runtime beside it links this machine's glibc, and cig's release could not be fetched (CIGCOMPILE_OFFLINE, or no network)
+     probe: none; a suggestion, not a finding
+     remedy: cigcompile fetch while online, or cargo build --release --target x86_64-unknown-linux-musl
+  2. the cig on PATH was built from source rather than installed from the release
+     probe: on-path (each directory on PATH, looking for the program named in the message)
+     remedy: cig update installs the static release; or pass a static cig with --runtime
 
   arises in: compile  ·  tags: compiler
 
