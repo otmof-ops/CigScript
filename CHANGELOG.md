@@ -5,6 +5,27 @@ project follows semantic versioning.
 
 ## Unreleased
 
+- **A program never runs with raised rights** (#134). Installed setuid,
+  setgid or with file capabilities, a program ran its caller's `PATH` and
+  kept its runs and keys where its caller's `CIGSCRIPT_HOME` and `HOME` said,
+  with the rights of the file's owner: a caller's own `date` ran as root. It
+  now refuses (E1054) before it reads any of that; a sudo rule is the way to
+  let others run one as its owner.
+- **A damaged program is never `cig`** (#135). A program cut short, or with
+  bytes written after its trailer, ran as a full `cig`. A program now knows
+  it is one without its trailer (its payload starts where its runtime's
+  image ends, read from its ELF, Mach-O, universal or PE headers), and such a
+  program is E1050. Zero padding after the trailer is fine, and so is a PE
+  certificate table: a Windows program signed after it was built still runs.
+- **A program that cannot read itself refuses** (#136). Installed
+  execute-only and run by someone else, it could not find its script and ran
+  as `cig`, commands and all. It now refuses (E1055), unless it is named as
+  cig is (`cig`, `cig-runtime`, a release asset).
+- **What a program says about itself shows as it is** (#137). Its `file`,
+  `compiler` and `cig` refuse Unicode's invisible characters as well as
+  control characters: the format characters, the bidi controls among them
+  (U+202E made `tidy\u{202e}gpj.cig` show as `tidygic.jpg`), and the line and
+  paragraph separators. `program::printable` is the rule, for cigcompile too.
 - **A run that burns nothing never asks for the seal key** (#129). The
   journal writes its first line, and asks for the key, with its first entry,
   not when it is made: `cig run` of a script that burns nothing went from

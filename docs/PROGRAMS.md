@@ -16,7 +16,7 @@ payload                                    len bytes of JSON
 
 - **Payload.** One JSON record, fields in a fixed order: `format` (1), `name`, `file`, `source`, `sha256` (of `source`, hex), `cig` (the version it runs on) and `compiler`. The same inputs give the same bytes.
 - **The runtime's version.** Every cig from 1.15.0 carries `\0cig-runtime-version=<version>\0` in its bytes, so a tool can tell which cig a binary is without running it (one built for another machine cannot run here).
-- **Limits.** A payload is at most 16 MiB. `name` is a letter or digit, then letters, digits, `.`, `_` or `-`, 64 at most. `file`, `compiler` and `cig` are printable text with no control characters.
+- **Limits.** A payload is at most 16 MiB. `name` is a letter or digit, then letters, digits, `.`, `_` or `-`, 64 at most. `file`, `compiler` and `cig` are printable text: no control characters, and none of Unicode's invisible ones (the format characters, the bidi controls among them, and the line and paragraph separators), so no name reads differently on a terminal from what it is.
 
 ## Running one
 
@@ -56,9 +56,14 @@ The same: the kernel, burns, rollback, `--dry-run`, error positions (they point 
 
 The sha256s catch damage and truncation. They do not catch an edit, because anyone can recompute them, and they do not cover the runtime. Programs are unsigned until cig-compile#10. A program whose bytes, record, format or script do not match refuses to run (`E1050`). A program compiled for another cig refuses too (`E1051`).
 
+A program knows it is one even when its trailer is gone: its payload starts where its runtime's image ends (the end of the last segment, section or header an ELF, Mach-O, universal or PE header places in the file), so a program cut short, or with bytes written after its trailer, is damaged (`E1050`), never `cig`. Two things may follow a trailer and leave a program whole: zero padding, and a PE certificate table, which Authenticode writes when a Windows program is signed after it is built (cig-compile#10).
+
 ## A program is never a general `cig`
 
-A program's binary is `cig` for two calls only: the ashtray's background send (`crash flush --quiet`) and the box's network forwarder (`internal-forward <absolute socket> <port>`). Cig makes them with `CIG_INTERNAL_SELF` set, and the program answers that exact command line and nothing else. The marker is removed from the environment on start, and counts for nothing in a setuid, setgid or capability-raised process. A program never runs `cig update` (it never replaces itself) and never runs a repro.
+A program's binary is `cig` for two calls only: the ashtray's background send (`crash flush --quiet`) and the box's network forwarder (`internal-forward <absolute socket> <port>`). Cig makes them with `CIG_INTERNAL_SELF` set, and the program answers that exact command line and nothing else. The marker is removed from the environment on start. A program never runs `cig update` (it never replaces itself) and never runs a repro.
+
+- **A program never runs with raised rights** (`E1054`). Started setuid, setgid or with file capabilities (`AT_SECURE` on Linux, a real and effective id that differ elsewhere), it refuses before it reads its caller's environment: `PATH` for the commands it runs by name, `CIGSCRIPT_HOME` and `HOME` for its runs and keys. To let other users run one as its owner, give them a sudo rule for it.
+- **A program that cannot read itself refuses** (`E1055`). Installed execute-only and run by someone without read permission, it cannot find its script, so it cannot tell that it is a program; rather than act as `cig`, it refuses. A binary named `cig`, `cig-runtime` or as a release asset (`cig-v1.15.1-linux-x86_64`) is `cig`, and runs as `cig` either way.
 
 ## Platforms
 
@@ -74,5 +79,7 @@ A program's binary is `cig` for two calls only: the ashtray's background send (`
 | `E1051` | a program for another cig |
 | `E1052` | not one of the program's run flags, a missing value, or an argument that is not UTF-8 |
 | `E1053` | `--unburn` of a run this program did not make |
+| `E1054` | a program started with raised rights (setuid, setgid, capabilities) |
+| `E1055` | a program that cannot read its own file |
 
 `E1000` to `E1008` are cigcompile's. The families `E1000` to `E1799` are listed in `errors/registry.toml`.

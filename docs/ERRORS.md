@@ -2759,6 +2759,8 @@ building and running compiled programs: the path, the runtime, the target, and a
 | [`E1008`](#e1008-the-runtime-would-tie-programs-to-this-machine's-libc) | the runtime would tie programs to this machine's libc *(cigcompile)* | don't have any over here | fetch cig's static release (cigcompile fetch), or build cigcompile for this machine's -musl target |
 | [`E1050`](#e1050-a-damaged-program) | a damaged program | not one of the four | compile it again (cigcompile build), or fetch it again from where it came from |
 | [`E1051`](#e1051-a-program-for-another-cig) | a program for another cig | not one of the four | compile it again with the cigcompile for this cig, or keep the binary cigcompile made |
+| [`E1054`](#e1054-a-program-with-raised-rights) | a program with raised rights | these are MY ciggies | run it with sudo instead, and take the bits off its file: chmod u-s,g-s, setcap -r |
+| [`E1055`](#e1055-a-program-that-cannot-read-itself) | a program that cannot read itself | these are MY ciggies | make it readable by whoever runs it (chmod 755), as cigcompile writes it |
 | [`E1052`](#e1052-not-one-of-the-program's-run-flags) | not one of the program's run flags | not one of the four | put the program's own arguments after --: tool -- --flag (tool --help lists the run flags) |
 | [`E1053`](#e1053-not-this-program's-run) | not this program's run | these are MY ciggies | use cig unburn <run> for any run, or the program that made it |
 
@@ -2908,13 +2910,14 @@ A Linux program runs anywhere because its runtime is static: cig's Linux release
 
 **Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
 
-This program's bytes do not match the sha256 in its trailer, or its record does not read: it was cut short, edited or damaged after it was compiled, and it refuses to run. The sha256 catches damage, not tampering: programs are unsigned.
+This program's bytes do not match the sha256 in its trailer, its record does not read, or its trailer is not at its end: it was cut short, edited, or had bytes written after it once it was compiled, and it refuses to run. A program knows it is one even without its trailer (its record starts where its runtime's image ends), so a damaged program never runs as cig. Zero padding, or a Windows certificate table from signing, may follow the trailer. The sha256 catches damage, not tampering: programs are unsigned.
 
 **What to type next:** compile it again (cigcompile build), or fetch it again from where it came from
 
 **Known causes**, ranked; doctor checks them in this order:
 
 1. the file was cut short or changed after it was compiled: a partial download, a copy that stopped, a tool that rewrote it (probe `file-hash`). **Remedy:** compare its sha256 with the one from the build, then rebuild it or fetch it again
+2. something was written after the program: a tool that appends data, or a signature that is not a PE certificate table (probe `file-hash`). **Remedy:** build it again, then sign it with a tool that keeps the program's end (cig-compile#10)
 
 Related: `E1051`.
 
@@ -2934,6 +2937,40 @@ The program was compiled for one cig and appended to another. A program runs onl
 1. the program's script was appended to a different cig by hand or by an older tool (no probe; a suggestion, not a finding). **Remedy:** build it again with cigcompile build
 
 Related: `E1002`.
+
+
+### E1054 a program with raised rights
+
+*usage · since 1.15.1 · arises in run*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+The system started this program with more rights than whoever ran it: its file is setuid or setgid, or has file capabilities. A program reads its caller's environment (PATH for the commands it runs by name, CIGSCRIPT_HOME and HOME for its runs and keys), so with raised rights it would run the caller's commands, and keep its runs and keys where the caller chose, as the file's owner. It refuses before it reads any of that.
+
+**What to type next:** run it with sudo instead, and take the bits off its file: chmod u-s,g-s, setcap -r
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program's file was made setuid or setgid (chmod u+s, g+s), or given capabilities (setcap), so that other users run it as its owner (probe `path-permissions`). **Remedy:** give those users a sudo rule for it instead, and take the bits off: chmod u-s,g-s, setcap -r
+
+Related: `E1050`.
+
+
+### E1055 a program that cannot read itself
+
+*usage · since 1.15.1 · arises in run*
+
+**Kind of no:** these are MY ciggies (the door: it knows you and said no; 403 Forbidden; permission denied; a lock; a refusal by policy).
+
+A program finds its script at the end of its own file. This one cannot open its file (installed execute-only, such as mode 0711, and run by someone without read permission), so it cannot tell whether it is a program, and it refuses rather than act as a general cig. A binary named cig or cig-runtime is cig, and runs as cig either way.
+
+**What to type next:** make it readable by whoever runs it (chmod 755), as cigcompile writes it
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the program was installed execute-only, to ship a tool without handing out its contents; a program's script is in its file, so it must read it (probe `path-permissions`). **Remedy:** chmod 755 the program
+
+Related: `E1050`.
 
 
 ### E1052 not one of the program's run flags

@@ -246,6 +246,16 @@ pub fn refuse(why: &Unrunnable) -> i32 {
         .with_hint(
             "compile it again with the cigcompile for this cig, or keep the binary cigcompile made",
         ),
+        Unrunnable::Raised { name } => crate::diagnostics::usage(format!(
+            "{name} is running with more rights than whoever started it (setuid, setgid or file capabilities), and a program does not run like that"
+        ))
+        .code("E1054")
+        .with_hint("run it with sudo instead, and take the bits off its file: chmod u-s,g-s, setcap -r"),
+        Unrunnable::Unreadable { name } => crate::diagnostics::usage(format!(
+            "{name} cannot read its own file, so it cannot find its script (it was installed without read permission)"
+        ))
+        .code("E1055")
+        .with_hint("make it readable by whoever runs it (chmod 755), as cigcompile writes it"),
     };
     run::report(&ctx, &d, None, None);
     exit::USAGE
