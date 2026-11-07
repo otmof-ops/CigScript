@@ -1842,6 +1842,104 @@ fn unburn_refuses_when_a_file_changed_since_the_run_unless_forced() {
     assert!(!sb.exists("g.txt"));
 }
 
+/// #129: a run that burns nothing never asks for the seal key. Its journal
+/// writes no line, its record keeps no head and the ledger no line, and
+/// `cig unburn` says there is nothing to undo, as before. The first burn
+/// asks for the key, once.
+#[test]
+fn a_run_that_burns_nothing_never_asks_for_the_key() {
+    let sb = Sandbox::new();
+    let key = sb.path().join("keys").join("seal.key");
+    let key_s = key.to_string_lossy().to_string();
+    let env = [("CIG_SEAL_KEY_FILE", key_s.as_str())];
+    sb.write("quiet.cig", "exhale \"nothing burns\"\n");
+    let out = sb.cig_env(&["run", "quiet.cig"], &env);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!key.exists(), "a run that burned nothing asked for the key");
+    let rec = sb.runs()[0].clone();
+    assert!(rec["journal_head"].is_null(), "{rec}");
+    let id = rec["id"].as_str().unwrap().to_string();
+    let undo = sb.cig_env(&["unburn", &id], &env);
+    assert!(undo.status.success());
+    assert!(
+        String::from_utf8_lossy(&undo.stderr).contains("burned nothing"),
+        "{}",
+        String::from_utf8_lossy(&undo.stderr)
+    );
+    let verified = sb.cig_env(&["runs", &id, "--verify"], &env);
+    assert!(
+        verified.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&verified.stdout),
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    assert!(
+        !key.exists(),
+        "verifying a run that burned nothing asked for the key"
+    );
+    // The first burn asks for it, and the run keeps its head.
+    sb.write("burn.cig", "burn {\n  fs.write_text(\"f.txt\", \"x\")\n}\n");
+    let out = sb.cig_env(&["run", "burn.cig"], &env);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(key.exists(), "the first burn did not ask for the key");
+    let rec = sb.runs()[0].clone();
+    assert!(
+        rec["journal_head"].as_str().is_some_and(|h| !h.is_empty()),
+        "{rec}"
+    );
+}
+
+/// #129: a finished run that burned nothing has no head. Lines found under
+/// it later were written after the run, chained or not: E760.
+#[test]
+fn lines_planted_under_a_headless_run_are_tampering() {
+    let sb = Sandbox::new();
+    // A real entry, from a run that burned, planted under one that did not.
+    sb.write("burn.cig", "burn {\n  fs.write_text(\"f.txt\", \"x\")\n}\n");
+    sb.run_ok(&["run", "burn.cig"]);
+    let donor = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let entry = fs::read_to_string(sb.home().join("runs").join(&donor).join("journal.jsonl"))
+        .unwrap()
+        .lines()
+        .nth(1)
+        .unwrap()
+        .to_string();
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // ids are second-resolution
+    sb.write("quiet.cig", "exhale \"nothing burns\"\n");
+    sb.run_ok(&["run", "quiet.cig"]);
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    assert_ne!(id, donor);
+    let journal = sb.home().join("runs").join(&id).join("journal.jsonl");
+    fs::write(&journal, format!("{entry}\n")).unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    assert!(!out.status.success());
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.contains("E760"), "{text}");
+    // A journal that cannot be read at all fails verification too (a bad
+    // last line alone reads as a write cut short by a crash; one with good
+    // lines after it cannot be).
+    fs::write(
+        &journal,
+        format!("{{\"seq\":\"x\",\"op\":{{}}}}\n{entry}\n"),
+    )
+    .unwrap();
+    let out = sb.cig(&["runs", &id, "--verify"]);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be read"));
+}
+
 #[test]
 fn unburn_names_the_later_run_that_changed_the_file() {
     let sb = Sandbox::new();
