@@ -438,3 +438,186 @@ fn a_programs_registry_hop_gets_the_forwarder_from_its_own_binary() {
     );
     assert!(err.contains(&format!("127.0.0.1:{refused}")), "{err}");
 }
+
+/// The cig binary's headers place its image exactly at its file's end, so
+/// a payload appended to it starts there (#135).
+#[test]
+fn the_cig_binarys_image_ends_where_its_file_does() {
+    let path = Path::new(env!("CARGO_BIN_EXE_cig"));
+    let len = fs::metadata(path).unwrap().len();
+    let image = program::image_of(&mut fs::File::open(path).unwrap(), len)
+        .expect("the cig binary's headers read");
+    assert_eq!(image.end, len);
+}
+
+/// A program cut short, or with bytes after its trailer, is damaged; it
+/// never runs as `cig` (#135). Zero padding after the trailer is fine.
+#[test]
+fn a_cut_or_extended_program_is_damaged_never_cig() {
+    let s = Sandbox::new();
+    s.write("x.cig", "burn {\n  fs.write_text(\"x.txt\", \"x\")\n}\n");
+    let exe = s.compile("x", "x.cig");
+    let whole = fs::read(&exe).unwrap();
+    let mut cases: Vec<(String, Vec<u8>)> = [1usize, 48, 200]
+        .iter()
+        .map(|cut| {
+            (
+                format!("{cut} bytes cut"),
+                whole[..whole.len() - cut].to_vec(),
+            )
+        })
+        .collect();
+    let mut junk = whole.clone();
+    junk.extend_from_slice(b"XX");
+    cases.push(("XX after it".to_string(), junk));
+    for (what, bytes) in cases {
+        fs::write(&exe, &bytes).unwrap();
+        let out = s.prog(&exe, &["run", "x.cig"]);
+        let err = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(3), "{what}: {err}");
+        assert!(err.contains("E1050"), "{what}: {err}");
+        assert!(
+            !err.contains("unrecognized subcommand"),
+            "{what}: ran as cig: {err}"
+        );
+        assert!(!s.exists("x.txt"), "{what}: the damaged program ran");
+    }
+    let mut padded = whole.clone();
+    padded.extend_from_slice(&[0; 512]);
+    fs::write(&exe, &padded).unwrap();
+    let out = s.prog(&exe, &[]);
+    assert!(out.status.success(), "padded: {}", text(&out.stderr));
+    assert!(s.exists("x.txt"), "the padded program did not run");
+}
+
+#[cfg(unix)]
+fn mode(p: &Path, m: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(p, fs::Permissions::from_mode(m)).unwrap();
+}
+
+#[cfg(unix)]
+fn root() -> bool {
+    // SAFETY: a plain id query.
+    unsafe { libc::geteuid() == 0 }
+}
+
+/// Installed execute-only and run by someone who cannot read it, a program
+/// cannot find its script; it refuses rather than act as `cig` (#136). A
+/// binary named `cig` is `cig` either way.
+#[cfg(unix)]
+#[test]
+fn an_unreadable_program_refuses_and_an_unreadable_cig_is_cig() {
+    if root() {
+        eprintln!("skipped: root reads any file");
+        return;
+    }
+    let s = Sandbox::new();
+    s.write("x.cig", "exhale \"the program ran\"\n");
+    s.write(
+        "evil.cig",
+        "burn {\n  fs.write_text(\"evil.txt\", \"x\")\n}\n",
+    );
+    let exe = s.compile("x", "x.cig");
+    mode(&exe, 0o111);
+    let out = match output(s.command(&exe).args(["run", "evil.cig"])) {
+        Ok(o) => o,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            eprintln!("skipped: this system does not run execute-only files");
+            return;
+        }
+        Err(e) => panic!("{e}"),
+    };
+    let err = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(3), "{err}");
+    assert!(err.contains("E1055"), "{err}");
+    assert!(
+        !s.exists("evil.txt"),
+        "an unreadable program ran a cig command"
+    );
+    let cig = s.path().join("cig");
+    fs::copy(env!("CARGO_BIN_EXE_cig"), &cig).unwrap();
+    mode(&cig, 0o111);
+    let out = output(s.command(&cig).arg("--version")).unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).starts_with("cig "),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+/// Root-owned and setuid, setgid or with file capabilities, a program run by
+/// someone else refuses before it reads their environment (#134). These
+/// need sudo, so they run in CI, where the runners have it.
+#[cfg(unix)]
+#[test]
+fn a_program_with_raised_rights_refuses() {
+    let sudo = |args: &[&str]| {
+        Command::new("sudo")
+            .arg("-n")
+            .args(args)
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if std::env::var_os("CI").is_none() || root() || !sudo(&["true"]) {
+        eprintln!("skipped: needs CI, a user that is not root, and sudo");
+        return;
+    }
+    let s = Sandbox::new();
+    // A path cig would find on PATH: a program run setuid must never run it.
+    let fake = s.path().join("fakebin");
+    fs::create_dir_all(&fake).unwrap();
+    fs::write(
+        fake.join("date"),
+        "#!/bin/sh\necho ran > \"$PWD/fake-ran.txt\"\n",
+    )
+    .unwrap();
+    mode(&fake.join("date"), 0o755);
+    s.write(
+        "stamp.cig",
+        "burn {\n  stick d = proc.run(\"date\", [], {})\n  fs.write_text(\"stamp.txt\", d.out)\n}\n",
+    );
+    let mut raised = vec![("setuid", "4755"), ("setgid", "2755")];
+    let caps = cfg!(target_os = "linux")
+        && Command::new("sh")
+            .args(["-c", "command -v setcap"])
+            .output()
+            .is_ok_and(|o| o.status.success());
+    if caps {
+        raised.push(("capabilities", ""));
+    }
+    for (what, bits) in raised {
+        let exe = s.compile(what, "stamp.cig");
+        let p = exe.to_str().unwrap();
+        assert!(sudo(&["chown", "0:0", p]), "{what}: chown");
+        if bits.is_empty() {
+            assert!(
+                sudo(&["setcap", "cap_dac_read_search+ep", p]),
+                "{what}: setcap"
+            );
+        } else {
+            assert!(sudo(&["chmod", bits, p]), "{what}: chmod");
+        }
+        let path = format!(
+            "{}:{}",
+            fake.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let out = output(
+            s.command(&exe)
+                .env("PATH", path)
+                .env("CIGSCRIPT_HOME", s.path().join("callers-home")),
+        )
+        .unwrap();
+        let err = text(&out.stderr);
+        assert_eq!(out.status.code(), Some(3), "{what}: {err}");
+        assert!(err.contains("E1054"), "{what}: {err}");
+        assert!(!s.exists("fake-ran.txt"), "{what}: the caller's date ran");
+        assert!(!s.exists("stamp.txt"), "{what}: the program ran");
+        assert!(
+            !s.exists("callers-home"),
+            "{what}: the caller's home was used"
+        );
+    }
+}
