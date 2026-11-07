@@ -3,7 +3,12 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.15.1 — 2026-11-07
+
+A fix release for compiled programs and the journal, from review of 1.15.0.
+Programs refuse rather than run as `cig` when they are damaged, unreadable
+or raised (E1050, E1055, E1054), a run that burns nothing never asks for
+the seal key, and two hops over one file roll back.
 
 - **A program never runs with raised rights** (#134). Installed setuid,
   setgid or with file capabilities, a program ran its caller's `PATH` and
