@@ -302,6 +302,47 @@ pub fn journal_reread(journal: &Journal) -> Option<Trip> {
     })
 }
 
+/// How many objects `verify_sample` asks for: `auto` is 3, `0` none.
+pub fn sample_size(setting: &str) -> usize {
+    match setting.trim() {
+        "auto" | "" => 3,
+        n => n.parse().unwrap_or(3),
+    }
+}
+
+/// After a burn: `n` objects drawn at random from the whole tin hash to
+/// their names (#105, L6), beside the run's own ([`tin_sample`]). A few
+/// milliseconds, however big the tin.
+pub fn tin_random_sample(n: usize) -> Option<Trip> {
+    let mut seen = 0;
+    let mut bad = Vec::new();
+    for p in tin::random_objects(n) {
+        let Some(name) = p.file_name().and_then(|n| n.to_str()).map(str::to_string) else {
+            continue;
+        };
+        seen += 1;
+        match sha256_file(&p) {
+            Ok(h) if h == name => {}
+            Ok(h) => bad.push(serde_json::json!({"object": name, "hashes_to": h})),
+            Err(err) => bad.push(serde_json::json!({"object": name, "error": err.to_string()})),
+        }
+    }
+    if bad.is_empty() {
+        return None;
+    }
+    Some(Trip {
+        check: "tin",
+        what: format!(
+            "{} of {seen} tin object{} drawn at random do{} not hash to {} name",
+            bad.len(),
+            if seen == 1 { "" } else { "s" },
+            if bad.len() == 1 { "es" } else { "" },
+            if bad.len() == 1 { "its" } else { "their" }
+        ),
+        details: serde_json::json!({"objects": bad, "sampled": seen}),
+    })
+}
+
 /// After a run: up to three tin objects the journal refers to hash to
 /// their names.
 pub fn tin_sample(journal: &Journal) -> Option<Trip> {

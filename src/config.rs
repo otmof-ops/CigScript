@@ -85,6 +85,9 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "keep_days",
         "0",
         "after each run, prune run records older than this many days, as cig runs --prune does; 0 keeps them however old",
+        "verify_sample",
+        "auto",
+        "after a run that burned, how many tin objects, drawn at random from the whole tin, are checked against their names beside the run's own: auto (3), a number, or 0 for no check",
     ),
     (
         "journal_sign",

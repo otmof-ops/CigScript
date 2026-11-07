@@ -920,6 +920,59 @@ pub fn referenced() -> HashSet<PathBuf> {
     out
 }
 
+/// `n` objects drawn at random from the whole store, for the check after a
+/// burn (#105, L6, `verify_sample`): a random bucket, then a random object
+/// in it, so a big tin costs no more to sample than a small one.
+pub fn random_objects(n: usize) -> Vec<PathBuf> {
+    let Ok(buckets) = fs::read_dir(objects_dir()) else {
+        return Vec::new();
+    };
+    let buckets: Vec<PathBuf> = buckets
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    if buckets.is_empty() || n == 0 {
+        return Vec::new();
+    }
+    let mut seed = [0u8; 8];
+    let _ = getrandom::getrandom(&mut seed);
+    let mut x = u64::from_le_bytes(seed) | 1;
+    let mut next = move |below: usize| {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        (x % below as u64) as usize
+    };
+    let mut out: Vec<PathBuf> = Vec::new();
+    // A few draws more than asked: a bucket can be empty, a draw repeated.
+    for _ in 0..n.saturating_mul(4) {
+        if out.len() >= n {
+            break;
+        }
+        let Ok(entries) = fs::read_dir(&buckets[next(buckets.len())]) else {
+            continue;
+        };
+        let names: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.len() == 64 && n.chars().all(|c| c.is_ascii_hexdigit()))
+            })
+            .collect();
+        if names.is_empty() {
+            continue;
+        }
+        let pick = names[next(names.len())].clone();
+        if !out.contains(&pick) {
+            out.push(pick);
+        }
+    }
+    out
+}
+
 /// Every entry of one bucketed store (`objects/`, `recipes/`, `sealed/`)
 /// named by `name_len` hex digits, with its size.
 fn hashed_entries_named(store: &Path, name_len: usize) -> Vec<(PathBuf, u64)> {

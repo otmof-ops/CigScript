@@ -18,6 +18,11 @@ project follows semantic versioning.
   limits. A test proves cig is not dumpable while it holds the key: a hop
   sees cig's `/proc` entries owned by root, and `CIG_ALLOW_DEBUG=1` opens
   it again.
+- **`verify_sample`** (#105): after a run that burned, objects drawn at
+  random from the whole tin are checked against their names, beside the
+  run's own, so an object an earlier run left that has rotted since is a
+  tripwire on the next burn. 3 by default; `0` checks nothing. A random
+  bucket, then a random object in it: a big tin costs no more to sample.
 
 ## 1.15.1 — 2026-11-07
 
