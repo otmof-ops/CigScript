@@ -4596,7 +4596,6 @@ fn keep_runs_prunes_after_each_run_and_the_ledger_stays_quiet() {
     assert!(!sb.path().join("f3.txt").exists());
 }
 
-#[cfg(unix)]
 /// Once the tin's key is loaded, cig's memory is closed to the programs it
 /// starts (#105, L5): cig is not dumpable, which a hop sees as its `/proc`
 /// entries owned by root, so nothing running as you can attach to it or
@@ -4629,6 +4628,7 @@ fn a_hop_cannot_read_cigs_memory() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn a_pruned_run_is_quiet_and_a_hand_deleted_run_is_a_note() {
     let sb = Sandbox::new();
