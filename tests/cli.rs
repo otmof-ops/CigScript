@@ -6076,7 +6076,7 @@ fn a_boxed_hop_sees_only_cigs_proxy() {
     sb.write("p/keep.txt", "v1\n");
     sb.write(
         "s.cig",
-        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"env | grep -i -e proxy -e global_agent | sort > reg.txt\"], {cwd: \"p\", box: {network: \"registry\", allow_hosts: [\"registry.npmjs.org\"]}})\n  proc.run(\"sh\", [\"-c\", \"env | grep -i -e proxy -e global_agent | sort > off.txt; true\"], {cwd: \"p\", box: {network: \"off\"}})\n}\n",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"env | grep -i -E '^[^=]*(proxy|global_agent)[^=]*=' | sort > reg.txt\"], {cwd: \"p\", box: {network: \"registry\", allow_hosts: [\"registry.npmjs.org\"]}})\n  proc.run(\"sh\", [\"-c\", \"env | grep -i -E '^[^=]*(proxy|global_agent)[^=]*=' | sort > off.txt; true\"], {cwd: \"p\", box: {network: \"off\"}})\n}\n",
     );
     let out = sb.cig_env(
         &["run", "s.cig"],
