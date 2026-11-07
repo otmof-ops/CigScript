@@ -3,7 +3,10 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
-## Unreleased
+## 1.16.0 — 2026-11-07
+
+Retention and a wider self-check for the tin, a fix for the box's network,
+and a code cigcompile asked for.
 
 - **A refused connection is always seen** (the box's registry network).
   The proxy answered a refused CONNECT first and recorded it after, on its
