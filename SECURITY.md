@@ -28,6 +28,22 @@ tools for reading before lighting. Full detail in `docs/BURN.md`.
 is nothing to inject into. The same holds for every place `cig` itself runs
 another program (`gh`, `curl`, package managers offered by `cig doctor --fix`).
 
+## What protects the tin
+
+The tin is your undo: the before-copies, the journals and the key that
+seals them. These protect it, and are on by default (#105, 1.8.0 to 1.15):
+
+| from | what stops it |
+|---|---|
+| **the scripts cig runs**: a hop in any language, a buggy tool, a script that cleans the wrong folder | On Linux a boxed hop sees the tin read-only and the key's folder empty, and `tin_guard on` does the same for every hop. A cig a hop starts is recorded as a child run and unburned with its parent. A journal is a keyed chain with a ledger line per run, so a rewritten, cut-short or older journal does not verify (E760, E709). cig's memory is closed to what it starts once the key is loaded. |
+| **another user on the machine** | The state folder is yours alone (`0700`, objects `0400`). A folder others can write is refused at a terminal and warned about when unattended (E707, `tin_perms`). |
+| **someone with a copy of the tin** (a backup, a disk) | The key is kept out of the tin: in the OS keyring, or a key file apart from it. Sealed objects (secret-shaped files by default, everything with `seal = all`) do not open without it, and a run cannot be forged without it. `cig tin key export` and `import` move it on purpose. |
+
+**The honest limits:**
+- Root or an administrator can do anything; `cig tin head` makes it detectable, not preventable.
+- A process running as you can still delete the tin between runs, and on macOS and Windows during them. That is always caught (the ledger and `cig tin verify` say so) and never restored from. The vault that would stop it is #105's L7, not built.
+- Ordinary, non-secret before-copies are readable by you and what you run: they are your own files. `seal = all` encrypts them too.
+
 ## What `cig update` trusts
 
 - TLS to `github.com` and `api.github.com` (curl is invoked with `--proto

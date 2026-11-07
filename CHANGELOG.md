@@ -10,6 +10,11 @@ project follows semantic versioning.
   records older than N days dropped. 0, the default, keeps every run, and
   neither drops a run with work left (running, interrupted, or an unburn
   that failed).
+- **SECURITY.md says what protects the tin** (#105): from the scripts cig
+  runs, from another user, and from someone with a copy, with the honest
+  limits. A test proves cig is not dumpable while it holds the key: a hop
+  sees cig's `/proc` entries owned by root, and `CIG_ALLOW_DEBUG=1` opens
+  it again.
 
 ## 1.15.1 — 2026-11-07
 
