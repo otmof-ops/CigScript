@@ -147,7 +147,9 @@ pub fn try_send(report: &mut CrashReport, cfg: &Config) -> Result<SendOutcome, S
 
 /// The one sender at a time: a run's background flush and a `cig crash
 /// send` typed meanwhile must not both file the same report. The lock is a
-/// file made atomically; one older than ten minutes is a dead sender's.
+/// file made atomically, holding its sender's pid and start time; it is a
+/// dead sender's when that process is gone, or when it is older than ten
+/// minutes.
 /// Within one process it is re-entrant: a flush holds it while each report
 /// goes through `try_send`, which takes it again at once.
 pub struct Lock {
@@ -194,18 +196,20 @@ pub fn lock_at(path: &std::path::Path, wait: std::time::Duration) -> Option<Lock
         {
             Ok(mut f) => {
                 use std::io::Write;
-                let _ = writeln!(f, "{}", std::process::id());
+                let me = std::process::id();
+                let started = crate::burn::runs::process_started(me).unwrap_or_default();
+                let _ = writeln!(f, "{me} {started}");
                 if let Ok(mut held) = HELD.lock() {
                     held.push(path.clone());
                 }
                 return Some(Lock { path, owner: true });
             }
             Err(_) => {
-                let stale = std::fs::metadata(&path)
+                let old = std::fs::metadata(&path)
                     .and_then(|m| m.modified())
                     .map(|t| t.elapsed().map(|d| d.as_secs() > 600).unwrap_or(false))
                     .unwrap_or(true);
-                if stale {
+                if old || holder_dead(&path) {
                     let _ = std::fs::remove_file(&path);
                     continue;
                 }
@@ -215,6 +219,33 @@ pub fn lock_at(path: &std::path::Path, wait: std::time::Duration) -> Option<Lock
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
+    }
+}
+
+/// Is the process that wrote the lock at `path` gone? The file holds its
+/// pid and, since 1.15.1, the pid's start time, so a pid that was reused is
+/// not taken for the sender. A sender killed mid-send otherwise kept every
+/// later send waiting on its lock (#127). The name is not checked: a
+/// compiled program sends reports under its own name, not cig's.
+fn holder_dead(path: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let mut words = text.split_whitespace();
+    let Some(pid) = words.next().and_then(|w| w.parse::<u32>().ok()) else {
+        return false;
+    };
+    let recorded = words.next().filter(|w| !w.is_empty());
+    if pid == std::process::id() {
+        // Ours only if it is from this process, not an earlier one that had
+        // the same pid.
+        return recorded.is_some_and(|r| {
+            crate::burn::runs::process_started(pid).is_some_and(|live| live != r)
+        });
+    }
+    match crate::burn::runs::process_started(pid) {
+        None => true,
+        Some(live) => recorded.is_some_and(|r| r != live),
     }
 }
 
@@ -371,7 +402,11 @@ mod lock_tests {
         // and not taken while it stays.
         drop(outer);
         assert!(!path.exists());
-        std::fs::write(&path, "4242\n").unwrap();
+        // A live holder: written as another process would write it, with a
+        // pid and start time that are alive (this process's; not in HELD).
+        let me = std::process::id();
+        let started = crate::burn::runs::process_started(me).unwrap_or_default();
+        std::fs::write(&path, format!("{me} {started}\n")).unwrap();
         assert!(lock_at(&path, std::time::Duration::from_millis(150)).is_none());
         let p2 = path.clone();
         let freer = std::thread::spawn(move || {
@@ -381,5 +416,34 @@ mod lock_tests {
         let got = lock_at(&path, std::time::Duration::from_secs(10));
         freer.join().unwrap();
         assert!(got.is_some(), "the lock was not taken once it was let go");
+    }
+
+    /// #127: a sender killed mid-send leaves its lock; the next send sees
+    /// that its pid is gone (or belongs to a later process) and takes it.
+    #[test]
+    fn a_dead_senders_lock_is_taken_over() {
+        let t = tempfile::tempdir().unwrap();
+        let path = t.path().join(".flush.lock");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        // A start time no live process has: a reused pid is not the sender.
+        std::fs::write(&path, format!("{dead} ticks:1\n")).unwrap();
+        let got = lock_at(&path, std::time::Duration::from_secs(2));
+        assert!(
+            got.is_some(),
+            "a dead sender's lock kept the next send waiting"
+        );
+        // A lock from before 1.15.1 (a pid alone) whose pid is gone, too.
+        drop(got);
+        std::fs::write(&path, format!("{dead}\n")).unwrap();
+        if crate::burn::runs::process_started(dead).is_none() {
+            assert!(lock_at(&path, std::time::Duration::from_secs(2)).is_some());
+        }
     }
 }
