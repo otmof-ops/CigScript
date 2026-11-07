@@ -231,11 +231,15 @@ fn holder_dead(path: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;
     };
-    let mut words = text.split_whitespace();
-    let Some(pid) = words.next().and_then(|w| w.parse::<u32>().ok()) else {
+    // The pid, then the start time: the rest of the line, which on macOS
+    // and the BSDs is a date with spaces in it (`ps -o lstart`).
+    let line = text.lines().next().unwrap_or("").trim();
+    let (pid, rest) = line.split_once(char::is_whitespace).unwrap_or((line, ""));
+    let Ok(pid) = pid.parse::<u32>() else {
         return false;
     };
-    let recorded = words.next().filter(|w| !w.is_empty());
+    let rest = rest.trim();
+    let recorded = (!rest.is_empty()).then_some(rest);
     if pid == std::process::id() {
         // Ours only if it is from this process, not an earlier one that had
         // the same pid.
