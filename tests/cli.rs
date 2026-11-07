@@ -4597,6 +4597,38 @@ fn keep_runs_prunes_after_each_run_and_the_ledger_stays_quiet() {
 }
 
 #[cfg(unix)]
+/// Once the tin's key is loaded, cig's memory is closed to the programs it
+/// starts (#105, L5): cig is not dumpable, which a hop sees as its `/proc`
+/// entries owned by root, so nothing running as you can attach to it or
+/// open its memory, whatever the kernel's ptrace policy.
+/// `CIG_ALLOW_DEBUG=1` opens it again, and the hop sees that too.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_hop_cannot_read_cigs_memory() {
+    // SAFETY: a plain id query.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: root owns every /proc entry");
+        return;
+    }
+    let sb = Sandbox::new();
+    sb.write(
+        "m.cig",
+        "burn {\n  stick r = proc.run(\"sh\", [\"-c\", \"stat -c %u /proc/$PPID/mem\"])\n  fs.write_text(\"m.txt\", r.out)\n}\n",
+    );
+    sb.run_ok(&["run", "m.cig"]);
+    let owner = fs::read_to_string(sb.path().join("m.txt")).unwrap();
+    assert_eq!(owner.trim(), "0", "cig was dumpable while it held the key");
+    let o = sb.cig_env(&["run", "m.cig"], &[("CIG_ALLOW_DEBUG", "1")]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let me = unsafe { libc::geteuid() }.to_string();
+    let owner = fs::read_to_string(sb.path().join("m.txt")).unwrap();
+    assert_eq!(
+        owner.trim(),
+        me,
+        "CIG_ALLOW_DEBUG did not open cig to a debugger"
+    );
+}
+
 #[test]
 fn a_pruned_run_is_quiet_and_a_hand_deleted_run_is_a_note() {
     let sb = Sandbox::new();
