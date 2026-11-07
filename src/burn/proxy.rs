@@ -429,6 +429,9 @@ mod tests {
     /// box once went on where it should have waited). The proxy is held up
     /// just after it answers, so an event written after the answer would
     /// be missing every time.
+    // The box, and so its proxy, is Linux's; and only there does shutting
+    // the listener down wake its accept loop for `stop` to join.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_refusal_is_recorded_before_it_is_answered() {
         use std::io::{Read, Write};
