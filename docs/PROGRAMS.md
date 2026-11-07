@@ -6,7 +6,7 @@ A **program** is a CigScript script appended to the `cig` of the same version. I
 
 ## How one is made
 
-`cigcompile build tools/tidy.cig` checks the script and writes the program. Its errors are `E1000` to `E1008` (`cig explain E1000`). Anyone writing a tool that makes programs needs the format. The end of a program's file is:
+`cigcompile build tools/tidy.cig` checks the script and writes the program. Its errors are `E1000` to `E1009` (`cig explain E1000`). Anyone writing a tool that makes programs needs the format. The end of a program's file is:
 
 ```text
 ... cig ...                                the runtime, as released
@@ -82,4 +82,4 @@ A program's binary is `cig` for two calls only: the ashtray's background send (`
 | `E1054` | a program started with raised rights (setuid, setgid, capabilities) |
 | `E1055` | a program that cannot read its own file |
 
-`E1000` to `E1008` are cigcompile's. The families `E1000` to `E1799` are listed in `errors/registry.toml`.
+`E1000` to `E1009` are cigcompile's. The families `E1000` to `E1799` are listed in `errors/registry.toml`.

@@ -5,6 +5,9 @@ project follows semantic versioning.
 
 ## Unreleased
 
+- **E1009: a script whose name is not printable** (cigcompile). cig refuses
+  to run a program whose record holds an invisible character (E1050, since
+  1.15.1); cigcompile now has a code to refuse to make one.
 - **`keep_runs` and `keep_days`** (#105): prune run records after every run,
   as `cig runs --prune` does, each in the ledger: the newest N kept, or the
   records older than N days dropped. 0, the default, keeps every run, and

@@ -2883,6 +2883,20 @@ why = "the cig on PATH was built from source rather than installed from the rele
 probe = "on-path"
 remedy = "cig update installs the static release; or pass a static cig with --runtime"
 
+[[code]]
+code = "E1009"
+title = "a script whose name is not printable"
+meaning = "A program records the name of the script it was compiled from, and prints it in its errors and in cig runs. This script's name holds a control character or an invisible one (a bidi control such as U+202E, a zero-width character), so it could show as another name; cig refuses such a program at run time (E1050), so cigcompile refuses to make one."
+fix = "rename the script to a name that shows as it is, then build again"
+no = "none"
+arises = ["compile"]
+tags = ["compiler"]
+since = "1.16.0"
+[[code.cause]]
+why = "the file came from somewhere else with a name built to read differently on a terminal (tidy\u202egpj.cig shows as tidygic.jpg)"
+probe = "none"
+remedy = "rename it, and look at what else that source sent"
+
 # ----- E1050-E1099: a compiled program at run time (emitted by cig) -------
 
 [[code]]

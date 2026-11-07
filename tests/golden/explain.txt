@@ -16,6 +16,7 @@ E100-E199  lexing: the source cannot be turned into tokens
   E1006  an unknown target                  usage
   E1007  two programs would share one name  usage
   E1008  the runtime would tie programs to this machine's libc usage
+  E1009  a script whose name is not printable usage
   E1050  a damaged program                  usage
   E1051  a program for another cig          usage
   E1054  a program with raised rights       usage
@@ -209,6 +210,7 @@ E1000-E1099  building and running compiled programs: the path, the runtime, the 
   E1006  an unknown target                  usage
   E1007  two programs would share one name  usage
   E1008  the runtime would tie programs to this machine's libc usage
+  E1009  a script whose name is not printable usage
   E1050  a damaged program                  usage
   E1051  a program for another cig          usage
   E1054  a program with raised rights       usage
@@ -2957,6 +2959,22 @@ E1008 the runtime would tie programs to this machine's libc  (usage, build famil
   2. the cig on PATH was built from source rather than installed from the release
      probe: on-path (each directory on PATH, looking for the program named in the message)
      remedy: cig update installs the static release; or pass a static cig with --runtime
+
+  arises in: compile  ·  tags: compiler
+
+======== E1009 ========
+E1009 a script whose name is not printable  (usage, build family, since 1.16.0)
+
+  kind of no: not one of the four  (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error)
+
+  A program records the name of the script it was compiled from, and prints it in its errors and in cig runs. This script's name holds a control character or an invisible one (a bidi control such as U+202E, a zero-width character), so it could show as another name; cig refuses such a program at run time (E1050), so cigcompile refuses to make one.
+
+  what to type next: rename the script to a name that shows as it is, then build again
+
+  known causes, ranked; doctor checks them in this order
+  1. the file came from somewhere else with a name built to read differently on a terminal (tidy‮gpj.cig shows as tidygic.jpg)
+     probe: none; a suggestion, not a finding
+     remedy: rename it, and look at what else that source sent
 
   arises in: compile  ·  tags: compiler
 
