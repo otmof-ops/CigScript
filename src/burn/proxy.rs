@@ -96,6 +96,21 @@ mod imp {
         }
     }
 
+    /// A refusal's answer. Its event is written first: the client may exit
+    /// the moment it reads this.
+    fn answer(writer: &mut UnixStream, reply: &[u8]) {
+        let _ = writer.write_all(reply);
+        // The test's stand-in for this thread losing the CPU right here.
+        #[cfg(test)]
+        std::thread::sleep(Duration::from_millis(
+            PAUSE_AFTER_ANSWER.load(std::sync::atomic::Ordering::Relaxed),
+        ));
+    }
+
+    #[cfg(test)]
+    pub static PAUSE_AFTER_ANSWER: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+
     /// Does `host:port` pass the allow list?
     /// Does `allow` let `host:port` through? A `host:port` entry is that
     /// pair exactly; a name or address alone is that host on 443; `*.suffix`
@@ -218,33 +233,45 @@ mod imp {
                 Err(_) => return,
             }
         }
+        // Each refusal is recorded before it is answered: the client may
+        // exit the moment it has its answer, the hop is judged as soon as
+        // it does, and an event written after that was never seen (E771
+        // missing, so a run that should have waited went on).
         let mut parts = request.split_whitespace();
         let (method, target) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""));
         if method != "CONNECT" {
-            let _ =
-                writer.write_all(b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n");
             event(
                 shared,
                 serde_json::json!({"t": now(), "call": "proxy", "method": method, "target": target, "result": "refused", "why": "not CONNECT"}),
+            );
+            answer(
+                &mut writer,
+                b"HTTP/1.1 405 Method Not Allowed\r\nConnection: close\r\n\r\n",
             );
             return;
         }
         let (host, port) = match split_host_port(target) {
             Some(hp) => hp,
             None => {
-                let _ = writer.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n");
                 event(
                     shared,
                     serde_json::json!({"t": now(), "call": "connect", "target": target, "result": "refused", "why": "malformed"}),
+                );
+                answer(
+                    &mut writer,
+                    b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n",
                 );
                 return;
             }
         };
         let Some(by_wildcard) = admission(&shared.allow, &host, port) else {
-            let _ = writer.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
             event(
                 shared,
                 serde_json::json!({"t": now(), "call": "connect", "host": host, "port": port, "result": "refused", "why": "not in allow_hosts"}),
+            );
+            answer(
+                &mut writer,
+                b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n",
             );
             return;
         };
@@ -261,10 +288,13 @@ mod imp {
             .collect();
         outside.sort_by_key(|a| a.is_ipv6());
         if by_wildcard && !addrs.is_empty() && outside.is_empty() {
-            let _ = writer.write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
             event(
                 shared,
                 serde_json::json!({"t": now(), "call": "connect", "host": host, "port": port, "result": "refused", "why": "a wildcard entry does not reach an address on this machine or its network"}),
+            );
+            answer(
+                &mut writer,
+                b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n",
             );
             return;
         }
@@ -272,10 +302,13 @@ mod imp {
             .into_iter()
             .find_map(|a| TcpStream::connect_timeout(&a, Duration::from_secs(5)).ok());
         let Some(upstream) = upstream else {
-            let _ = writer.write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n");
             event(
                 shared,
                 serde_json::json!({"t": now(), "call": "connect", "host": host, "port": port, "result": "unreachable"}),
+            );
+            answer(
+                &mut writer,
+                b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n",
             );
             return;
         };
@@ -390,6 +423,47 @@ pub use imp::{allowed, refused, start, Proxy};
 #[cfg(all(test, unix))]
 mod tests {
     use super::imp::*;
+
+    /// A refusal is on disk before the client has its answer, so a hop
+    /// judged the moment its client exits sees it (cig-orchestrator's agent
+    /// box once went on where it should have waited). The proxy is held up
+    /// just after it answers, so an event written after the answer would
+    /// be missing every time.
+    // The box, and so its proxy, is Linux's; and only there does shutting
+    // the listener down wake its accept loop for `stop` to join.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_refusal_is_recorded_before_it_is_answered() {
+        use std::io::{Read, Write};
+        let dir = tempfile::tempdir().unwrap();
+        // As if the proxy's thread lost the CPU just after it answered.
+        PAUSE_AFTER_ANSWER.store(300, std::sync::atomic::Ordering::Relaxed);
+        for k in 0..3 {
+            let sock = dir.path().join(format!("p{k}.sock"));
+            let events = dir.path().join(format!("e{k}.jsonl"));
+            let proxy = start(&sock, allow(&["registry.npmjs.org"]), &events).unwrap();
+            let mut c = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+            c.write_all(b"CONNECT evil.example:443 HTTP/1.1\r\nHost: evil.example:443\r\n\r\n")
+                .unwrap();
+            // The headers alone, as curl reads them, not to the end of the
+            // connection (which closes only once the proxy is done).
+            let mut reply = Vec::new();
+            let mut byte = [0u8; 1];
+            while !reply.ends_with(b"\r\n\r\n") && c.read(&mut byte).unwrap() == 1 {
+                reply.push(byte[0]);
+            }
+            let reply = String::from_utf8_lossy(&reply).to_string();
+            assert!(reply.starts_with("HTTP/1.1 403"), "{reply}");
+            // Read at once, as cig does when the hop ends: the proxy is not
+            // stopped first, so nothing but the order can make it be there.
+            assert_eq!(
+                refused(&events),
+                vec!["evil.example:443".to_string()],
+                "attempt {k}"
+            );
+            proxy.stop();
+        }
+    }
 
     fn allow(v: &[&str]) -> Vec<String> {
         v.iter().map(|x| x.to_string()).collect()
