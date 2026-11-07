@@ -5,6 +5,12 @@ project follows semantic versioning.
 
 ## Unreleased
 
+- **A refused connection is always seen** (the box's registry network).
+  The proxy answered a refused CONNECT first and recorded it after, on its
+  own thread; a client that exits on its answer could end the hop before
+  the record was written, so E771 was missing and a run that should have
+  waited went on (cig-orchestrator's agent box, now and then in CI). Each
+  refusal is recorded before it is answered.
 - **E1009: a script whose name is not printable** (cigcompile). cig refuses
   to run a program whose record holds an invisible character (E1050, since
   1.15.1); cigcompile now has a code to refuse to make one.
