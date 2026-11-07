@@ -9783,10 +9783,12 @@ fn a_send_waits_for_the_sender_that_holds_the_ashtray() {
         "tool.json",
         r#"{"kind":"crash","panic_message":"map has no key","panic_location":"orchestrate.cig:12","version":"1.1.0","cwd":"~/w","command":["cigo","run","t"],"active_run_id":null}"#,
     );
-    // Another sender holds the ashtray (a live lock, by another process).
+    // Another sender holds the ashtray: a live lock, by another process
+    // (this test's: alive, and not the cig below). A lock whose holder is
+    // gone is taken over since #127, so a made-up pid would not hold it.
     fs::create_dir_all(sb.home().join("ashtray")).unwrap();
     let held = sb.home().join("ashtray").join(".flush.lock");
-    fs::write(&held, "999999\n").unwrap();
+    fs::write(&held, format!("{}\n", std::process::id())).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
         .args([
             "crash",
