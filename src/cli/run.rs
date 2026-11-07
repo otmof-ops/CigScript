@@ -497,11 +497,14 @@ fn run_source(
             record.diagnostic = Some(v);
         }
         record.trial = trial_note.clone();
-        record.journal_head = Some(interp.kernel.journal().head().to_string());
+        // A run that burned nothing wrote no journal line: it has no head,
+        // and the ledger has nothing to keep for it (#129).
+        let wrote = !interp.kernel.journal().wrote_nothing();
+        record.journal_head = wrote.then(|| interp.kernel.journal().head().to_string());
         record.finish(status, error);
         // The ledger: where this run's record ended, under this machine's
         // key, so a journal cut short or swapped is caught later.
-        if interp.kernel.journal().format() >= 3 {
+        if wrote && interp.kernel.journal().format() >= 3 {
             if let Err(e) = crate::burn::ledger::append(
                 "run",
                 &record.id,

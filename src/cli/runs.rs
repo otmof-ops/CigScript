@@ -126,7 +126,24 @@ fn show(ctx: &Ctx, id: &str, all: &[RunRecord], verify: bool) -> i32 {
             return exit::USAGE;
         }
     };
-    let journal = Journal::load(&rec.dir()).ok();
+    let loaded = Journal::load(&rec.dir());
+    // A journal that is there but cannot be read is not a pass: --verify
+    // said nothing and exited 0 for one.
+    if verify {
+        if let Err(e) = &loaded {
+            if rec.dir().join("journal.jsonl").exists() {
+                eprintln!(
+                    "{} the journal of {} cannot be read: {e}",
+                    ctx.red("error[E760 burn]:"),
+                    rec.id
+                );
+                eprintln!("  = hint: it was edited or damaged after the run; cig unburn {} refuses it too", rec.id);
+                eprintln!("  = explain: cig explain E760");
+                return exit::SCRIPT_ERROR;
+            }
+        }
+    }
+    let journal = loaded.ok();
     let checked = if verify {
         journal.as_ref().map(|j| verify_run(&rec, j))
     } else {
@@ -472,6 +489,21 @@ fn tampered(rec: &RunRecord, journal: &Journal) -> Option<(usize, String)> {
     if let Some(b) = &chain.broken_at {
         return Some((b.line, b.reason.clone()));
     }
+    // A finished run's record has carried its journal's head since 1.5.0;
+    // since 1.15.1 one that burned nothing writes no journal line and
+    // records no head (#129). A journal under a finished, headless record
+    // that holds lines after all, chained or not, was written after the
+    // run. (A run whose process died never recorded a head: not this.)
+    if rec.journal_head.is_none()
+        && rec.finished.is_some()
+        && records_its_head(&rec.version)
+        && (!journal.wrote_nothing() || !journal.entries().is_empty())
+    {
+        return Some((
+            chain.lines.max(journal.entries().len()),
+            "has lines, but the run's record says it wrote none (it burned nothing): they were added after the run".to_string(),
+        ));
+    }
     // Under another key, or with no key to check with, the head computed
     // here is not the one the record saved: that is E708's business, or a
     // note, not tampering.
@@ -485,6 +517,21 @@ fn tampered(rec: &RunRecord, journal: &Journal) -> Option<(usize, String)> {
         )),
         _ => None,
     }
+}
+
+/// Was the record made by a cig that saves its journal's head when the run
+/// finishes (1.5.0 and later)?
+fn records_its_head(version: &str) -> bool {
+    let mut parts = version
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.parse::<u64>().unwrap_or(0));
+    let v = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    v >= (1, 5, 0)
 }
 
 fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
@@ -543,6 +590,18 @@ fn verify_run(rec: &RunRecord, journal: &Journal) -> Verified {
             true,
             "not checked: the chain could not be checked here (above)".to_string(),
         ),
+        None if rec.finished.is_some() && records_its_head(&rec.version) => {
+            let nothing = journal.wrote_nothing() && journal.entries().is_empty();
+            (
+                nothing,
+                if nothing {
+                    "none: the run burned nothing, so its journal holds no line".to_string()
+                } else {
+                    "none recorded, yet the journal holds lines: they were written after the run"
+                        .to_string()
+                },
+            )
+        }
         None => (
             true,
             "not recorded yet (the run has not finished, or died before it could)".to_string(),
@@ -775,7 +834,9 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
         }
     }
     let mut rec = rec;
-    rec.journal_head = Some(journal.head().to_string());
+    if !journal.wrote_nothing() {
+        rec.journal_head = Some(journal.head().to_string());
+    }
     let _ = crate::burn::ledger::append(
         "unburn",
         &rec.id,
@@ -1265,7 +1326,9 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     crate::burn::overlay::sweep_scratch(&rec.dir());
     let _ = crate::burn::overlay::remove_tree_force(&crate::burn::overlay::inbox_dir(&rec.dir()));
     rec.rollback_took = report.took.len();
-    rec.journal_head = Some(journal.head().to_string());
+    if !journal.wrote_nothing() {
+        rec.journal_head = Some(journal.head().to_string());
+    }
     rec.status = if report.clean() {
         "unburned".to_string()
     } else {

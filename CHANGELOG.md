@@ -5,6 +5,13 @@ project follows semantic versioning.
 
 ## Unreleased
 
+- **A run that burns nothing never asks for the seal key** (#129). The
+  journal writes its first line, and asks for the key, with its first entry,
+  not when it is made: `cig run` of a script that burns nothing went from
+  12 ms to 4 ms with the keyring (the ask was most of it). Such a run's
+  record keeps no head and the ledger no line; a journal under a finished,
+  headless record that holds lines after all is E760, and `cig runs <id>
+  --verify` fails a journal it cannot read instead of passing it silently.
 - **The repository is otmof-ops/cig-script**, named like the rest of the cig
   family (cig-orchestrator, cig-compile, cig-os). It was otmof-ops/CigScript;
   GitHub redirects the old name for the web, git, the API and release

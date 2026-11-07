@@ -306,6 +306,10 @@ pub struct Journal {
     /// The MAC key a signed journal (format 3) links with; `None` for an
     /// unsigned one, or when the key could not be had.
     mac_key: Option<[u8; 32]>,
+    /// The first line is not written yet. It is written, and the key asked
+    /// for, with the first entry, so a run that burns nothing never touches
+    /// the keyring (#129).
+    pending: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -340,36 +344,20 @@ impl Journal {
         let mut chain = Chain::default();
         let mut format = JOURNAL_FORMAT;
         let mut mac_key: Option<[u8; 32]> = None;
+        let mut pending = false;
         let file = match &run_dir {
             Some(dir) => {
                 fs::create_dir_all(dir.join("snapshots"))?;
-                let mut f = fs::OpenOptions::new()
+                let f = fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(dir.join("journal.jsonl"))?;
                 if f.metadata()?.len() == 0 {
-                    // The first line names the format and seeds the chain.
-                    // It has no `op`, so a cig from before formats reads it
-                    // as a marker and goes on. Signed (format 3) when the
-                    // setting asks and the key can be had; else format 2.
-                    mac_key = if signing_wanted() {
-                        journal_key()
-                    } else {
-                        None
-                    };
-                    format = if mac_key.is_some() { JOURNAL_FORMAT } else { 2 };
-                    let id = dir_id(dir);
-                    let line = format!(
-                        "{{\"format\":{format},\"run\":\"{id}\",\"prev\":\"{}\"}}",
-                        link(mac_key.as_ref(), id.as_bytes())
-                    );
-                    f.write_all(line.as_bytes())?;
-                    f.write_all(b"\n")?;
-                    f.flush()?;
-                    full_sync_data(&f)?;
-                    head = link(mac_key.as_ref(), line.as_bytes());
+                    // The first line is written with the first entry
+                    // (`write_header`), not now: a run that burns nothing
+                    // never asks for the key.
+                    pending = true;
                     chain.format = format;
-                    chain.lines = 1;
                 } else {
                     // Reopened: the chain goes on from the last intact line.
                     let loaded = Self::load(dir)?;
@@ -392,7 +380,51 @@ impl Journal {
             head,
             chain,
             mac_key,
+            pending,
         })
+    }
+
+    /// The first line: it names the format and seeds the chain. It has no
+    /// `op`, so a cig from before formats reads it as a marker and goes on.
+    /// Signed (format 3) when the setting asks and the key can be had; else
+    /// format 2. Written with the first entry, so a run that burns nothing
+    /// never asks for the key (#129).
+    fn write_header(&mut self) -> io::Result<()> {
+        let Some(dir) = self.run_dir.clone() else {
+            return Ok(());
+        };
+        let Some(f) = &mut self.file else {
+            return Ok(());
+        };
+        let mac_key = if signing_wanted() {
+            journal_key()
+        } else {
+            None
+        };
+        let format = if mac_key.is_some() { JOURNAL_FORMAT } else { 2 };
+        let id = dir_id(&dir);
+        let line = format!(
+            "{{\"format\":{format},\"run\":\"{id}\",\"prev\":\"{}\"}}",
+            link(mac_key.as_ref(), id.as_bytes())
+        );
+        f.write_all(line.as_bytes())?;
+        f.write_all(b"\n")?;
+        f.flush()?;
+        full_sync_data(f)?;
+        sync_dir(&dir)?;
+        self.head = link(mac_key.as_ref(), line.as_bytes());
+        self.format = format;
+        self.chain.format = format;
+        self.chain.lines = 1;
+        self.mac_key = mac_key;
+        self.pending = false;
+        Ok(())
+    }
+
+    /// Nothing was ever written: the run burned nothing, so it has no head
+    /// and the ledger has nothing to keep for it (#129).
+    pub fn wrote_nothing(&self) -> bool {
+        self.pending
     }
 
     /// Load a finished run's journal for `cig unburn`.
@@ -533,6 +565,14 @@ impl Journal {
             }
             entries.push(e);
         }
+        // A journal with no line is a run that burned nothing (#129): read
+        // as the current format with nothing in it, and a first append
+        // writes its header then.
+        let empty = text.lines().all(|l| l.trim().is_empty());
+        let format = if empty { JOURNAL_FORMAT } else { format };
+        if empty {
+            chain.format = JOURNAL_FORMAT;
+        }
         Ok(Self {
             run_dir: Some(run_dir.to_path_buf()),
             file: None,
@@ -542,6 +582,7 @@ impl Journal {
             head: expect,
             chain,
             mac_key,
+            pending: empty,
         })
     }
 
@@ -625,10 +666,14 @@ impl Journal {
             if let Some(dir) = &self.run_dir {
                 self.file = Some(
                     fs::OpenOptions::new()
+                        .create(true)
                         .append(true)
                         .open(dir.join("journal.jsonl"))?,
                 );
             }
+        }
+        if self.pending {
+            self.write_header()?;
         }
         let Some(f) = &mut self.file else {
             return Ok(());
