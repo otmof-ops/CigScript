@@ -274,6 +274,22 @@ fn run_source(
     source: String,
     compiled: Option<&crate::program::Program>,
 ) -> i32 {
+    let dry_run = args.dry_run;
+    let code = run_source_inner(ctx, args, chain, source, compiled);
+    // The retention settings, once the run is recorded (#105).
+    if !dry_run {
+        crate::cli::runs::keep_by_config();
+    }
+    code
+}
+
+fn run_source_inner(
+    ctx: &Ctx,
+    args: super::RunArgs,
+    chain: Option<String>,
+    source: String,
+    compiled: Option<&crate::program::Program>,
+) -> i32 {
     let name = args.file.to_string_lossy().to_string();
     let program = match parse(&source) {
         Ok(p) => p,

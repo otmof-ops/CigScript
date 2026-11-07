@@ -858,6 +858,71 @@ pub fn give_back(ctx: &Ctx, id: &str, dry_run: bool, force: bool) -> i32 {
     }
 }
 
+/// A run record removed, with what it holds: the git blobs it pinned, its
+/// layers, and a ledger line, so the missing-run note never fires for it.
+fn remove_run(r: &runs::RunRecord) -> bool {
+    if let Ok(text) = std::fs::read_to_string(r.dir().join(crate::burn::git::PINS)) {
+        for wt in text.lines().filter(|l| !l.trim().is_empty()) {
+            crate::burn::git::unpin(std::path::Path::new(wt.trim()), &r.id);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = crate::burn::overlay::remove_tree_force(&r.dir().join("box"));
+        crate::burn::overlay::sweep_scratch(&r.dir());
+    }
+    if crate::burn::overlay::remove_tree_force(&r.dir()).is_ok() {
+        let _ = crate::burn::ledger::append("pruned", &r.id, "", "pruned", 0);
+        return true;
+    }
+    false
+}
+
+/// What the retention settings drop (#105, L4): past the newest
+/// `keep_runs`, or started more than `keep_days` ago; 0 keeps them all. A
+/// run with work left (running, interrupted, or an unburn that failed) is
+/// never dropped by them, however old.
+pub fn retained_out(
+    all: &[runs::RunRecord],
+    keep_runs: usize,
+    keep_days: u64,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<usize> {
+    let cutoff = (keep_days > 0).then(|| now - chrono::Duration::days(keep_days as i64));
+    all.iter()
+        .enumerate()
+        .filter(|(i, r)| {
+            let too_many = keep_runs > 0 && *i >= keep_runs;
+            let too_old = cutoff.is_some_and(|c| {
+                chrono::DateTime::parse_from_rfc3339(&r.started).is_ok_and(|s| s < c)
+            });
+            let pending = matches!(
+                r.status.as_str(),
+                "running" | "interrupted" | "unburn_failed"
+            );
+            (too_many || too_old) && !pending
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// After a run: `keep_runs` and `keep_days`, applied as `cig runs --prune`
+/// prunes. Nothing is read when both are 0.
+pub fn keep_by_config() {
+    let cfg = crate::config::Config::load();
+    let keep_runs: usize = cfg.get("keep_runs").trim().parse().unwrap_or(0);
+    let keep_days: u64 = cfg.get("keep_days").trim().parse().unwrap_or(0);
+    if keep_runs == 0 && keep_days == 0 {
+        return;
+    }
+    let Ok(all) = runs::list() else {
+        return;
+    };
+    for i in retained_out(&all, keep_runs, keep_days, chrono::Utc::now()) {
+        remove_run(&all[i]);
+    }
+}
+
 fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
     let all = match runs::list() {
         Ok(r) => r,
@@ -868,21 +933,8 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
     };
     let mut removed = 0;
     for r in all.iter().skip(keep) {
-        // The blobs the run pinned in git go free with its record.
-        if let Ok(text) = std::fs::read_to_string(r.dir().join(crate::burn::git::PINS)) {
-            for wt in text.lines().filter(|l| !l.trim().is_empty()) {
-                crate::burn::git::unpin(std::path::Path::new(wt.trim()), &r.id);
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = crate::burn::overlay::remove_tree_force(&r.dir().join("box"));
-            crate::burn::overlay::sweep_scratch(&r.dir());
-        }
-        if crate::burn::overlay::remove_tree_force(&r.dir()).is_ok() {
+        if remove_run(r) {
             removed += 1;
-            // Recorded, so the missing-run note never fires for it.
-            let _ = crate::burn::ledger::append("pruned", &r.id, "", "pruned", 0);
         }
     }
     if ctx.json {
@@ -1452,5 +1504,37 @@ pub fn paint_action(ctx: &Ctx, label: &str) -> String {
         "cannot undo" | "kept" | "left" | "not undone" => ctx.yellow(label),
         "failed" => ctx.red(label),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(id: &str, started: &str, status: &str) -> runs::RunRecord {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "version": "1.15.1", "script": "t.cig", "script_sha256": "", "args": [],
+            "cwd": "/", "mode": "run", "started": started, "status": status,
+        }))
+        .expect("a record")
+    }
+
+    #[test]
+    fn retention_drops_the_oldest_and_the_old_but_never_a_run_with_work_left() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-07T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        // Newest first, as runs::list gives them.
+        let all = vec![
+            record("d", "2026-11-07T11:00:00Z", "ok"),
+            record("c", "2026-11-06T11:00:00Z", "ok"),
+            record("b", "2026-11-01T11:00:00Z", "interrupted"),
+            record("a", "2026-10-01T11:00:00Z", "rolled_back"),
+        ];
+        assert_eq!(retained_out(&all, 0, 0, now), Vec::<usize>::new());
+        assert_eq!(retained_out(&all, 2, 0, now), vec![3], "b has work left");
+        assert_eq!(retained_out(&all, 0, 2, now), vec![3]);
+        assert_eq!(retained_out(&all, 1, 0, now), vec![1, 3]);
+        assert_eq!(retained_out(&all, 0, 60, now), Vec::<usize>::new());
     }
 }

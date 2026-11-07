@@ -3,6 +3,14 @@
 All notable changes to CigScript. The format follows Keep a Changelog; the
 project follows semantic versioning.
 
+## Unreleased
+
+- **`keep_runs` and `keep_days`** (#105): prune run records after every run,
+  as `cig runs --prune` does, each in the ledger: the newest N kept, or the
+  records older than N days dropped. 0, the default, keeps every run, and
+  neither drops a run with work left (running, interrupted, or an unburn
+  that failed).
+
 ## 1.15.1 — 2026-11-07
 
 A fix release for compiled programs and the journal, from review of 1.15.0.
