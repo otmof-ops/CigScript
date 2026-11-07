@@ -900,6 +900,37 @@ fn prune_runs(ctx: &Ctx, keep: usize) -> i32 {
     exit::OK
 }
 
+/// How many changed paths an E704 refusal names before saying how many more.
+const REFUSAL_SHOWS: usize = 20;
+
+/// For each of `paths`, the first later run (in `runs::list` order) whose
+/// journal touched it: each journal is read at most once, and the reading
+/// stops when every path has a name.
+fn later_writers(
+    id: &str,
+    paths: impl Iterator<Item = std::path::PathBuf>,
+) -> std::collections::BTreeMap<std::path::PathBuf, String> {
+    let mut want: std::collections::BTreeSet<std::path::PathBuf> = paths.collect();
+    let mut found = std::collections::BTreeMap::new();
+    for r in runs::list().unwrap_or_default() {
+        if want.is_empty() {
+            break;
+        }
+        if r.id.as_str() <= id {
+            continue;
+        }
+        let Ok(j) = Journal::load(&r.dir()) else {
+            continue;
+        };
+        for (p, _) in j.touched_paths() {
+            if want.remove(&p) {
+                found.insert(p, r.id.clone());
+            }
+        }
+    }
+    found
+}
+
 pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: bool) -> i32 {
     // A rollback writes run state: the state directory must be ours alone.
     if !dry_run {
@@ -1116,21 +1147,17 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
     } else {
         journal.changed_since()
     };
-    // Who changed it since: a later run that touched the same path, if any.
-    let later_runs: Vec<runs::RunRecord> = runs::list()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|r| r.id > rec.id && r.id != rec.id)
-        .collect();
+    // Who changed each path since: a later run that touched it. Worked out
+    // once, when first asked, reading each later run's journal at most once
+    // and stopping when every changed path is named: it was read again for
+    // every path, minutes on a long history (#128).
+    let writers: std::cell::OnceCell<std::collections::BTreeMap<std::path::PathBuf, String>> =
+        std::cell::OnceCell::new();
     let by_run = |path: &std::path::Path| -> Option<String> {
-        later_runs.iter().find_map(|r| {
-            Journal::load(&r.dir()).ok().and_then(|j| {
-                j.touched_paths()
-                    .iter()
-                    .any(|(p, _)| p == path)
-                    .then(|| r.id.clone())
-            })
-        })
+        writers
+            .get_or_init(|| later_writers(&rec.id, changed.changes.iter().map(|c| c.path.clone())))
+            .get(path)
+            .cloned()
     };
     if changed.known && !changed.changes.is_empty() && !dry_run {
         if !force {
@@ -1141,7 +1168,9 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
                 changed.changes.len(),
                 if changed.changes.len() == 1 { "" } else { "s" }
             );
-            for c in &changed.changes {
+            // One changed path is enough to refuse; a long list says how
+            // many, and --dry-run shows them all.
+            for c in changed.changes.iter().take(REFUSAL_SHOWS) {
                 let who = by_run(&c.path)
                     .map(|id| format!("; changed by run {id}, unburn that one first"))
                     .unwrap_or_default();
@@ -1150,6 +1179,13 @@ pub fn unburn(ctx: &Ctx, id: &str, dry_run: bool, force: bool, accept_unsigned: 
                     c.path.display(),
                     c.was.describe(),
                     c.now.describe()
+                );
+            }
+            if changed.changes.len() > REFUSAL_SHOWS {
+                eprintln!(
+                    "  - and {} more; cig unburn {} --dry-run lists them all",
+                    changed.changes.len() - REFUSAL_SHOWS,
+                    rec.id
                 );
             }
             eprintln!("  = hint: look at the files, then pass --force if the old content is what you want; cig unburn {} --dry-run shows the changed-since column", rec.id);

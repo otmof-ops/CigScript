@@ -61,6 +61,34 @@ pub enum Before {
     },
 }
 
+impl Before {
+    /// The (mtime, size) a restore of this state leaves, when it is a file
+    /// whose time was recorded.
+    pub fn stamp(&self) -> Option<(u64, u64)> {
+        match self {
+            Before::File {
+                mtime_ns: Some(m),
+                bytes,
+                ..
+            } => Some((*m, *bytes)),
+            _ => None,
+        }
+    }
+
+    /// This state as `after.json` would record it, for the kinds a
+    /// changed-since check can compare.
+    pub fn as_path_state(&self) -> Option<PathState> {
+        match self {
+            Before::Absent => Some(PathState::Absent),
+            Before::File { sha256, bytes, .. } => Some(PathState::File {
+                sha256: sha256.clone(),
+                bytes: *bytes,
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// A blob in a git repository: the bytes a run refers to without copying.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitBlob {
@@ -1207,6 +1235,10 @@ impl Journal {
         // changed again is the run's, not someone else's.
         let mut latest_left: std::collections::BTreeMap<PathBuf, Option<(u64, u64)>> =
             std::collections::BTreeMap::new();
+        // The bytes expected at a path, where an entry's restore (this pass
+        // or an earlier one) decides them rather than the run's after-state.
+        let mut latest_sha: std::collections::BTreeMap<PathBuf, String> =
+            std::collections::BTreeMap::new();
         // Paths a newer native op's before-state covers: a directory it
         // deleted or replaced accounts for every file under it, so a hop's
         // file inside is the run's own work too, however it reads now.
@@ -1226,10 +1258,21 @@ impl Journal {
                 latest_left.entry(p.clone()).or_insert_with(|| {
                     if under_newer {
                         None
+                    } else if e.restored && !again {
+                        // An earlier pass put this entry back: the path holds
+                        // its before-state now, not what it left (#125).
+                        e.before.first().and_then(|b| b.before.stamp())
                     } else {
                         e.op.left()
                     }
                 });
+                if e.restored && !again {
+                    if let Some(Before::File { sha256, .. }) = e.before.first().map(|b| &b.before) {
+                        latest_sha
+                            .entry(p.clone())
+                            .or_insert_with(|| sha256.clone());
+                    }
+                }
             }
             for b in &e.before {
                 latest_left.entry(b.path.clone()).or_insert(None);
@@ -1333,13 +1376,16 @@ impl Journal {
                 ) {
                     if let Some(now) = file_stamp(&state.path) {
                         let same_bytes = || {
+                            let now = sha256_file(&state.path).ok();
+                            if let Some(want) = latest_sha.get(&state.path) {
+                                return now.as_deref() == Some(want.as_str());
+                            }
                             after
                                 .as_ref()
                                 .and_then(|a| a.paths.get(&state.path))
                                 .is_some_and(|was| match was {
                                     PathState::File { sha256, .. } => {
-                                        sha256_file(&state.path).ok().as_deref()
-                                            == Some(sha256.as_str())
+                                        now.as_deref() == Some(sha256.as_str())
                                     }
                                     _ => false,
                                 })
@@ -1432,6 +1478,20 @@ impl Journal {
             }
             if report.failed.len() == failed_before {
                 done.push(entry.seq);
+                // An older entry for the same path is checked against what
+                // this one just put back, not against what the run left: two
+                // hops that wrote one file roll back to the start (#125).
+                for state in &entry.before {
+                    latest_left.insert(state.path.clone(), file_stamp(&state.path));
+                    match &state.before {
+                        Before::File { sha256, .. } => {
+                            latest_sha.insert(state.path.clone(), sha256.clone());
+                        }
+                        _ => {
+                            latest_sha.remove(&state.path);
+                        }
+                    }
+                }
             }
         }
         self.mark_restored(&done);
@@ -1947,9 +2007,24 @@ impl Journal {
                 changes: Vec::new(),
             };
         };
+        // A path an earlier pass put back holds the before-state of the
+        // oldest entry it restored there (a rollback goes newest first), not
+        // what the run left: a retry compares with that (#125).
+        let mut restored: std::collections::BTreeMap<PathBuf, PathState> =
+            std::collections::BTreeMap::new();
+        for e in &self.entries {
+            if !e.restored || e.undone {
+                continue;
+            }
+            for b in &e.before {
+                if let Some(st) = b.before.as_path_state() {
+                    restored.entry(b.path.clone()).or_insert(st);
+                }
+            }
+        }
         let mut changes = Vec::new();
         for (path, seq) in paths {
-            let Some(was) = after.paths.get(&path) else {
+            let Some(was) = restored.get(&path).or_else(|| after.paths.get(&path)) else {
                 continue;
             };
             let now = PathState::observe(&path);

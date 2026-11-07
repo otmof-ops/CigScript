@@ -12,6 +12,23 @@ project follows semantic versioning.
   record keeps no head and the ledger no line; a journal under a finished,
   headless record that holds lines after all is E760, and `cig runs <id>
   --verify` fails a journal it cannot read instead of passing it silently.
+- **Two hops that change one file roll back to the start** (#125). The older
+  hop's entry was checked against what the newer hop left, so `cig unburn`
+  put the newer one back and then refused the older one ("changed after the
+  hop ran"), and a retry was refused with E704 against the run's final
+  state. An entry is now checked against what the newer entry's restore put
+  there, in the same pass and on a retry.
+- **Reports leave the machine over curl again** (#126). GitHub refuses an
+  issue search without `is:issue` (422), so the curl route never filed
+  anything; the search now says `is:issue`.
+- **A sender that died no longer blocks every later send** (#127). The send
+  lock records its holder's pid and start time, and a lock whose holder is
+  gone is taken over, not waited on for ten minutes.
+- **An E704 refusal on a long history takes as long as the unburn would**
+  (#128). Naming the later run that changed each path read every later
+  journal again for every path: 30-60 s over 300 runs. Each later journal is
+  now read once, and the refusal names the first 20 paths and counts the
+  rest (`--dry-run` lists them all).
 - **The repository is otmof-ops/cig-script**, named like the rest of the cig
   family (cig-orchestrator, cig-compile, cig-os). It was otmof-ops/CigScript;
   GitHub redirects the old name for the web, git, the API and release

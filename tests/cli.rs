@@ -1940,6 +1940,47 @@ fn lines_planted_under_a_headless_run_are_tampering() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("cannot be read"));
 }
 
+/// #128: a refusal over many changed paths names the first 20, with the
+/// later run that changed them (each later journal is read once, not once
+/// per path), and says how many more; `--dry-run` still lists them all.
+#[test]
+fn a_long_e704_refusal_names_twenty_and_counts_the_rest() {
+    let sb = Sandbox::new();
+    let mut a = String::from("burn {\n");
+    let mut b = String::from("burn {\n");
+    for k in 0..25 {
+        sb.write(&format!("f{k:02}.txt"), "one");
+        a.push_str(&format!("  fs.write_text(\"f{k:02}.txt\", \"two\")\n"));
+        b.push_str(&format!("  fs.write_text(\"f{k:02}.txt\", \"three\")\n"));
+    }
+    a.push_str("}\n");
+    b.push_str("}\n");
+    sb.write("a.cig", &a);
+    sb.write("b.cig", &b);
+    sb.run_ok(&["run", "a.cig"]);
+    let first = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    std::thread::sleep(std::time::Duration::from_millis(1100)); // ids are second-resolution
+    sb.run_ok(&["run", "b.cig"]);
+    let later = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    let err = sb.run_err(&["unburn", &first], 1);
+    assert!(
+        err.contains("E704") && err.contains("25 paths changed"),
+        "{err}"
+    );
+    assert_eq!(
+        err.matches(&format!("changed by run {later}")).count(),
+        20,
+        "{err}"
+    );
+    assert!(err.contains("and 5 more"), "{err}");
+    let plan = sb.run_ok(&["unburn", &first, "--dry-run"]);
+    assert_eq!(
+        plan.matches(&format!("by run {later}")).count(),
+        25,
+        "{plan}"
+    );
+}
+
 #[test]
 fn unburn_names_the_later_run_that_changed_the_file() {
     let sb = Sandbox::new();
@@ -3666,6 +3707,31 @@ fn a_venv_inside_the_pack_is_not_journaled() {
     let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
     let shown = sb.run_ok(&["runs", &id]);
     assert_eq!(shown.matches("hop created").count(), 1, "{shown}");
+}
+
+/// #125: two hops in one run that wrote the same file roll back to the
+/// start. The older hop's entry is checked against what the newer one's
+/// restore put back, not against what the run left, so no `--force` is
+/// needed; a second unburn is refused as already done.
+#[cfg(unix)]
+#[test]
+fn two_hops_one_file_roll_back_to_the_start() {
+    let sb = Sandbox::new();
+    sb.write("p/a.txt", "v0\n");
+    sb.write(
+        "s.cig",
+        "pack { \"./p\" }\nburn { proc.run(\"sh\", [\"-c\", \"echo v1 > a.txt\"], {cwd: \"p\", touches: [\"a.txt\"]}) }\nburn { proc.run(\"sh\", [\"-c\", \"echo v2 > a.txt\"], {cwd: \"p\", touches: [\"a.txt\"]}) }\n",
+    );
+    sb.run_ok(&["run", "s.cig"]);
+    assert_eq!(sb.read("p/a.txt"), "v2\n");
+    let id = sb.runs()[0]["id"].as_str().unwrap().to_string();
+    sb.run_ok(&["unburn", &id]);
+    assert_eq!(
+        sb.read("p/a.txt"),
+        "v0\n",
+        "the run did not roll back to the start"
+    );
+    assert_eq!(sb.runs()[0]["status"], "unburned", "{}", sb.runs()[0]);
 }
 
 #[cfg(unix)]
@@ -9717,10 +9783,12 @@ fn a_send_waits_for_the_sender_that_holds_the_ashtray() {
         "tool.json",
         r#"{"kind":"crash","panic_message":"map has no key","panic_location":"orchestrate.cig:12","version":"1.1.0","cwd":"~/w","command":["cigo","run","t"],"active_run_id":null}"#,
     );
-    // Another sender holds the ashtray (a live lock, by another process).
+    // Another sender holds the ashtray: a live lock, by another process
+    // (this test's: alive, and not the cig below). A lock whose holder is
+    // gone is taken over since #127, so a made-up pid would not hold it.
     fs::create_dir_all(sb.home().join("ashtray")).unwrap();
     let held = sb.home().join("ashtray").join(".flush.lock");
-    fs::write(&held, "999999\n").unwrap();
+    fs::write(&held, format!("{}\n", std::process::id())).unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_cig"))
         .args([
             "crash",

@@ -305,12 +305,20 @@ fn issue_from_api(v: &serde_json::Value) -> IssueRef {
     }
 }
 
+/// The issue search that finds a report already filed. GitHub refuses a
+/// search that names neither `is:issue` nor `is:pull-request` (422), so
+/// the curl route never filed anything without it (#126); `gh issue list`
+/// adds it itself.
+fn search_query(repo: &str, fingerprint: &str) -> String {
+    format!("repo:{repo} \"[{fingerprint}]\" in:title is:issue")
+}
+
 impl Tracker for Curl {
     fn name(&self) -> &'static str {
         "curl"
     }
     fn find(&self, repo: &str, fingerprint: &str) -> Result<Option<IssueRef>, String> {
-        let q = crate::crash::urlencode(&format!("repo:{repo} \"[{fingerprint}]\" in:title"));
+        let q = crate::crash::urlencode(&search_query(repo, fingerprint));
         let v = curl_api(
             "GET",
             &format!("https://api.github.com/search/issues?q={q}&per_page=5"),
@@ -515,6 +523,18 @@ impl Tracker for FileTracker {
 #[cfg(test)]
 mod file_tracker_tests {
     use super::*;
+
+    /// #126: without `is:issue`, GitHub answers the search 422 and the
+    /// curl route never reaches the create.
+    #[test]
+    fn the_curl_search_names_issues() {
+        let q = search_query("otmof-ops/cig-script", "b08bb6f3");
+        assert!(q.contains(" is:issue"), "{q}");
+        assert!(
+            q.starts_with("repo:otmof-ops/cig-script \"[b08bb6f3]\" in:title"),
+            "{q}"
+        );
+    }
 
     #[test]
     fn senders_at_once_never_share_an_issue_number() {
