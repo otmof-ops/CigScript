@@ -29,6 +29,10 @@ project follows semantic versioning.
   journal again for every path: 30-60 s over 300 runs. Each later journal is
   now read once, and the refusal names the first 20 paths and counts the
   rest (`--dry-run` lists them all).
+- **E1008: a runtime that would tie programs to this machine's libc**
+  (otmof-ops/cig-compile#27). cigcompile refuses to make a Linux program from
+  a dynamically linked cig when it cannot use cig's static release instead;
+  `cig explain E1008` says why and what to type next.
 - **The repository is otmof-ops/cig-script**, named like the rest of the cig
   family (cig-orchestrator, cig-compile, cig-os). It was otmof-ops/CigScript;
   GitHub redirects the old name for the web, git, the API and release

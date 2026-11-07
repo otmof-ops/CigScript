@@ -2756,6 +2756,7 @@ building and running compiled programs: the path, the runtime, the target, and a
 | [`E1005`](#e1005-the-runtime-already-carries-a-program) | the runtime already carries a program *(cigcompile)* | not one of the four | give the cig binary itself with --runtime, not a program compiled from it |
 | [`E1006`](#e1006-an-unknown-target) | an unknown target *(cigcompile)* | never heard of you | pick one cigcompile targets lists, e.g. --target x86_64-unknown-linux-musl |
 | [`E1007`](#e1007-two-programs-would-share-one-name) | two programs would share one name *(cigcompile)* | not one of the four | rename one of the scripts, or build each with its own -o |
+| [`E1008`](#e1008-the-runtime-would-tie-programs-to-this-machine's-libc) | the runtime would tie programs to this machine's libc *(cigcompile)* | don't have any over here | fetch cig's static release (cigcompile fetch), or build cigcompile for this machine's -musl target |
 | [`E1050`](#e1050-a-damaged-program) | a damaged program | not one of the four | compile it again (cigcompile build), or fetch it again from where it came from |
 | [`E1051`](#e1051-a-program-for-another-cig) | a program for another cig | not one of the four | compile it again with the cigcompile for this cig, or keep the binary cigcompile made |
 | [`E1052`](#e1052-not-one-of-the-program's-run-flags) | not one of the program's run flags | not one of the four | put the program's own arguments after --: tool -- --flag (tool --help lists the run flags) |
@@ -2883,6 +2884,22 @@ Two scripts in the folder would compile to the same program: their names differ 
 **Known causes**, ranked; doctor checks them in this order:
 
 1. tool.cig and Tool.cig compiled into one folder (no probe; a suggestion, not a finding). **Remedy:** rename one of them
+
+
+### E1008 the runtime would tie programs to this machine's libc
+
+*usage · since 1.15.1 · arises in compile · from cigcompile*
+
+**Kind of no:** don't have any over here (nobody's: right place, right you, nothing there; 404 from the server's side; an empty result).
+
+A Linux program runs anywhere because its runtime is static: cig's Linux releases need nothing from the machine. The only cig found here is dynamically linked, so a program made from it would start only where the same C library, of the same version or newer, is installed.
+
+**What to type next:** fetch cig's static release (cigcompile fetch), or build cigcompile for this machine's -musl target
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. cigcompile was built with a plain cargo build, so the cig-runtime beside it links this machine's glibc, and cig's release could not be fetched (CIGCOMPILE_OFFLINE, or no network) (no probe; a suggestion, not a finding). **Remedy:** cigcompile fetch while online, or cargo build --release --target x86_64-unknown-linux-musl
+2. the cig on PATH was built from source rather than installed from the release (probe `on-path`). **Remedy:** cig update installs the static release; or pass a static cig with --runtime
 
 
 ### E1050 a damaged program
