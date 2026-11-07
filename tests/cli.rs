@@ -4570,7 +4570,6 @@ fn an_older_copy_of_the_journal_is_caught_by_the_ledger() {
     );
 }
 
-#[cfg(unix)]
 /// `keep_runs` prunes after each run, as `cig runs --prune` does: the
 /// ledger knows, so nothing is noted missing, and the runs kept still
 /// unburn (#105).
@@ -4597,6 +4596,7 @@ fn keep_runs_prunes_after_each_run_and_the_ledger_stays_quiet() {
     assert!(!sb.path().join("f3.txt").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn a_pruned_run_is_quiet_and_a_hand_deleted_run_is_a_note() {
     let sb = Sandbox::new();
