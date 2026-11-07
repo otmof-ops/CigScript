@@ -77,6 +77,16 @@ pub const KEYS: &[(&str, &str, &str)] = &[
         "the tin read-only to hops, the key folder hidden from them (Linux): auto (boxed hops, wherever the kernel allows; one note where it does not), on (every hop, and refuse to run one unguarded), off",
     ),
     (
+        "keep_runs",
+        "0",
+        "after each run, keep only this many run records, the newest, and prune the rest as cig runs --prune does (recorded in the ledger); 0 keeps every run",
+    ),
+    (
+        "keep_days",
+        "0",
+        "after each run, prune run records older than this many days, as cig runs --prune does; 0 keeps them however old",
+    ),
+    (
         "journal_sign",
         "on",
         "sign each run's journal (format 3: a keyed chain under the tin's key, plus a ledger line per run) so a script cannot rewrite the record; off writes format 2 for anyone who needs older cigs to read new runs",

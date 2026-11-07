@@ -4571,6 +4571,32 @@ fn an_older_copy_of_the_journal_is_caught_by_the_ledger() {
 }
 
 #[cfg(unix)]
+/// `keep_runs` prunes after each run, as `cig runs --prune` does: the
+/// ledger knows, so nothing is noted missing, and the runs kept still
+/// unburn (#105).
+#[test]
+fn keep_runs_prunes_after_each_run_and_the_ledger_stays_quiet() {
+    let sb = Sandbox::new();
+    sb.run_ok(&["config", "keep_runs", "2"]);
+    for k in 0..4 {
+        sb.write(
+            "t.cig",
+            &format!("burn {{\n  fs.write_text(\"f{k}.txt\", \"{k}\")\n}}\n"),
+        );
+        sb.run_ok(&["run", "t.cig"]);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+    }
+    let left = sb.runs();
+    assert_eq!(left.len(), 2, "{left:?}");
+    let quiet = sb.cig(&["runs"]);
+    assert!(
+        !String::from_utf8_lossy(&quiet.stderr).contains("E710"),
+        "a pruned run was noted"
+    );
+    sb.run_ok(&["unburn", left[0]["id"].as_str().unwrap()]);
+    assert!(!sb.path().join("f3.txt").exists());
+}
+
 #[test]
 fn a_pruned_run_is_quiet_and_a_hand_deleted_run_is_a_note() {
     let sb = Sandbox::new();

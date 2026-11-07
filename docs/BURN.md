@@ -414,6 +414,12 @@ shows one with its journal, `cig runs --prune N` keeps the newest N, and
 `CIGSCRIPT_HOME` relocates the whole state directory (tests use this to stay
 isolated).
 
+Two settings prune after every run, as `cig runs --prune` does, each pruned
+record a ledger line: `keep_runs N` keeps the newest N, and `keep_days N`
+drops records started more than N days ago. Both are 0 by default, which
+keeps every run. Neither drops a run with work left: one still running, one
+interrupted, or one whose unburn failed.
+
 ## Keeping the tin private
 
 The tin is your undo, so cig keeps it to you and keeps the key that seals it
