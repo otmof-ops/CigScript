@@ -9417,6 +9417,60 @@ fn ci_never_files_without_the_setting() {
     assert_eq!(out.status.code(), Some(3));
 }
 
+/// After a burn, objects drawn at random from the whole tin are checked
+/// (#105, L6, `verify_sample`): an object an earlier run left, damaged
+/// since, trips the next run that burns anything, and `verify_sample 0`
+/// checks nothing.
+#[cfg(unix)]
+#[test]
+fn a_damaged_object_from_an_earlier_run_trips_the_next_burn() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new();
+    sb.write("p/f.txt", "the before-copy\n");
+    // A hop's `touches` keep the pack's files in the tin.
+    sb.write(
+        "a.cig",
+        "pack { \"./p\" }\nburn {\n  proc.run(\"sh\", [\"-c\", \"echo after > p/f.txt\"], {touches: [\"*\"]})\n}\n",
+    );
+    sb.run_ok(&["run", "a.cig"]);
+    let objects = sb.home().join("tin").join("objects");
+    let object = fs::read_dir(&objects)
+        .unwrap()
+        .flatten()
+        .flat_map(|b| fs::read_dir(b.path()).unwrap().flatten().map(|e| e.path()))
+        .find(|p| fs::read_to_string(p).is_ok_and(|s| s == "the before-copy\n"))
+        .expect("the before-copy in the tin");
+    fs::set_permissions(&object, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&object, "rotted\n").unwrap();
+    sb.write(
+        "b.cig",
+        "pack { \"./p\" }\nburn {\n  fs.write_text(\"p/g.txt\", \"new\")\n}\n",
+    );
+    sb.run_ok(&["config", "reports", "always"]);
+    let t = sb.path().join("tracker").to_string_lossy().to_string();
+    sb.run_ok(&["config", "verify_sample", "0"]);
+    let quiet = sb.cig_env(&["run", "b.cig"], &[("CIG_INTERNAL_TRACKER_DIR", &t)]);
+    assert!(quiet.status.success());
+    assert!(!String::from_utf8_lossy(&quiet.stderr).contains("tripwire"));
+    sb.run_ok(&["config", "verify_sample", "50"]);
+    let out = sb.cig_env(&["run", "b.cig"], &[("CIG_INTERNAL_TRACKER_DIR", &t)]);
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        err.contains("tripwire: cig noticed something it got wrong"),
+        "{err}"
+    );
+    let reports: serde_json::Value =
+        serde_json::from_str(&sb.run_ok(&["--json", "crash", "list"])).unwrap();
+    assert!(
+        reports[0]["title"]
+            .as_str()
+            .unwrap()
+            .contains("drawn at random"),
+        "{reports}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_rollback_that_restores_the_wrong_mode_trips() {

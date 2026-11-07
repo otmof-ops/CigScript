@@ -470,8 +470,21 @@ fn a_cut_or_extended_program_is_damaged_never_cig() {
     let mut junk = whole.clone();
     junk.extend_from_slice(b"XX");
     cases.push(("XX after it".to_string(), junk));
-    for (what, bytes) in cases {
-        fs::write(&exe, &bytes).unwrap();
+    // Each case is a file of its own: macOS keeps a binary's code-signing
+    // state by file, and one rewritten in place after it ran can be killed
+    // when it is started again.
+    let place = |n: usize, bytes: &[u8]| {
+        let p = exe.with_file_name(format!("x{n}{}", std::env::consts::EXE_SUFFIX));
+        fs::write(&p, bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        p
+    };
+    for (n, (what, bytes)) in cases.into_iter().enumerate() {
+        let exe = place(n, &bytes);
         let out = s.prog(&exe, &["run", "x.cig"]);
         let err = text(&out.stderr);
         assert_eq!(out.status.code(), Some(3), "{what}: {err}");
@@ -484,7 +497,7 @@ fn a_cut_or_extended_program_is_damaged_never_cig() {
     }
     let mut padded = whole.clone();
     padded.extend_from_slice(&[0; 512]);
-    fs::write(&exe, &padded).unwrap();
+    let exe = place(99, &padded);
     let out = s.prog(&exe, &[]);
     assert!(out.status.success(), "padded: {}", text(&out.stderr));
     assert!(s.exists("x.txt"), "the padded program did not run");

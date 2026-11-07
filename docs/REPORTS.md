@@ -42,6 +42,7 @@ show <id>; cig explain E902)`.
 | a rollback | every path it says it restored is read back and compared with the recorded before-state: a file's bytes (re-hashed, 256 MB at most; compared by size past that, and the report says so), its mode, a link's target, a directory's presence, an absent path's absence |
 | a run | the journal on disk read back: its chain intact, as many entries as the kernel wrote, the head the kernel holds |
 | a run | up to three tin objects the journal refers to hash to their names |
+| a run that burned | `verify_sample` objects (3 by default; `0` for none) drawn at random from the whole tin hash to their names: a random bucket, then a random object in it, so a big tin costs no more to sample than a small one, and an object an earlier run left that has rotted since is found by the next run |
 | a box apply | the first eight files applied hash as the layer's |
 
 The check the issue asked for that compares a run with the plan a dry run

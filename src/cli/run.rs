@@ -705,7 +705,12 @@ fn settle_own_bugs(
     }
     if !journal.is_empty() {
         trips.extend(crate::tripwire::journal_reread(journal));
-        trips.extend(crate::tripwire::tin_sample(journal));
+        let sample =
+            crate::tripwire::sample_size(&crate::config::Config::load().get("verify_sample"));
+        if sample > 0 {
+            trips.extend(crate::tripwire::tin_sample(journal));
+            trips.extend(crate::tripwire::tin_random_sample(sample));
+        }
     }
     for (check, what) in &interp.kernel.trips {
         trips.push(crate::tripwire::Trip {
