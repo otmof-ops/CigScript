@@ -2757,6 +2757,7 @@ building and running compiled programs: the path, the runtime, the target, and a
 | [`E1006`](#e1006-an-unknown-target) | an unknown target *(cigcompile)* | never heard of you | pick one cigcompile targets lists, e.g. --target x86_64-unknown-linux-musl |
 | [`E1007`](#e1007-two-programs-would-share-one-name) | two programs would share one name *(cigcompile)* | not one of the four | rename one of the scripts, or build each with its own -o |
 | [`E1008`](#e1008-the-runtime-would-tie-programs-to-this-machine's-libc) | the runtime would tie programs to this machine's libc *(cigcompile)* | don't have any over here | fetch cig's static release (cigcompile fetch), or build cigcompile for this machine's -musl target |
+| [`E1009`](#e1009-a-script-whose-name-is-not-printable) | a script whose name is not printable *(cigcompile)* | not one of the four | rename the script to a name that shows as it is, then build again |
 | [`E1050`](#e1050-a-damaged-program) | a damaged program | not one of the four | compile it again (cigcompile build), or fetch it again from where it came from |
 | [`E1051`](#e1051-a-program-for-another-cig) | a program for another cig | not one of the four | compile it again with the cigcompile for this cig, or keep the binary cigcompile made |
 | [`E1054`](#e1054-a-program-with-raised-rights) | a program with raised rights | these are MY ciggies | run it with sudo instead, and take the bits off its file: chmod u-s,g-s, setcap -r |
@@ -2902,6 +2903,21 @@ A Linux program runs anywhere because its runtime is static: cig's Linux release
 
 1. cigcompile was built with a plain cargo build, so the cig-runtime beside it links this machine's glibc, and cig's release could not be fetched (CIGCOMPILE_OFFLINE, or no network) (no probe; a suggestion, not a finding). **Remedy:** cigcompile fetch while online, or cargo build --release --target x86_64-unknown-linux-musl
 2. the cig on PATH was built from source rather than installed from the release (probe `on-path`). **Remedy:** cig update installs the static release; or pass a static cig with --runtime
+
+
+### E1009 a script whose name is not printable
+
+*usage · since 1.16.0 · arises in compile · from cigcompile*
+
+**Kind of no:** not one of the four (a mistake in the text, in the arithmetic, or in CigScript; syntax, type or logic error; an internal error).
+
+A program records the name of the script it was compiled from, and prints it in its errors and in cig runs. This script's name holds a control character or an invisible one (a bidi control such as U+202E, a zero-width character), so it could show as another name; cig refuses such a program at run time (E1050), so cigcompile refuses to make one.
+
+**What to type next:** rename the script to a name that shows as it is, then build again
+
+**Known causes**, ranked; doctor checks them in this order:
+
+1. the file came from somewhere else with a name built to read differently on a terminal (tidy‮gpj.cig shows as tidygic.jpg) (no probe; a suggestion, not a finding). **Remedy:** rename it, and look at what else that source sent
 
 
 ### E1050 a damaged program
